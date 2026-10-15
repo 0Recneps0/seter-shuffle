@@ -1,35 +1,40 @@
 # SeTeR Shuffle
 
 True-random (Fisher-Yates) shuffle for Apple Music, with library protection.
-macOS AppleScript — no developer account, no API tokens, no dependencies.
+macOS AppleScript: no developer account, no API tokens, no dependencies.
+
+Music's built-in shuffle only changes playback order. SeTeR Shuffle actually **rewrites a playlist's order**, so the shuffle is genuinely random and stays that way on every device the playlist syncs to. It also builds a **Rediscover** playlist of songs you used to love and forgot about, and it can run by itself every morning.
+
+Everything is built around one rule: **never lose songs.** Every change is backed up first, verified afterwards, and rolled back automatically if anything looks wrong.
 
 ## What it does
 
-- **Shuffle** — Shuffle your whole library into the `SeTeR Shuffle` playlist,
-  or shuffle any playlist *in place* (name, artwork and description are kept).
-  Optional no-same-artist-back-to-back.
-- **Rediscover** — Forgotten favorites into `SeTeR Rediscover`: songs with 2+
+- **Shuffle**: shuffle your whole library into the `SeTeR Shuffle` playlist
+  (choose 100 / 250 / 500 / 1000 / all songs), or shuffle any playlist *in place*
+  (name, artwork and description are kept). Optional no-same-artist-back-to-back.
+- **Rediscover**: forgotten favorites into `SeTeR Rediscover`: songs with 2+
   plays unplayed for 60+ days, topped up with long-unplayed 1-play songs and
-  never-played old adds. Scales with your library (1% of songs, 30–500).
+  never-played old adds. Scales with your library (1% of songs, 30 to 500).
   Refreshed in place so its cover artwork survives.
-- **Remove duplicates** — Clean repeated songs out of any playlist, keeping
+- **Remove duplicates**: clean repeated songs out of any playlist, keeping
   the original order.
-- **Undo last shuffle** — Puts a playlist back exactly how it was before the
+- **Undo last shuffle**: puts a playlist back exactly how it was before the
   last in-place change, from the automatic pre-change backup.
-- **Daily automatic run** — `osascript SeTeR-shuffle.applescript daily "Playlist"`
-  shuffles the named playlist in place and refreshes `SeTeR Rediscover` with
-  no dialogs. Meant to be scheduled with the included launchd plist (8:00 AM).
+- **Daily automatic run**: `osascript SeTeR-shuffle.applescript daily "Playlist"`
+  shuffles the named playlist in place (removing duplicates, no same artist back
+  to back) and refreshes `SeTeR Rediscover` with no dialogs. Meant to be
+  scheduled with the included launchd plist (8:00 AM).
 
 ## Safety
 
 - Refuses to touch anything that isn't a regular user playlist (deleting
   "tracks" from the Library itself would remove songs from your library).
-- Library size is checked before and after every playlist rewrite — if it
+- Library size is checked before and after every playlist rewrite. If it
   shrinks, the run stops with a loud error.
 - Every in-place change snapshots the playlist (song count + persistent IDs)
   to `~/Library/Logs/seter-shuffle-backup.txt` **before** making changes,
   then verifies afterwards. On any failure the playlist is restored from the
-  backup and the run aborts.
+  backup and the run aborts. If the backup can't be written, nothing is changed.
 - Once a day, the daily run saves a manifest of your whole library
   (ID, artist, album, title) to `~/Documents/SeTeRShuffle/backups/`, kept for
   14 days.
@@ -63,42 +68,105 @@ macOS AppleScript — no developer account, no API tokens, no dependencies.
    ```bash
    launchctl load ~/Library/LaunchAgents/com.seter.daily.plist
    ```
-   The plist calls the script with playlist `my new sandwich recipe` —
-   edit the plist's `ProgramArguments` (and the script's
+   The plist calls the script with playlist `my new sandwich recipe`.
+   Edit the plist's `ProgramArguments` (and the script's
    `defaultDailyPlaylist` property) to use your own playlist.
    The plist assumes username `recneps`; adjust the paths if yours differs.
+   If your Mac is asleep at 8:00 AM, launchd runs the job when it wakes.
 5. On first run, allow the script to control the Music app when macOS asks
    (System Settings → Privacy & Security → Automation).
 
 ## Usage
 
 - **App:** double-click → pick Shuffle, Rediscover, Remove duplicates,
-  or Undo last shuffle.
+  or Undo last shuffle. Remove duplicates and Undo ask for confirmation first.
 - **Sandwich wrapper:** export `SeTeR-sandwich-shuffle.applescript` as an
-  Application too for a one-click daily refresh. (It expects the main script
-  at `~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript`.)
+  Application too for a one-click daily refresh. It shows a notification while
+  it works, a short summary when it finishes, and an **Open Log** button if
+  something goes wrong. (It expects the main script at
+  `~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript`.)
 - **Terminal:**
   ```bash
   /usr/bin/osascript ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript daily "my new sandwich recipe"
   ```
 
+The daily run does the following, in order: saves the library manifest (once per
+day), removes duplicates from the named playlist and shuffles it in place,
+refreshes `SeTeR Rediscover`, stamps a `Last reshuffled:` / `Last refreshed:`
+line into each playlist's description (existing description text is kept), and
+logs everything. If anything fails it **exits with an error code**, so
+schedulers and the wrapper app can tell.
+
+## Rediscover
+
+`SeTeR Rediscover` is filled with random songs from three tiers, best first:
+
+1. **Forgotten favorites**: played 2+ times, not played in the last 60 days
+2. **Gathering dust**: played once, not played in the last 60 days
+3. **Never got around to it**: never played, added more than 60 days ago
+
+The target size scales with your library: 1% of your songs, never fewer than 30
+and never more than 500.
+
+| Songs in library | Rediscover playlist |
+|---|---|
+| 2,000 | 30 (minimum) |
+| 10,000 | 100 |
+| 23,000 | 230 |
+| 50,000+ | 500 (maximum) |
+
 ## Logs & backups
 
-- `~/Library/Logs/seter-shuffle.log` — progress and errors, rotates at 1 MB
-- `~/Library/Logs/seter-shuffle-backup.txt` — snapshot before each in-place
-  change (used by Undo)
-- `~/Documents/SeTeRShuffle/backups/` — daily whole-library manifests,
-  kept 14 days
+- `~/Library/Logs/seter-shuffle.log`: progress and errors, rotates at 1 MB
+- `~/Library/Logs/seter-shuffle-backup.txt`: snapshot before each in-place
+  change (used by Undo). It is overwritten by each run, so Undo always means
+  "undo the most recent in-place change", and an undo itself can't be undone.
+- `~/Documents/SeTeRShuffle/backups/`: daily whole-library manifests
+  (`library-manifest-YYYY-MM-DD.tsv`), kept 14 days
 
 ## Settings
 
 At the top of `SeTeR-shuffle.applescript`:
 
-- `rediscoverPercent` / `rediscoverMin` / `rediscoverMax` — Rediscover size
-  (default: 1% of library, 30–500 songs)
-- `staleDays` — what counts as "forgotten" (default: 60)
-- `backupKeepDays` — manifest retention (default: 14)
-- `defaultDailyPlaylist` — playlist the daily run shuffles
+| Property | Default | Meaning |
+|---|---|---|
+| `rediscoverPercent` | `1` | Rediscover holds this % of your library... |
+| `rediscoverMin` | `30` | ...but never fewer than this many songs |
+| `rediscoverMax` | `500` | ...and never more than this many |
+| `staleDays` | `60` | What counts as "forgotten" |
+| `backupKeepDays` | `14` | Manifest retention |
+| `defaultDailyPlaylist` | `my new sandwich recipe` | Playlist the daily run shuffles when none is given |
+
+## How it works
+
+- **Shuffle:** the script reads the playlist's tracks, shuffles their order with
+  Fisher-Yates, then writes them back. For an in-place shuffle the new order is
+  staged in a temporary playlist (`SeTeRShuffleTemp`), the old songs are removed
+  from the playlist, and the staged songs are moved in. Staging is needed
+  because track references into a playlist go stale once its songs are deleted.
+- **No same artist twice:** when a track repeats the previous track's artist, it
+  is swapped with the nearest later track by a different artist, so the order
+  stays close to a true shuffle. Songs with no artist tag are never treated as a
+  repeat. If only one artist's songs remain at the very end, they stay together.
+- **Duplicates:** detected by Music's persistent ID, meaning the same library
+  track listed more than once in a playlist. Different versions or copies of a
+  song are different tracks and are *not* treated as duplicates.
+
+## Limitations
+
+- Large library shuffles are slow, because Music's AppleScript interface adds
+  songs one at a time. Use the 100 / 250 / 500 / 1000 size options for quicker runs.
+- Only songs are handled (not videos or podcasts).
+- Smart playlists can't be shuffled, since Music controls their order.
+- Undo restores only the single most recent backup.
+
+## Troubleshooting
+
+- **"Not authorized to send Apple events to Music":** allow it in
+  System Settings → Privacy & Security → Automation.
+- **"Playlist ... not found":** the playlist name passed to `daily` must match exactly.
+- **Something looks wrong after a run:** check `~/Library/Logs/seter-shuffle.log`
+  and use **Undo last shuffle** from the app.
 
 ## Uninstall
 
@@ -108,7 +176,13 @@ rm ~/Library/LaunchAgents/com.seter.daily.plist
 rm -rf ~/Documents/SeTeRShuffle
 ```
 
+## Disclaimer
+
+Provided as-is. The scripts are designed to be safe, but they automate changes
+to your music library, so keep a backup (Time Machine, or the manifests above)
+and try them on a small test playlist first.
+
 ## Version
 
-v2.3 — see [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
+v2.3. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
 for packaged downloads.
