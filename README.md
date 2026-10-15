@@ -21,8 +21,8 @@ Everything is built around one rule: **never lose songs.** Every change is backe
 - **Undo last shuffle**: puts a playlist back exactly how it was before the
   last in-place change, from the automatic pre-change backup.
 - **Daily automatic run**: `osascript SeTeR-shuffle.applescript daily "Playlist"`
-  shuffles the named playlist in place (removing duplicates, no same artist back
-  to back) and refreshes `SeTeR Rediscover` with no dialogs. Meant to be
+  shuffles the named playlist in place (removing duplicates unless you turn that off,
+  no same artist back to back) and refreshes `SeTeR Rediscover` with no dialogs. Meant to be
   scheduled with the included launchd plist (8:00 AM).
 
 ## Safety
@@ -92,7 +92,7 @@ Everything is built around one rule: **never lose songs.** Every change is backe
   ```
 
 The daily run does the following, in order: saves the library manifest (once per
-day), removes duplicates from the named playlist and shuffles it in place,
+day), removes duplicates from the named playlist (unless `dailyRemoveDuplicates` is `false`) and shuffles it in place,
 refreshes `SeTeR Rediscover`, stamps a `Last reshuffled:` / `Last refreshed:`
 line into each playlist's description (existing description text is kept), and
 logs everything. If anything fails it **exits with an error code**, so
@@ -118,7 +118,8 @@ and never more than 500.
 
 ## Logs & backups
 
-- `~/Library/Logs/seter-shuffle.log`: progress and errors, rotates at 1 MB.
+- `~/Library/Logs/seter-shuffle.log`: progress, errors, and every duplicate the daily
+  run removed (`removing duplicate: Artist - Title`). Rotates at 1 MB.
   The launchd plist also points its stdout/stderr at this same file, so if the
   daily run fails you'll see the raw `osascript` error there as well.
 - `~/Library/Logs/seter-shuffle-backup.txt`: snapshot before each in-place
@@ -139,6 +140,7 @@ At the top of `SeTeR-shuffle.applescript`:
 | `staleDays` | `60` | What counts as "forgotten" |
 | `backupKeepDays` | `14` | Manifest retention |
 | `defaultDailyPlaylist` | `my new sandwich recipe` | Playlist the daily run shuffles when none is given |
+| `dailyRemoveDuplicates` | `true` | `true`: the daily run removes repeated songs from the playlist. `false`: keeps every entry, so the song count never changes |
 
 ## Changing playlist names
 
@@ -214,6 +216,22 @@ Then re-export the script as an app if you use the app version.
 - **Something looks wrong after a run:** check `~/Library/Logs/seter-shuffle.log`
   and use **Undo last shuffle** from the app.
 
+## Why did my playlist's song count drop?
+
+By default the daily run **removes duplicates**: if the same song is in the playlist more than once, only the first copy is kept. So a playlist can legitimately go from, say, 646 to 635 songs. Every removed song is listed in the log, and the notification says how many were removed:
+
+```bash
+grep -E "snapshot|removing duplicate|shuffled" ~/Library/Logs/seter-shuffle.log | tail -30
+```
+
+You can also count the repeats in the latest backup (the first four lines are a header):
+
+```bash
+tail -n +5 ~/Library/Logs/seter-shuffle-backup.txt | sort | uniq -c | awk '$1>1 {n+=$1-1} END {print n+0}'
+```
+
+If you'd rather keep every entry, set `dailyRemoveDuplicates` to `false` at the top of `SeTeR-shuffle.applescript`. If the log shows no removed duplicates but the count still dropped, check it for `VERIFY FAILED`, `RESTORING` or `LIBRARY SHRANK` lines. Those mean the safety checks caught a problem, and **Undo last shuffle** will put the playlist back.
+
 ## Uninstall
 
 ```bash
@@ -230,5 +248,5 @@ and try them on a small test playlist first.
 
 ## Version
 
-v2.3. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
+v2.4. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
 for packaged downloads.
