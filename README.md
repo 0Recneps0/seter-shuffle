@@ -71,7 +71,8 @@ Everything is built around one rule: **never lose songs.** Every change is backe
    The plist calls the script with playlist `my new sandwich recipe`.
    Edit the plist's `ProgramArguments` (and the script's
    `defaultDailyPlaylist` property) to use your own playlist.
-   The plist assumes username `recneps`; adjust the paths if yours differs.
+   The plist has `/Users/recneps/` baked into three paths (the script and the
+   two log files), so change `recneps` to your own username before loading it.
    If your Mac is asleep at 8:00 AM, launchd runs the job when it wakes.
 5. On first run, allow the script to control the Music app when macOS asks
    (System Settings → Privacy & Security → Automation).
@@ -117,7 +118,9 @@ and never more than 500.
 
 ## Logs & backups
 
-- `~/Library/Logs/seter-shuffle.log`: progress and errors, rotates at 1 MB
+- `~/Library/Logs/seter-shuffle.log`: progress and errors, rotates at 1 MB.
+  The launchd plist also points its stdout/stderr at this same file, so if the
+  daily run fails you'll see the raw `osascript` error there as well.
 - `~/Library/Logs/seter-shuffle-backup.txt`: snapshot before each in-place
   change (used by Undo). It is overwritten by each run, so Undo always means
   "undo the most recent in-place change", and an undo itself can't be undone.
@@ -136,6 +139,49 @@ At the top of `SeTeR-shuffle.applescript`:
 | `staleDays` | `60` | What counts as "forgotten" |
 | `backupKeepDays` | `14` | Manifest retention |
 | `defaultDailyPlaylist` | `my new sandwich recipe` | Playlist the daily run shuffles when none is given |
+
+## Changing playlist names
+
+There are three playlists involved, and each is changed in a different place.
+
+| Playlist | What it is | Where the name lives |
+|---|---|---|
+| Your daily playlist | The playlist the daily run shuffles in place | `com.seter.daily.plist`, `defaultDailyPlaylist` in `SeTeR-shuffle.applescript`, and `playlistName` in `SeTeR-sandwich-shuffle.applescript` |
+| `SeTeR Shuffle` | Where the "entire library" shuffle goes | `SeTeR-shuffle.applescript` |
+| `SeTeR Rediscover` | The Rediscover playlist | `SeTeR-shuffle.applescript` |
+
+**Tip:** rename the playlist in the Music app *first*, then change the name in the script. If you only change the script, it will create a brand-new playlist with the new name and leave the old one (and its cover artwork) behind.
+
+### Your daily playlist
+
+Names must match the playlist in Music **exactly** (spelling, capitals, spaces). Change it in these places:
+
+1. `com.seter.daily.plist`: the last `<string>` under `ProgramArguments` (currently `my new sandwich recipe`). Then reload the job:
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.seter.daily.plist
+   launchctl load ~/Library/LaunchAgents/com.seter.daily.plist
+   ```
+2. `SeTeR-shuffle.applescript`: the `defaultDailyPlaylist` property near the top (used when no name is passed).
+3. `SeTeR-sandwich-shuffle.applescript`: the `playlistName` property near the top.
+4. If you run it from Terminal, the name at the end of the command.
+
+If you re-exported either script as an app, export it again after editing.
+
+### `SeTeR Shuffle` (library shuffle playlist)
+
+Open `SeTeR-shuffle.applescript` in Script Editor and find this line in the `doShuffle` handler:
+
+```applescript
+set destName to "SeTeR Shuffle"
+```
+
+Change the text in quotes to your new name. Leave the other "SeTeR Shuffle" strings alone: those are the titles of notifications and dialogs, not the playlist name.
+
+### `SeTeR Rediscover`
+
+In Script Editor, use **Edit → Find → Find...** (⌥⌘F), search for `SeTeR Rediscover`, and **Replace All** with your new name. That text only appears as the playlist name (in the playlist lookup, the playlist creation, and the notification messages), so replacing every occurrence is safe.
+
+Then re-export the script as an app if you use the app version.
 
 ## How it works
 
