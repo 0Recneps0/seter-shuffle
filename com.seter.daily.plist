@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.seter.daily</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/osascript</string>
+		<string>/Users/recneps/Documents/SeTeRShuffle/SeTeR-shuffle.applescript</string>
+		<string>daily</string>
+		<string>my new sandwich recipe</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>8</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/recneps/Library/Logs/seter-shuffle.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/recneps/Library/Logs/seter-shuffle.log</string>
+</dict>
+</plist>
