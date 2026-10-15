@@ -1,5 +1,5 @@
 -- SeTeR Sandwich Shuffle — one-click run of the daily refresh: reshuffles
--- "my new sandwich recipe" in place AND updates "Void Rediscover".
+-- "my new sandwich recipe" in place AND updates "SeTeR Rediscover".
 -- Export as Application from Script Editor for a double-clickable app
 -- (File > Export > File Format: Application).
 -- Needs SeTeR-shuffle.applescript (v2.3+) saved at ~/Documents/SeTeRShuffle/.
@@ -20,7 +20,7 @@ on run
 		return
 	end try
 	
-	display notification "Reshuffling “" & playlistName & "” and refreshing Void Rediscover…" with title "SeTeR Sandwich Shuffle"
+	display notification "Reshuffling “" & playlistName & "” and refreshing SeTeR Rediscover…" with title "SeTeR Sandwich Shuffle"
 	
 	try
 		-- Large playlists can take minutes; don't let the default AppleEvent timeout cut it off.

@@ -35,14 +35,14 @@
 --     "SeTeR Shuffle" playlist. Playlist -> shuffles that playlist itself in
 --     place (name, artwork, description kept). Optional no-same-artist.
 --   Rediscover: forgotten favorites (2+ plays, unplayed 60+ days) into
---     "Void Rediscover", topped up with long-unplayed 1-play songs and
+--     "SeTeR Rediscover", topped up with long-unplayed 1-play songs and
 --     never-played old adds so it always fills up to its target size (1% of your
 --     library, between 30 and 500 songs). Kept in place so its
 --     cover artwork survives.
 --
 -- AUTOMATIC (daily): osascript SeTeR-shuffle.applescript daily "Playlist Name"
 --   Backs up a library manifest (once a day), shuffles the named playlist in
---   place (removing duplicates) AND refreshes "Void Rediscover", no dialogs.
+--   place (removing duplicates) AND refreshes "SeTeR Rediscover", no dialogs.
 --   Progress and errors go to ~/Library/Logs/seter-shuffle.log. See
 --   com.seter.daily.plist for the scheduled job (daily at 8:00 AM).
 --
@@ -57,7 +57,7 @@
 --   First run: allow control of the Music app when macOS asks.
 
 -- SETTINGS (change these if you like)
-property rediscoverPercent : 1 -- "Void Rediscover" holds this % of your library...
+property rediscoverPercent : 1 -- "SeTeR Rediscover" holds this % of your library...
 property rediscoverMin : 30 -- ...but never fewer than this many songs
 property rediscoverMax : 500 -- ...and never more than this many
 property staleDays : 60 -- "forgotten" = not played / not added for this many days
@@ -93,7 +93,7 @@ on run argv
 			my reportError(errMsg, errNum)
 		end try
 		-- Non-zero exit so launchd / Shuffle Sandwich can tell something failed.
-		if hadError then error "Void Shuffle daily run had errors. See ~/Library/Logs/seter-shuffle.log" number 1
+		if hadError then error "SeTeR Shuffle daily run had errors. See ~/Library/Logs/seter-shuffle.log" number 1
 	else
 		try
 			my doInteractive()
@@ -173,7 +173,7 @@ on backupLibraryManifest()
 		set albs to album of every track of library playlist 1
 	end tell
 	set total to count of pids
-	set outLines to {"# Void Shuffle library manifest " & dayStr & " (" & total & " tracks)"}
+	set outLines to {"# SeTeR Shuffle library manifest " & dayStr & " (" & total & " tracks)"}
 	repeat with i from 1 to total
 		set end of outLines to (item i of pids) & tab & my safeText(item i of arts) & tab & my safeText(item i of albs) & tab & my safeText(item i of nms)
 	end repeat
@@ -216,7 +216,7 @@ on snapshotPlaylist(destPl, playlistName)
 	set AppleScript's text item delimiters to linefeed
 	set idText to idList as text
 	set AppleScript's text item delimiters to ""
-	set fileContent to "# Void Shuffle Backup" & linefeed & "# Playlist: " & playlistName & linefeed & "# Date: " & my dateStamp() & linefeed & "# Count: " & n & linefeed & idText
+	set fileContent to "# SeTeR Shuffle Backup" & linefeed & "# Playlist: " & playlistName & linefeed & "# Date: " & my dateStamp() & linefeed & "# Count: " & n & linefeed & idText
 	do shell script "mkdir -p " & quoted form of logsDir
 	set fh to open for access (POSIX file backupPath) with write permission
 	try
@@ -319,7 +319,7 @@ end removeTempPlaylist
 -- ---------------------------------------------------------------------------
 
 on doInteractive()
-	set modeChoice to choose from list {"🔀 Shuffle", "💡 Rediscover", "🧹 Remove duplicates", "↩️ Undo last shuffle"} with prompt "What should Void do?"
+	set modeChoice to choose from list {"🔀 Shuffle", "💡 Rediscover", "🧹 Remove duplicates", "↩️ Undo last shuffle"} with prompt "What should SeTeR do?"
 	if modeChoice is false then return
 	set m to item 1 of modeChoice
 	if m is "🔀 Shuffle" then
@@ -356,7 +356,7 @@ on doShuffle()
 	set limitN to 0
 	
 	if fromLibrary then
-		set sizeChoice to choose from list {"All songs", "Random 100", "Random 250", "Random 500", "Random 1000"} with prompt "How many songs should the Void Shuffle playlist hold?" default items {"All songs"}
+		set sizeChoice to choose from list {"All songs", "Random 100", "Random 250", "Random 500", "Random 1000"} with prompt "How many songs should the SeTeR Shuffle playlist hold?" default items {"All songs"}
 		if sizeChoice is false then return
 		set sizeText to item 1 of sizeChoice
 		if sizeText is not "All songs" then set limitN to (text 8 thru -1 of sizeText) as integer
@@ -473,7 +473,7 @@ on doUndo()
 		set rawText to do shell script "cat " & quoted form of backupPath
 	end try
 	if rawText is "" then
-		display dialog "There's no backup to restore yet. One is saved every time Void changes a playlist in place." buttons {"OK"} default button "OK" with title "SeTeR Shuffle"
+		display dialog "There's no backup to restore yet. One is saved every time SeTeR changes a playlist in place." buttons {"OK"} default button "OK" with title "SeTeR Shuffle"
 		return
 	end if
 	set plName to ""
@@ -767,7 +767,7 @@ on findRediscoverPicks()
 	return picks
 end findRediscoverPicks
 
--- How many songs Void Rediscover should hold for a library of libCount songs:
+-- How many songs SeTeR Rediscover should hold for a library of libCount songs:
 -- rediscoverPercent % of the library, clamped to rediscoverMin..rediscoverMax.
 on rediscoverTarget(libCount)
 	set sz to round (libCount * rediscoverPercent / 100) rounding to nearest
@@ -788,10 +788,10 @@ end pickRandom
 
 on writeRediscoverPlaylist(picks)
 	tell application "Music"
-		if exists playlist "Void Rediscover" then
-			set newPl to playlist "Void Rediscover"
+		if exists playlist "SeTeR Rediscover" then
+			set newPl to playlist "SeTeR Rediscover"
 		else
-			set newPl to make new user playlist with properties {name:"Void Rediscover"}
+			set newPl to make new user playlist with properties {name:"SeTeR Rediscover"}
 		end if
 	end tell
 	-- Picks come from the library, so no staging needed.
@@ -869,7 +869,7 @@ on doRediscover()
 		return
 	end if
 	my writeRediscoverPlaylist(picks)
-	display notification "Void Rediscover ready — " & (count of picks) & " songs." with title "SeTeR Shuffle"
+	display notification "SeTeR Rediscover ready — " & (count of picks) & " songs." with title "SeTeR Shuffle"
 end doRediscover
 
 on doDailyRediscover()
@@ -880,5 +880,5 @@ on doDailyRediscover()
 	end if
 	my writeRediscoverPlaylist(picks)
 	my logLine("rediscover: updated (" & (count of picks) & " songs)")
-	display notification "Void Rediscover updated — " & (count of picks) & " songs." with title "SeTeR Shuffle"
+	display notification "SeTeR Rediscover updated — " & (count of picks) & " songs." with title "SeTeR Shuffle"
 end doDailyRediscover
