@@ -1,5 +1,23 @@
--- SeTeR Shuffle v2.3
+-- SeTeR Shuffle v2.5
 -- True-random (Fisher-Yates) shuffle for Apple Music.
+--
+-- WHAT'S NEW IN v2.5
+--     * Better "avoid the same artist" logic. The old pass only stopped an artist
+--       from playing back-to-back, and fixed clashes by pulling in the next
+--       different-artist song, which dragged big artists toward the end of the list.
+--       Now clashes are repaired by swapping with a RANDOM song anywhere in the
+--       list (only if it strictly improves things), so artists stay spread out
+--       evenly. New setting artistSpacing keeps at least that many songs between
+--       two songs by the same artist (best effort; 1 = just not back-to-back).
+--     * "Artist feat. Someone" now counts as "Artist" (setting
+--       featuringIsSameArtist), so a featured track no longer sneaks in next to
+--       the main artist's songs.
+--
+-- WHAT'S NEW IN v2.4
+--   * The daily run now lists every duplicate it removes (artist - title) in the log,
+--     and its notification says how many were removed, so a drop in song count is
+--     never a mystery. New setting dailyRemoveDuplicates (below) turns duplicate
+--     removal off entirely if you'd rather keep every entry.
 --
 -- WHAT'S NEW IN v2.3
 --   LIBRARY PROTECTION (songs must never vanish from your library):
@@ -42,7 +60,7 @@
 --
 -- AUTOMATIC (daily): osascript SeTeR-shuffle.applescript daily "Playlist Name"
 --   Backs up a library manifest (once a day), shuffles the named playlist in
---   place (removing duplicates) AND refreshes "SeTeR Rediscover", no dialogs.
+--   place (removing duplicates unless dailyRemoveDuplicates is false) AND refreshes "SeTeR Rediscover", no dialogs.
 --   Progress and errors go to ~/Library/Logs/seter-shuffle.log. See
 --   com.seter.daily.plist for the scheduled job (daily at 8:00 AM).
 --
@@ -63,6 +81,9 @@ property rediscoverMax : 500 -- ...and never more than this many
 property staleDays : 60 -- "forgotten" = not played / not added for this many days
 property backupKeepDays : 14 -- how long library manifests are kept
 property defaultDailyPlaylist : "my new sandwich recipe"
+property dailyRemoveDuplicates : true -- true: the daily run removes repeated songs from the playlist; false: keeps every entry
+property artistSpacing : 2 -- "avoid same artist" keeps at least this many songs between an artist's songs (1 = just not back-to-back)
+property featuringIsSameArtist : true -- true: "Artist feat. X" counts as "Artist" when spacing artists apart
 
 -- internal state
 property isDaily : false
@@ -525,29 +546,43 @@ on doDailyShuffle(targetName)
 		set songArtists to artist of every track of destPl whose media kind is song
 	end tell
 	my assertUserPlaylist(destPl)
-	-- Dedupe by persistent ID (safe: exact track identity, never metadata).
-	set dedupeResult to my dedupeTrackRefs(destPl, songTracks, songArtists)
-	set songTracks to item 1 of dedupeResult
-	set songArtists to item 2 of dedupeResult
-	set dupesRemoved to item 3 of dedupeResult
-	set uniqueIDs to item 4 of dedupeResult
-	set n to count of songTracks
-	if n is 0 then error "No songs in \"" & targetName & "\"."
+	if (count of songTracks) is 0 then error "No songs in \"" & targetName & "\"."
 	-- SAFETY: back up the playlist exactly as it is now (duplicates included) so a
-	-- restore puts everything back. Verification, however, expects the deduped set.
+	-- restore puts everything back.
 	set snapshot to my snapshotPlaylist(destPl, targetName)
 	set snapCount to item 1 of snapshot
 	set snapIDs to item 2 of snapshot
 	my logLine("snapshot \"" & targetName & "\" (" & snapCount & " songs backed up)")
+	set dupesRemoved to 0
+	set expectedIDs to snapIDs
+	if dailyRemoveDuplicates then
+		-- Dedupe by persistent ID (exact track identity, never metadata).
+		set dedupeResult to my dedupeTrackRefs(destPl, songTracks, songArtists)
+		set songTracks to item 1 of dedupeResult
+		set songArtists to item 2 of dedupeResult
+		set dupesRemoved to item 3 of dedupeResult
+		set expectedIDs to item 4 of dedupeResult
+		set removedLabels to item 5 of dedupeResult
+		repeat with i from 1 to count of removedLabels
+			if i > 50 then
+				my logLine("... and " & ((count of removedLabels) - 50) & " more duplicate(s)")
+				exit repeat
+			end if
+			my logLine("removing duplicate: " & (item i of removedLabels))
+		end repeat
+	end if
+	set n to count of songTracks
 	set finalTracks to my shuffleTrackRefs(songTracks, songArtists, true)
-	if not (my rewritePlaylistSafely(destPl, targetName, finalTracks, n, uniqueIDs, snapIDs)) then
+	if not (my rewritePlaylistSafely(destPl, targetName, finalTracks, n, expectedIDs, snapIDs)) then
 		error "Shuffle failed for \"" & targetName & "\", playlist restored from backup. Aborting."
 	end if
 	my stampDescription(destPl, "Last reshuffled: ")
 	set logMsg to "shuffled \"" & targetName & "\" (" & n & " songs)"
 	if dupesRemoved > 0 then set logMsg to logMsg & " [removed " & dupesRemoved & " duplicate(s)]"
 	my logLine(logMsg)
-	display notification targetName & " shuffled — " & n & " songs." with title "SeTeR Shuffle"
+	set noteText to targetName & " shuffled — " & n & " songs."
+	if dupesRemoved > 0 then set noteText to targetName & " shuffled — " & n & " songs (" & dupesRemoved & " duplicate(s) removed)."
+	display notification noteText with title "SeTeR Shuffle"
 end doDailyShuffle
 
 -- ---------------------------------------------------------------------------
@@ -576,10 +611,9 @@ on randomIndexes(c, howMany)
 end randomIndexes
 
 -- Fisher-Yates shuffle. Returns the track refs in the new random order.
--- With avoidSameArtist, a track that repeats the previous artist is swapped with
--- the nearest later track by a different artist (so the order stays close to a
--- true shuffle). Tracks with no artist never count as a repeat. If only
--- same-artist tracks remain at the very end, they stay together; nothing else to do.
+-- With avoidSameArtist, the shuffled order is then repaired by spreadArtists()
+-- so songs by the same artist are kept apart (see below). Tracks with no artist
+-- never count as a clash.
 on shuffleTrackRefs(songTracks, songArtists, avoidSameArtist)
 	set n to count of songTracks
 	set order to {}
@@ -593,21 +627,7 @@ on shuffleTrackRefs(songTracks, songArtists, avoidSameArtist)
 		set item j of order to tmp
 	end repeat
 	if avoidSameArtist and n > 2 then
-		repeat with i from 2 to n
-			set prevA to item (item (i - 1) of order) of songArtists
-			set curA to item (item i of order) of songArtists
-			if curA is not "" and curA is prevA then
-				repeat with j from (i + 1) to n
-					set candA to item (item j of order) of songArtists
-					if candA is not prevA then
-						set tmp to item i of order
-						set item i of order to item j of order
-						set item j of order to tmp
-						exit repeat
-					end if
-				end repeat
-			end if
-		end repeat
+		set order to my spreadArtists(order, my artistKeyList(songArtists), artistSpacing)
 	end if
 	set finalTracks to {}
 	repeat with i from 1 to n
@@ -615,6 +635,108 @@ on shuffleTrackRefs(songTracks, songArtists, avoidSameArtist)
 	end repeat
 	return finalTracks
 end shuffleTrackRefs
+
+-- Artist names to compare when spacing artists apart. With featuringIsSameArtist,
+-- "Artist feat. X" / "Artist (ft. X)" are cut down to "Artist".
+on artistKeyList(songArtists)
+	set outList to {}
+	repeat with a in songArtists
+		set end of outList to my artistKey(contents of a)
+	end repeat
+	return outList
+end artistKeyList
+
+on artistKey(a)
+	if a is missing value then return ""
+	set s to a as text
+	if not featuringIsSameArtist then return s
+	-- Quick exit for the (vast majority of) names with no "feat"/"ft" in them.
+	if (offset of " f" in s) is 0 and (offset of " (f" in s) is 0 then return s
+	repeat with m in {" feat.", " feat ", " ft.", " ft ", " featuring", " (feat", " (ft"}
+		set p to offset of (contents of m) in s
+		if p > 1 then set s to text 1 thru (p - 1) of s
+	end repeat
+	return s
+end artistKey
+
+-- Does the song at position p share an artist with any of the next "spacing" songs?
+on clashesAt(order, keyList, p, n, spacing)
+	if p < 1 or p > (n - 1) then return false
+	set a to item (item p of order) of keyList
+	if a is "" then return false
+	set lastQ to p + spacing
+	if lastQ > n then set lastQ to n
+	repeat with q from (p + 1) to lastQ
+		if (item (item q of order) of keyList) is a then return true
+	end repeat
+	return false
+end clashesAt
+
+-- Clash count over every position whose answer can change when positions i and j
+-- are swapped (the "spacing" positions before each, plus each itself).
+on localClashes(order, keyList, n, spacing, i, j)
+	set c to 0
+	set loI to i - spacing
+	repeat with p from loI to i
+		if my clashesAt(order, keyList, p, n, spacing) then set c to c + 1
+	end repeat
+	repeat with p from (j - spacing) to j
+		if p < loI or p > i then
+			if my clashesAt(order, keyList, p, n, spacing) then set c to c + 1
+		end if
+	end repeat
+	return c
+end localClashes
+
+-- Spread same-artist songs apart WITHOUT disturbing the randomness of the shuffle.
+-- For each song that clashes with a nearby song by the same artist, try swapping
+-- it with a random song from ANYWHERE in the list and keep the swap only if the
+-- number of clashes goes down. Repeats for a few passes. Because partners are
+-- picked uniformly, artists end up evenly spread (no pile-up at the end) and it
+-- works even for the last songs in the list. It's best effort: an artist who
+-- makes up most of the playlist can't be fully separated, and the work is capped
+-- so that case can't make a run drag on.
+on spreadArtists(order, keyList, spacing)
+	set n to count of order
+	if spacing > (n - 1) then set spacing to n - 1
+	if spacing < 1 then return order
+	set attemptsLeft to 20000
+	set lastBad to -1
+	repeat with passNo from 1 to 6
+		set bad to 0
+		repeat with p from 1 to (n - 1)
+			if my clashesAt(order, keyList, p, n, spacing) then
+				set fixedIt to false
+				repeat 30 times
+					if attemptsLeft < 1 then exit repeat
+					set attemptsLeft to attemptsLeft - 1
+					set j to random number from 1 to n
+					if j is not p then
+						set clashesBefore to my localClashes(order, keyList, n, spacing, p, j)
+						set tmp to item p of order
+						set item p of order to item j of order
+						set item j of order to tmp
+						set clashesAfter to my localClashes(order, keyList, n, spacing, p, j)
+						if clashesAfter < clashesBefore then
+							set fixedIt to true
+							exit repeat
+						end if
+						-- no improvement: undo the swap
+						set tmp to item p of order
+						set item p of order to item j of order
+						set item j of order to tmp
+					end if
+				end repeat
+				if not fixedIt then set bad to bad + 1
+			end if
+		end repeat
+		if bad is 0 then exit repeat
+		if lastBad ≥ 0 and bad ≥ lastBad then exit repeat
+		if attemptsLeft < 1 then exit repeat
+		set lastBad to bad
+	end repeat
+	return order
+end spreadArtists
 
 -- Write trackRefs into destPl in order, replacing its current songs.
 -- stageFirst = true  -> trackRefs live INSIDE destPl, so they would go stale when
@@ -672,8 +794,9 @@ end buildPlaylist
 -- Safe: persistent ID is the track's true identity, so unlike metadata matching
 -- it cannot false-positive when iCloud sync leaves metadata unreliable. Tracks
 -- whose ID can't be read are always kept, never treated as duplicates.
--- Returns {uniqueTracks, uniqueArtists, dupeCount, uniqueIDs}; uniqueIDs lists
--- the IDs of the kept tracks (for verification).
+-- Returns {uniqueTracks, uniqueArtists, dupeCount, uniqueIDs, removedLabels};
+-- uniqueIDs lists the IDs of the kept tracks (for verification) and removedLabels
+-- has an "Artist - Title" entry for each removed duplicate (for the log).
 on dedupeTrackRefs(destPl, trackRefs, artistList)
 	-- Bulk PID read: one AppleEvent instead of thousands (fast).
 	set allPIDs to missing value
@@ -700,6 +823,7 @@ on dedupeTrackRefs(destPl, trackRefs, artistList)
 	set uniqueArtists to {}
 	set uniqueIDs to {}
 	set seenIDs to {}
+	set removedLabels to {}
 	set dupeCount to 0
 	repeat with i from 1 to count of trackRefs
 		set pid to item i of allPIDs
@@ -710,6 +834,11 @@ on dedupeTrackRefs(destPl, trackRefs, artistList)
 			set end of uniqueArtists to item i of artistList
 		else if seenIDs contains pid then
 			set dupeCount to dupeCount + 1
+			set dupTitle to "(unknown title)"
+			try
+				tell application "Music" to set dupTitle to name of tr
+			end try
+			set end of removedLabels to (my safeText(item i of artistList)) & " - " & dupTitle
 		else
 			set end of seenIDs to pid
 			set end of uniqueIDs to pid
@@ -717,7 +846,7 @@ on dedupeTrackRefs(destPl, trackRefs, artistList)
 			set end of uniqueArtists to item i of artistList
 		end if
 	end repeat
-	return {uniqueTracks, uniqueArtists, dupeCount, uniqueIDs}
+	return {uniqueTracks, uniqueArtists, dupeCount, uniqueIDs, removedLabels}
 end dedupeTrackRefs
 
 -- ---------------------------------------------------------------------------
