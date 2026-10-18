@@ -248,5 +248,5 @@ and try them on a small test playlist first.
 
 ## Version
 
-v2.4. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
+v2.5. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
 for packaged downloads.
