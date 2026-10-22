@@ -5,6 +5,16 @@ macOS AppleScript: no developer account, no API tokens, no dependencies.
 
 Music's built-in shuffle only changes playback order. SeTeR Shuffle actually **rewrites a playlist's order**, so the shuffle is genuinely random and stays that way on every device the playlist syncs to. It also builds a **Rediscover** playlist of songs you used to love and forgot about, and it can run by itself every morning.
 
+## Quick start
+
+```bash
+git clone https://github.com/0Recneps0/seter-shuffle.git
+cd seter-shuffle
+bash setup.sh
+```
+
+`setup.sh` installs the scripts, builds the double-clickable apps, checks that everything compiles, optionally schedules the daily run, and ends with a read-only Rediscover preview so you can see it work before it touches a playlist. It asks a couple of questions (which playlist to shuffle daily, and at what hour); everything is optional, and it's safe to re-run. See [Setup script](#setup-script) for options.
+
 Everything is built around one rule: **never lose songs.** Every change is backed up first, verified afterwards, and rolled back automatically if anything looks wrong.
 
 ## What it does
@@ -12,10 +22,13 @@ Everything is built around one rule: **never lose songs.** Every change is backe
 - **Shuffle**: shuffle your whole library into the `SeTeR Shuffle` playlist
   (choose 100 / 250 / 500 / 1000 / all songs), or shuffle any playlist *in place*
   (name, artwork and description are kept). Optional no-same-artist-back-to-back.
-- **Rediscover**: forgotten favorites into `SeTeR Rediscover`: songs with 2+
-  plays unplayed for 60+ days, topped up with long-unplayed 1-play songs and
-  never-played old adds. Scales with your library (1% of songs, 30 to 500).
-  Refreshed in place so its cover artwork survives.
+- **Rediscover**: forgotten favorites into `SeTeR Rediscover`. Songs are scored
+  by how much you played them (and whether you favorited or starred them) and
+  how long they've been forgotten, then drawn at random: no skip-heavy or
+  disliked songs, no more than 3 per artist, nothing repeated from the last
+  14 days, and the result is shuffled with artists spread out. Scales with
+  your library (1% of songs, 30 to 500). Refreshed in place so its cover
+  artwork survives.
 - **Remove duplicates**: clean repeated songs out of any playlist, keeping
   the original order.
 - **Undo last shuffle**: puts a playlist back exactly how it was before the
@@ -45,14 +58,41 @@ Everything is built around one rule: **never lose songs.** Every change is backe
 |---|---|
 | `SeTeR-shuffle.applescript` | The main script (interactive menu + daily mode) |
 | `SeTeR-sandwich-shuffle.applescript` | One-click wrapper: runs the daily refresh, no questions asked |
-| `com.seter.daily.plist` | launchd job: daily 8:00 AM run |
+| `com.seter.daily.plist` | launchd job: daily 8:00 AM run (setup.sh writes its own copy for you) |
+| `setup.sh` | Installer: installs, builds the apps, schedules the daily run, previews Rediscover |
 
 ## Requirements
 
 - macOS with the Music app
 - That's it. Open a `.applescript` file with Script Editor (built in).
 
+## Setup script
+
+`bash setup.sh` does everything in [Install](#install) for you. It needs only what ships with macOS (`osascript`, `osacompile`, `perl`, `launchctl`).
+
+| Option | What it does |
+|---|---|
+| `--playlist NAME` | Playlist the daily run shuffles (must exist in Music; names must match exactly) |
+| `--hour H` | Hour of the day (0-23) for the daily run (default 8) |
+| `--no-daily` | Install only, no schedule |
+| `--no-apps` | Don't build the double-clickable apps |
+| `--no-preview` | Skip the read-only Rediscover preview at the end |
+| `-y`, `--yes` | Don't ask anything; use the options given and defaults |
+| `--uninstall` | Remove the apps, schedule and scripts (asks before deleting your backups) |
+
+What it installs: the scripts in `~/Documents/SeTeRShuffle/`, the apps `SeTeR Shuffle` (menu) and `SeTeR Sandwich Shuffle` (one-click daily refresh) in `~/Applications/`, and, if you picked a playlist, the launchd job. Your playlist name is written into the installed copies (not the repo files), and any script it replaces is kept next to it as `*.bak-<timestamp>`, so re-running never loses your edited settings. It also doesn't need your username edited anywhere, unlike the bundled plist.
+
+You can also run it without cloning:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/0Recneps0/seter-shuffle/main/setup.sh)
+```
+
+(As with any script you download, read it first.)
+
 ## Install
+
+The [setup script](#setup-script) is the easy way. To do it by hand:
 
 1. Grab the latest release zip from the
    [Releases page](https://github.com/0Recneps0/seter-shuffle/releases)
@@ -90,6 +130,10 @@ Everything is built around one rule: **never lose songs.** Every change is backe
   ```bash
   /usr/bin/osascript ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript daily "my new sandwich recipe"
   ```
+- **Preview Rediscover** (changes nothing):
+  ```bash
+  /usr/bin/osascript ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript rediscover-preview
+  ```
 
 The daily run does the following, in order: saves the library manifest (once per
 day), removes duplicates from the named playlist (unless `dailyRemoveDuplicates` is `false`) and shuffles it in place,
@@ -100,14 +144,28 @@ schedulers and the wrapper app can tell.
 
 ## Rediscover
 
-`SeTeR Rediscover` is filled with random songs from three tiers, best first:
+`SeTeR Rediscover` is a playlist of songs you used to love and forgot about. Each refresh scores every eligible song and draws a random sample, so likelier songs show up more often but you never get the same list twice.
 
-1. **Forgotten favorites**: played 2+ times, not played in the last 60 days
-2. **Gathering dust**: played once, not played in the last 60 days
-3. **Never got around to it**: never played, added more than 60 days ago
+**Eligible songs** are ones that are:
 
-The target size scales with your library: 1% of your songs, never fewer than 30
-and never more than 500.
+- forgotten: not played for `staleDays` (60) days, or, if never played, added more than that long ago
+- not disliked, not unchecked in Music, and not skip-heavy (3+ skips *and* more skips than plays)
+
+**Score** = how much you liked it × how long it's been forgotten:
+
+| Signal | Effect |
+|---|---|
+| Plays | never played 0.4 · played once 1.5 · each extra play +0.5, up to 10 plays |
+| Favorited | × 3 |
+| Rating | 4-5 stars × 2 · 1-2 stars × 0.25 |
+| Skips | divide by (1 + skips) |
+| Time forgotten | days since last played (or added) ÷ `staleDays`, capped at 5× |
+
+**Variety**: at most `rediscoverMaxPerArtist` (3) songs per artist, and nothing that Rediscover picked in the last `rediscoverCooldownDays` (14) days, so a daily refresh stays fresh. If your pool is too small to fill the playlist, those two rules are relaxed rather than leaving it short.
+
+**Order**: the picks are shuffled and spread out by artist, so the playlist doesn't open with the best songs.
+
+The target size scales with your library: 1% of your songs, never fewer than 30 and never more than 500.
 
 | Songs in library | Rediscover playlist |
 |---|---|
@@ -115,6 +173,8 @@ and never more than 500.
 | 10,000 | 100 |
 | 23,000 | 230 |
 | 50,000+ | 500 (maximum) |
+
+Ratings, favorites, dislikes, skips and the checked state are optional signals: if your version of Music doesn't expose one, it's ignored. A song Music refuses to add (for example one that's no longer available) is skipped and logged instead of failing the refresh. Use [`rediscover-preview`](#usage) to see what the next refresh would pick.
 
 ## Logs & backups
 
@@ -127,6 +187,9 @@ and never more than 500.
   "undo the most recent in-place change", and an undo itself can't be undone.
 - `~/Documents/SeTeRShuffle/backups/`: daily whole-library manifests
   (`library-manifest-YYYY-MM-DD.tsv`), kept 14 days
+- `~/Documents/SeTeRShuffle/rediscover-history.tsv`: which songs Rediscover
+  picked on which day (used for the cooldown). Safe to delete; the only effect is
+  that recently picked songs can come back sooner
 
 ## Settings
 
@@ -138,6 +201,8 @@ At the top of `SeTeR-shuffle.applescript`:
 | `rediscoverMin` | `30` | ...but never fewer than this many songs |
 | `rediscoverMax` | `500` | ...and never more than this many |
 | `staleDays` | `60` | What counts as "forgotten" |
+| `rediscoverMaxPerArtist` | `3` | Most songs by one artist in Rediscover (`0` = no limit) |
+| `rediscoverCooldownDays` | `14` | A song Rediscover picked isn't picked again for this many days (`0` = off) |
 | `backupKeepDays` | `14` | Manifest retention |
 | `defaultDailyPlaylist` | `my new sandwich recipe` | Playlist the daily run shuffles when none is given |
 | `dailyRemoveDuplicates` | `true` | `true`: the daily run removes repeated songs from the playlist. `false`: keeps every entry, so the song count never changes |
@@ -234,6 +299,8 @@ If you'd rather keep every entry, set `dailyRemoveDuplicates` to `false` at the 
 
 ## Uninstall
 
+If you used the setup script: `bash setup.sh --uninstall`. By hand:
+
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.seter.daily.plist
 rm ~/Library/LaunchAgents/com.seter.daily.plist
@@ -248,5 +315,5 @@ and try them on a small test playlist first.
 
 ## Version
 
-v2.5. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
+v2.6. See [Releases](https://github.com/0Recneps0/seter-shuffle/releases)
 for packaged downloads.

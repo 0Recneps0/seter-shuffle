@@ -1,5 +1,19 @@
--- SeTeR Shuffle v2.5
+-- SeTeR Shuffle v2.6
 -- True-random (Fisher-Yates) shuffle for Apple Music.
+--
+-- WHAT'S NEW IN v2.6
+--     * Smarter Rediscover. Songs are now scored instead of sorted into three
+--       fixed tiers: more plays, a favorite or 4-5 star rating, and a longer
+--       time forgotten all make a song likelier to come back. Disliked,
+--       unchecked and skip-heavy songs are left out. No more than
+--       rediscoverMaxPerArtist songs per artist, and songs picked in the last
+--       rediscoverCooldownDays days aren't picked again, so the daily refresh
+--       stays fresh. The playlist is now shuffled with artists spread out
+--       (it used to play best-tier first). A song Music can't add is skipped
+--       instead of failing the whole refresh. Full rules: see REDISCOVER below.
+--     * Preview: osascript SeTeR-shuffle.applescript rediscover-preview
+--       shows what Rediscover would pick without changing anything.
+--     * setup.sh installs everything, builds the apps and schedules the daily run.
 --
 -- WHAT'S NEW IN v2.5
 --     * Better "avoid the same artist" logic. The old pass only stopped an artist
@@ -52,11 +66,11 @@
 --   Shuffle: whole library or one playlist. Library -> builds/refreshes the
 --     "SeTeR Shuffle" playlist. Playlist -> shuffles that playlist itself in
 --     place (name, artwork, description kept). Optional no-same-artist.
---   Rediscover: forgotten favorites (2+ plays, unplayed 60+ days) into
---     "SeTeR Rediscover", topped up with long-unplayed 1-play songs and
---     never-played old adds so it always fills up to its target size (1% of your
---     library, between 30 and 500 songs). Kept in place so its
---     cover artwork survives.
+--   Rediscover: songs you used to love and forgot (weighted by plays, favorites,
+--     ratings and time forgotten; see REDISCOVER below) go into
+--     "SeTeR Rediscover", shuffled with artists spread out. It always fills up
+--     to its target size (1% of your library, between 30 and 500 songs). Kept in
+--     place so its cover artwork survives.
 --
 -- AUTOMATIC (daily): osascript SeTeR-shuffle.applescript daily "Playlist Name"
 --   Backs up a library manifest (once a day), shuffles the named playlist in
@@ -64,7 +78,7 @@
 --   Progress and errors go to ~/Library/Logs/seter-shuffle.log. See
 --   com.seter.daily.plist for the scheduled job (daily at 8:00 AM).
 --
--- INSTALL:
+-- INSTALL (easiest): run setup.sh from the repo (bash setup.sh). Or by hand:
 --   1. Save this file as ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript
 --      (double-clicking it opens Script Editor).
 --   2. Manual app: in Script Editor, File > Export > File Format: Application,
@@ -79,6 +93,8 @@ property rediscoverPercent : 1 -- "SeTeR Rediscover" holds this % of your librar
 property rediscoverMin : 30 -- ...but never fewer than this many songs
 property rediscoverMax : 500 -- ...and never more than this many
 property staleDays : 60 -- "forgotten" = not played / not added for this many days
+property rediscoverMaxPerArtist : 3 -- Rediscover holds at most this many songs per artist (0 = no limit)
+property rediscoverCooldownDays : 14 -- a song Rediscover picked isn't picked again for this many days (0 = off)
 property backupKeepDays : 14 -- how long library manifests are kept
 property defaultDailyPlaylist : "my new sandwich recipe"
 property dailyRemoveDuplicates : true -- true: the daily run removes repeated songs from the playlist; false: keeps every entry
@@ -115,6 +131,10 @@ on run argv
 		end try
 		-- Non-zero exit so launchd / Shuffle Sandwich can tell something failed.
 		if hadError then error "SeTeR Shuffle daily run had errors. See ~/Library/Logs/seter-shuffle.log" number 1
+	else if (count of argv) > 0 and (item 1 of argv) is "rediscover-preview" then
+		-- Read-only dry run for the Terminal: prints what Rediscover would pick.
+		set isDaily to true
+		return my previewRediscover()
 	else
 		try
 			my doInteractive()
@@ -853,48 +873,235 @@ end dedupeTrackRefs
 -- REDISCOVER
 -- ---------------------------------------------------------------------------
 
--- Rediscover candidates, tiered by signal strength:
---   tier 1: 2+ plays, unplayed for staleDays+ days (forgotten favorites)
---   tier 2: 1 play, unplayed for staleDays+ days (one-time listens gathering dust)
---   tier 3: 0 plays, added staleDays+ days ago (never got around to it)
--- Fills up to rediscoverTarget(library size) picks, best tier first.
--- Returns possibly-empty list.
+-- How Rediscover chooses songs (v2.6)
+--
+-- Every song gets a weight, then the playlist is drawn by weighted random
+-- sampling, so likelier songs come up more often but nothing is guaranteed:
+--
+--   ELIGIBLE: not disliked, not unchecked, not skip-heavy (3+ skips AND more
+--     skips than plays), and forgotten: last played staleDays+ days ago (or, for
+--     never-played songs, added staleDays+ days ago).
+--   WEIGHT = how much you liked it x how long it has been forgotten
+--     liked:     never played 0.4; played once 1.5; each extra play +0.5 up to 10
+--     boosts:    favorited x3, 4-5 stars x2, 1-2 stars x0.25, each skip divides
+--     forgotten: days since last played (or added) / staleDays, capped at 5x
+--   VARIETY: at most rediscoverMaxPerArtist songs per artist, and nothing that
+--     Rediscover already picked in the last rediscoverCooldownDays days (the
+--     picks are remembered in ~/Documents/SeTeRShuffle/rediscover-history.tsv).
+--     If the pool is too small to fill the playlist, these two rules are relaxed
+--     rather than leaving it short.
+--   ORDER: the picks are shuffled (Fisher-Yates) and spread out by artist, so
+--     the playlist doesn't play best-songs-first.
+--
+-- Rating, favorite, dislike, skip and checked-state signals are optional: if
+-- the Music app doesn't offer one, it is ignored.
+
+-- Scores the library and picks this run's Rediscover songs.
+-- Returns {pickTracks, pickArtists, pickIDs, candidateCount, targetSize};
+-- pickTracks is empty when nothing is eligible.
 on findRediscoverPicks()
+	-- NOTE: bulk property reads must use the reference form
+	-- ("played count of every track of ..."), never a resolved list.
 	tell application "Music"
 		set libTracks to every track of library playlist 1 whose media kind is song
+		set libPIDs to persistent ID of every track of library playlist 1 whose media kind is song
+		set libArtists to artist of every track of library playlist 1 whose media kind is song
 		set playCounts to played count of every track of library playlist 1 whose media kind is song
 		set playDates to played date of every track of library playlist 1 whose media kind is song
 		set addedDates to date added of every track of library playlist 1 whose media kind is song
 	end tell
+	set n to count of libTracks
+	if n is 0 then return {{}, {}, {}, 0, 0}
 	
-	set cutoff to (current date) - staleDays * days
-	set tier1 to {}
-	set tier2 to {}
-	set tier3 to {}
-	repeat with i from 1 to count of libTracks
-		set pc to item i of playCounts
-		set pd to item i of playDates
-		set stale to (pd is missing value or pd < cutoff)
-		if pc ≥ 2 and stale then
-			set end of tier1 to item i of libTracks
-		else if pc is 1 and stale then
-			set end of tier2 to item i of libTracks
-		else if pc is 0 then
-			set ad to item i of addedDates
-			if ad is missing value or ad < cutoff then
-				set end of tier3 to item i of libTracks
+	-- Optional signals; any the Music app can't provide is replaced by a neutral default.
+	set skipCounts to {}
+	set ratingList to {}
+	set favFlags to {}
+	set dislikeFlags to {}
+	set enabledFlags to {}
+	try
+		tell application "Music" to set skipCounts to skipped count of every track of library playlist 1 whose media kind is song
+	end try
+	try
+		tell application "Music" to set ratingList to rating of every track of library playlist 1 whose media kind is song
+	end try
+	try
+		tell application "Music" to set favFlags to favorited of every track of library playlist 1 whose media kind is song
+	on error
+		try
+			tell application "Music" to set favFlags to loved of every track of library playlist 1 whose media kind is song
+		end try
+	end try
+	try
+		tell application "Music" to set dislikeFlags to disliked of every track of library playlist 1 whose media kind is song
+	end try
+	try
+		tell application "Music" to set enabledFlags to enabled of every track of library playlist 1 whose media kind is song
+	end try
+	if (count of skipCounts) is not n then set skipCounts to my filledList(n, 0)
+	if (count of ratingList) is not n then set ratingList to my filledList(n, 0)
+	if (count of favFlags) is not n then set favFlags to my filledList(n, false)
+	if (count of dislikeFlags) is not n then set dislikeFlags to my filledList(n, false)
+	if (count of enabledFlags) is not n then set enabledFlags to my filledList(n, true)
+	
+	-- Score every song. cIdx holds the library positions of eligible songs and
+	-- cum their running total of weights (used for weighted sampling below).
+	set nowDate to current date
+	set sd to staleDays
+	if sd < 1 then set sd to 1
+	set staleSecs to sd * days
+	set cutoff to nowDate - staleSecs
+	set cIdx to {}
+	set cum to {}
+	set runningTotal to 0.0
+	repeat with i from 1 to n
+		set okFlag to true
+		if (item i of enabledFlags) is false then set okFlag to false
+		if (item i of dislikeFlags) is true then set okFlag to false
+		if okFlag then
+			set pc to item i of playCounts
+			if pc is missing value then set pc to 0
+			set sk to item i of skipCounts
+			if sk is missing value then set sk to 0
+			-- Skipped far more than played: you've already told Music you don't want it.
+			if sk ≥ 3 and sk > pc then set okFlag to false
+			-- When was it last "alive"? Last play, or the day it was added.
+			if pc > 0 and (item i of playDates) is not missing value then
+				set baseDate to item i of playDates
+			else
+				set baseDate to item i of addedDates
 			end if
+			if okFlag and baseDate is not missing value then
+				if baseDate ≥ cutoff then set okFlag to false
+			end if
+		end if
+		if okFlag then
+			if pc is 0 then
+				set w to 0.4
+			else
+				set capped to pc
+				if capped > 10 then set capped to 10
+				set w to 1 + capped * 0.5
+			end if
+			if (item i of favFlags) is true then set w to w * 3
+			set rt to item i of ratingList
+			if rt is not missing value then
+				if rt ≥ 80 then
+					set w to w * 2
+				else if rt ≥ 1 and rt ≤ 40 then
+					set w to w * 0.25
+				end if
+			end if
+			set w to w / (1 + sk)
+			if baseDate is not missing value then
+				set dm to (nowDate - baseDate) / staleSecs
+				if dm > 5 then set dm to 5
+				set w to w * dm
+			end if
+			set runningTotal to runningTotal + w
+			set end of cIdx to i
+			set end of cum to runningTotal
 		end if
 	end repeat
 	
-	set targetSize to my rediscoverTarget(count of libTracks)
-	set picks to my pickRandom(tier1, targetSize)
-	set remaining to targetSize - (count of picks)
-	if remaining > 0 then set picks to picks & my pickRandom(tier2, remaining)
-	set remaining to targetSize - (count of picks)
-	if remaining > 0 then set picks to picks & my pickRandom(tier3, remaining)
-	return picks
+	set m to count of cIdx
+	if m is 0 then return {{}, {}, {}, 0, 0}
+	set targetSize to my rediscoverTarget(n)
+	set historyIDs to my loadRediscoverHistory()
+	
+	set picked to {}
+	set pickedKeys to {}
+	if m ≤ targetSize then
+		-- Fewer candidates than slots: take them all.
+		repeat with j from 1 to m
+			set end of picked to j
+		end repeat
+	else
+		-- Pass 1: weighted draw honoring the artist cap and cooldown history.
+		set res to my samplePicks(cum, runningTotal, cIdx, libPIDs, libArtists, historyIDs, targetSize, picked, pickedKeys, true)
+		set picked to item 1 of res
+		set pickedKeys to item 2 of res
+		-- Pass 2: still short (small pool)? Relax those rules instead of leaving it short.
+		if (count of picked) < targetSize then
+			set res to my samplePicks(cum, runningTotal, cIdx, libPIDs, libArtists, historyIDs, targetSize, picked, pickedKeys, false)
+			set picked to item 1 of res
+			set pickedKeys to item 2 of res
+		end if
+		-- Pass 3: last resort, fill from the front of the candidate list.
+		if (count of picked) < targetSize then
+			repeat with j from 1 to m
+				if (count of picked) ≥ targetSize then exit repeat
+				if not (picked contains j) then set end of picked to j
+			end repeat
+		end if
+	end if
+	
+	set pickTracks to {}
+	set pickArtists to {}
+	set pickIDs to {}
+	repeat with j in picked
+		set libI to item (contents of j) of cIdx
+		set end of pickTracks to item libI of libTracks
+		set end of pickArtists to item libI of libArtists
+		set end of pickIDs to item libI of libPIDs
+	end repeat
+	return {pickTracks, pickArtists, pickIDs, m, targetSize}
 end findRediscoverPicks
+
+-- A list of n copies of v.
+on filledList(n, v)
+	set outList to {}
+	repeat with i from 1 to n
+		set end of outList to v
+	end repeat
+	return outList
+end filledList
+
+-- Weighted random sampling without replacement. cum holds the running total of
+-- the candidates' weights, so a random point in 0..total lands on a candidate in
+-- proportion to its weight (found by binary search); repeats are skipped.
+-- picked / pickedKeys (candidate positions / artist names) are extended until
+-- targetSize is reached or the attempt limit runs out, and returned.
+-- enforceRules: honor rediscoverMaxPerArtist and the cooldown history.
+on samplePicks(cum, total, cIdx, libPIDs, libArtists, historyIDs, targetSize, picked, pickedKeys, enforceRules)
+	set m to count of cum
+	set attempts to 0
+	set maxAttempts to targetSize * 40 + 200
+	repeat while (count of picked) < targetSize and attempts < maxAttempts
+		set attempts to attempts + 1
+		set r to (random number) * total
+		set lo to 1
+		set hi to m
+		repeat while lo < hi
+			set mid to (lo + hi) div 2
+			if (item mid of cum) < r then
+				set lo to mid + 1
+			else
+				set hi to mid
+			end if
+		end repeat
+		if not (picked contains lo) then
+			set okPick to true
+			set libI to item lo of cIdx
+			set k to my artistKey(item libI of libArtists)
+			if enforceRules then
+				if historyIDs contains (item libI of libPIDs) then set okPick to false
+				if okPick and rediscoverMaxPerArtist > 0 and k is not "" and (pickedKeys contains k) then
+					set c to 0
+					repeat with pk in pickedKeys
+						if (contents of pk) is k then set c to c + 1
+					end repeat
+					if c ≥ rediscoverMaxPerArtist then set okPick to false
+				end if
+			end if
+			if okPick then
+				set end of picked to lo
+				set end of pickedKeys to k
+			end if
+		end if
+	end repeat
+	return {picked, pickedKeys}
+end samplePicks
 
 -- How many songs SeTeR Rediscover should hold for a library of libCount songs:
 -- rediscoverPercent % of the library, clamped to rediscoverMin..rediscoverMax.
@@ -905,17 +1112,71 @@ on rediscoverTarget(libCount)
 	return sz
 end rediscoverTarget
 
--- Up to howMany random items from someList.
-on pickRandom(someList, howMany)
-	set idxs to my randomIndexes(count of someList, howMany)
-	set resultList to {}
-	repeat with i from 1 to count of idxs
-		set end of resultList to item (item i of idxs) of someList
-	end repeat
-	return resultList
-end pickRandom
+-- ---------------------------------------------------------------------------
+-- REDISCOVER HISTORY (cooldown)
+-- ---------------------------------------------------------------------------
 
-on writeRediscoverPlaylist(picks)
+on rediscoverHistoryPath()
+	return (POSIX path of (path to documents folder)) & "SeTeRShuffle/rediscover-history.tsv"
+end rediscoverHistoryPath
+
+-- Persistent IDs Rediscover picked within the last rediscoverCooldownDays days.
+-- The file holds one "YYYY-MM-DD<tab>ID" line per pick. Never throws: with no
+-- history the worst case is a repeat song.
+on loadRediscoverHistory()
+	if rediscoverCooldownDays < 1 then return {}
+	try
+		set histPath to my rediscoverHistoryPath()
+		set cutoffDay to do shell script "date -v-" & rediscoverCooldownDays & "d +%Y-%m-%d"
+		set raw to do shell script "if [ -f " & quoted form of histPath & " ]; then awk -F'\\t' -v c=" & quoted form of cutoffDay & " '$1 >= c {print $2}' " & quoted form of histPath & "; fi"
+		if raw is "" then return {}
+		return paragraphs of raw
+	on error errMsg
+		my logLine("note: couldn't read Rediscover history (" & errMsg & ")")
+		return {}
+	end try
+end loadRediscoverHistory
+
+-- Remembers today's picks and drops entries older than the cooldown window.
+-- Never throws: a history problem must not fail the refresh.
+on saveRediscoverHistory(pickIDs)
+	if rediscoverCooldownDays < 1 then return
+	if (count of pickIDs) is 0 then return
+	try
+		set histPath to my rediscoverHistoryPath()
+		set dayStr to do shell script "date +%Y-%m-%d"
+		set cutoffDay to do shell script "date -v-" & rediscoverCooldownDays & "d +%Y-%m-%d"
+		do shell script "mkdir -p " & quoted form of (POSIX path of (path to documents folder) & "SeTeRShuffle")
+		set AppleScript's text item delimiters to linefeed
+		set idText to pickIDs as text
+		set AppleScript's text item delimiters to ""
+		set cmd to "printf '%s\\n' " & quoted form of idText & " | awk -v d=" & quoted form of dayStr & " '{print d \"\\t\" $0}' >> " & quoted form of histPath
+		do shell script cmd
+		set cmd to "f=" & quoted form of histPath & "; awk -F'\\t' -v c=" & quoted form of cutoffDay & " '$1 >= c' \"$f\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\""
+		do shell script cmd
+	on error errMsg
+		set AppleScript's text item delimiters to ""
+		my logLine("note: couldn't save Rediscover history (" & errMsg & ")")
+	end try
+end saveRediscoverHistory
+
+-- ---------------------------------------------------------------------------
+-- BUILDING THE REDISCOVER PLAYLIST
+-- ---------------------------------------------------------------------------
+
+-- Picks, orders and returns {finalTracks, pickIDs, candidateCount, targetSize},
+-- or missing value when nothing is eligible. Changes nothing in Music.
+on prepareRediscover()
+	set found to my findRediscoverPicks()
+	set pickTracks to item 1 of found
+	if (count of pickTracks) is 0 then return missing value
+	set finalTracks to my shuffleTrackRefs(pickTracks, item 2 of found, true)
+	return {finalTracks, item 3 of found, item 4 of found, item 5 of found}
+end prepareRediscover
+
+-- Rewrites "SeTeR Rediscover" with the given songs (created if missing, reused
+-- otherwise so its artwork survives). Returns how many songs ended up in it.
+on writeRediscoverPlaylist(finalTracks, pickIDs)
 	tell application "Music"
 		if exists playlist "SeTeR Rediscover" then
 			set newPl to playlist "SeTeR Rediscover"
@@ -923,10 +1184,53 @@ on writeRediscoverPlaylist(picks)
 			set newPl to make new user playlist with properties {name:"SeTeR Rediscover"}
 		end if
 	end tell
-	-- Picks come from the library, so no staging needed.
-	my buildPlaylist(newPl, picks, false)
+	set addedCount to my fillRediscoverPlaylist(newPl, finalTracks)
 	my stampDescription(newPl, "Last refreshed: ")
+	my saveRediscoverHistory(pickIDs)
+	return addedCount
 end writeRediscoverPlaylist
+
+-- Like buildPlaylist, but tolerant: a song Music refuses to add (for example one
+-- that is no longer available) is skipped and logged instead of failing the
+-- whole refresh. The songs are staged in a temp playlist first, so Rediscover is
+-- never left empty by a failed run. Returns the number of songs added.
+on fillRediscoverPlaylist(destPl, trackRefs)
+	my assertUserPlaylist(destPl)
+	set libBefore to my librarySize()
+	set addedCount to 0
+	set failedCount to 0
+	tell application "Music"
+		try
+			delete (every user playlist whose name is tempPlaylistName)
+		end try
+		set tempPl to make new user playlist with properties {name:tempPlaylistName}
+		repeat with t in trackRefs
+			try
+				duplicate (contents of t) to tempPl
+				set addedCount to addedCount + 1
+			on error
+				set failedCount to failedCount + 1
+			end try
+		end repeat
+		if addedCount is 0 then
+			delete tempPl
+			error "None of the Rediscover songs could be added to the playlist."
+		end if
+		delete (every track of destPl whose media kind is song)
+		repeat with t in (every track of tempPl)
+			duplicate (contents of t) to destPl
+		end repeat
+		delete tempPl
+		if not isDaily then reveal destPl
+	end tell
+	if failedCount > 0 then my logLine("rediscover: " & failedCount & " song(s) couldn't be added and were skipped")
+	set libAfter to my librarySize()
+	if libAfter < libBefore then
+		my logLine("LIBRARY SHRANK during rewrite: " & libBefore & " -> " & libAfter & " tracks")
+		error "Your library went from " & libBefore & " to " & libAfter & " tracks during this run. Stopped. Check ~/Documents/SeTeRShuffle/backups/ for the library manifest."
+	end if
+	return addedCount
+end fillRediscoverPlaylist
 
 -- ---------------------------------------------------------------------------
 -- DESCRIPTION STAMP / DATES
@@ -992,22 +1296,48 @@ on clockText(d)
 end clockText
 
 on doRediscover()
-	set picks to my findRediscoverPicks()
-	if (count of picks) is 0 then
+	set prepared to my prepareRediscover()
+	if prepared is missing value then
 		display dialog "Nothing to rediscover — everything in your library was played or added recently." buttons {"OK"} default button "OK" with title "SeTeR Shuffle"
 		return
 	end if
-	my writeRediscoverPlaylist(picks)
-	display notification "SeTeR Rediscover ready — " & (count of picks) & " songs." with title "SeTeR Shuffle"
+	set addedCount to my writeRediscoverPlaylist(item 1 of prepared, item 2 of prepared)
+	display notification "SeTeR Rediscover ready — " & addedCount & " songs." with title "SeTeR Shuffle"
 end doRediscover
 
 on doDailyRediscover()
-	set picks to my findRediscoverPicks()
-	if (count of picks) is 0 then
+	set prepared to my prepareRediscover()
+	if prepared is missing value then
 		my logLine("rediscover: nothing to rediscover")
 		return
 	end if
-	my writeRediscoverPlaylist(picks)
-	my logLine("rediscover: updated (" & (count of picks) & " songs)")
-	display notification "SeTeR Rediscover updated — " & (count of picks) & " songs." with title "SeTeR Shuffle"
+	set addedCount to my writeRediscoverPlaylist(item 1 of prepared, item 2 of prepared)
+	my logLine("rediscover: updated (" & addedCount & " songs picked from " & (item 3 of prepared) & " candidates)")
+	display notification "SeTeR Rediscover updated — " & addedCount & " songs." with title "SeTeR Shuffle"
 end doDailyRediscover
+
+-- Terminal-only dry run: osascript SeTeR-shuffle.applescript rediscover-preview
+-- Shows what the next Rediscover would pick (first 25 songs, in playlist order)
+-- without changing anything in Music or the history file.
+on previewRediscover()
+	set prepared to my prepareRediscover()
+	if prepared is missing value then return "Nothing to rediscover: everything eligible was played or added recently."
+	set finalTracks to item 1 of prepared
+	set total to count of finalTracks
+	set outLines to {"Rediscover preview: " & total & " songs picked from " & (item 3 of prepared) & " candidates (target " & (item 4 of prepared) & "). Nothing was changed.", ""}
+	set shown to total
+	if shown > 25 then set shown to 25
+	repeat with i from 1 to shown
+		set t to item i of finalTracks
+		tell application "Music"
+			set trackArtist to artist of t
+			set trackName to name of t
+		end tell
+		set end of outLines to (i as text) & ". " & my safeText(trackArtist) & " - " & my safeText(trackName)
+	end repeat
+	if total > shown then set end of outLines to "... and " & (total - shown) & " more"
+	set AppleScript's text item delimiters to linefeed
+	set outText to outLines as text
+	set AppleScript's text item delimiters to ""
+	return outText
+end previewRediscover
