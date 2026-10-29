@@ -90,7 +90,7 @@ change list.
 | Daily run with no manual step | None | GAP, the important one: v2.6 daily needed no probe; the Python daily run refuses without fresh (<24h) per-target mappings for both targets, and `daily.sh` never auto-probes. Until that rule changes, a scheduled daily run is not a drop-in replacement for v2.6's daily run |
 
 **Tests here:** full suite re-run after the final code state
-(see the release notes for the count); shell syntax checked
+(175 tests passed, 0 failed); shell syntax checked
 for `setup-python.sh`, `daily.sh`, `migrate-to-python.sh`,
 `run.sh`, and `check-python.sh`. New tests
 (`tests/test_stable_prep.py`) cover installer idempotency,
