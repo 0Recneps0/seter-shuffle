@@ -237,6 +237,18 @@ same way: the .2 function extracted verbatim captures to exactly
 the one place it was missed, which is why the test now guards the
 function text rather than trusting the pattern.
 
+**Update in .3:** the logfile-only rule for failures overshot in
+the other direction: a missing or stale mapping made a shuffle
+stop after "compute shuffle order" with no visible error, because
+the failure reached only the log file. Failures in
+`mapping_for_build` and `probe_mode` now go through `logerr()`
+(log file AND stderr, never stdout, since stderr is never
+captured by $(...)); success info stays logfile-only. The mode
+31 table row below still describes the .1/.2 history; the
+current rule is logerr-for-failures, and
+`tests/test_mapping_stderr.py` guards it (failure on stderr
+with empty stdout, valid mapping capturing exactly).
+
 ## Failure mode 32: a failed run overwrote the only good backup (2026-10-29, real failure)
 
 The 00:41 run on 2026-10-29 took its pre-change snapshot from a

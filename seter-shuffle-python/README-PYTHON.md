@@ -205,7 +205,7 @@ edit `run.sh` if you want different ones baked in.
 
 ## What was actually tested, and what was not
 
-Tested here, for real (128 tests, all passing):
+Tested here, for real (134 tests, all passing):
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -229,8 +229,19 @@ work: dedupe first-occurrence order (including the reversed-doubled
 shape), dedupe validation refusing repeats, drops, and invented
 IDs, the CLI dedupe command on dump files, and structural guards
 for the delete-empty handler in all four bridge scripts, the
-logfile-only mapping reader, the per-run backup chain, the
-sort-probe mapping deletion on failure, and the restore command.
+per-run backup chain, the sort-probe mapping deletion on
+failure, and the restore command, plus the .3 mapping-gate
+error visibility: failures in `mapping_for_build` and
+`probe_mode` (both called inside `$(...)`) now go to the log
+file AND stderr via `logerr()`, never to stdout, so a refused
+build shows its `GATE FAILED` line on the terminal instead of
+stopping silently after "compute shuffle order" (the .2
+behavior) or polluting the captured mapping (the .1 bug).
+The Mac checklist that gates any stable promotion is
+`STABLE-PROMOTION-TESTS.md`: sortprobe, sort controls,
+title-sorted abort with a visible refusal, dedupe, failure
+safety, negatives, flow, rediscover-preview, and restore, all
+on throwaways first, real playlist only with explicit approval.
 
 NOT tested, and not claimed to work until a Mac run proves it (the
 full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md). This warning is

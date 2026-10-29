@@ -6,6 +6,70 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-29 — Visible mapping-gate errors, plus the stable-promotion test checklist (.3, small focused release on the road to stable)
+
+**Why:** after .2 was published, Spencer ran a shuffle that stopped
+after "compute shuffle order" with no visible error. Cause: in .2,
+a missing or stale sort mapping makes `mapping_for_build` fail, but
+that failure went through `logfile()` only, so it reached the run
+log file and never reached the terminal. The .1 bug was the mirror
+image (log() teeing to stdout polluted the captured mapping). .3
+fixes the reporting without reintroducing .1: failures in
+`mapping_for_build` go through a new `logerr()` helper (log file
+AND stderr, never stdout, since stderr is never captured by
+$(...)). The same audit found one more function with the same
+shape: `probe_mode` (also called inside $(...)) hid its failure
+the same way, so its failure branch uses `logerr()` too.
+`check-python.sh` was audited and already routes its errors to
+stderr; `backup_path_for` emits only a path and has no logging
+to pollute anything. NOT PUBLISHED YET: this tree is unreviewed
+by the parent and unproven on a Mac; nothing here has been
+pushed by this build (the parent creates the release).
+
+**What changed:**
+
+- `run.sh`: new `logerr()` helper; all four `mapping_for_build`
+  failure branches (no mapping file, non-forward/reversed mapping,
+  bad timestamp, mapping older than 24h) and the `probe_mode`
+  failure branch now use it. Success info in both functions stays
+  logfile-only (it is not an error, and terminal noise there
+  buys nothing). Comments in both functions now state the .3
+  rule explicitly so the next edit does not regress it either way.
+- `tests/test_mapping_stderr.py` (new, 6 tests): executes the
+  real `mapping_for_build` extracted from `run.sh` under bash for
+  all four failure cases (exit non-zero, GATE FAILED on stderr,
+  stdout empty) and for a valid mapping (captures to exactly the
+  mapping word, stderr empty), plus structural guards (no `log()`
+  call inside `mapping_for_build` or `probe_mode`, failure
+  branches use `logerr()`, `logerr()` routes to stderr and the
+  log file).
+- `STABLE-PROMOTION-TESTS.md` (new): the Mac checklist Spencer
+  runs himself, in order, with exact commands and pass criteria:
+  Stage 0 sortprobe on a descending throwaway; Stage 1 sort
+  controls (descending, ascending, manual shuffle + undo exact
+  both ways; title-sorted throwaway aborts untouched and the
+  follow-up build refuses with a VISIBLE terminal error, the new
+  .3 behavior tested explicitly); Stage 2 dedupe on a doubled
+  throwaway, dedupe no-op on a clean throwaway, failed-apply
+  backup intactness, the negative suite, flowPreview/flow/undo,
+  rediscover-preview, restore from a backup file; Stage 3 real
+  playlist only with explicit approval, starting with a
+  backup-order restore check, not a shuffle. It also lists the
+  stable-promotion gaps this release does NOT resolve: no
+  installer, no launchd schedule, undecided version naming, and
+  undesigned migration from the v2.6 AppleScript daily run, with
+  stable v2.6 left intact as fallback.
+
+**Still unproven on a Mac (unchanged from .2, plus .3 itself):**
+every AppleScript change, the delete-lag mechanism itself, the
+sort-matched mapping end to end on throwaways, the per-run backup
+chain under a real failing apply, and now the .3 stderr routing
+on a real terminal (proven here under bash, not in Terminal).
+The one Mac success that does exist is the 2026-10-29 12:44 PT
+real-playlist shuffle under .2 (sortprobe measured reversed,
+806 songs applied in exact order, APPLY OK); it does not replace
+the throwaway checklist above.
+
 ## 2026-10-29 — Delete-empty verification, dedupe, and a full runner sweep (sixth Python change, after a third real failure)
 
 **Why:** on 2026-10-29 at 00:41 PT Spencer ran the OLD .5 code
@@ -20,9 +84,9 @@ order, and Spencer says he has his own backup playlist, so
 recovery is not urgent — but the script must be fixed, and this
 build also sweeps every other open issue in BRIDGE-SAFETY.md and
 INVESTIGATION-2026-10-28.md instead of only the two named items.
-NOT PUBLISHED YET: this tree is unreviewed by the parent and
-unproven on a Mac; nothing here has been pushed by this build
-(the parent creates the release).
+Published as exp-2026-10-29.2 (prerelease, asset verified live).
+Unproven on a Mac at publish time; nothing in this entry was
+pushed by the build itself (the parent created the release).
 
 **What changed (all in `seter-shuffle-python/`, nothing else):**
 

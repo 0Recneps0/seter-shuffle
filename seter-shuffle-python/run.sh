@@ -184,6 +184,16 @@ ORDER_TXT="$WORK/order.txt"
 # would corrupt the captured mode string.
 logfile() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
 
+# Log to the file AND to stderr: for functions called inside $(...),
+# where log() (tee to stdout) would pollute the captured value and
+# logfile() would hide a failure from the terminal entirely. stderr
+# is never captured by $(...), so a logerr line is visible on the
+# terminal, recorded in the log, and can never enter a captured
+# mapping or mode string. This is the .3 fix for the silent
+# mapping-gate failure: a shuffle used to stop after "compute
+# shuffle order" with no visible error when no mapping was recorded.
+logerr() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG" >&2; }
+
 # Measure this Mac's playlist order direction on a fresh timestamped
 # probe playlist, and print exactly one mode word to stdout. The
 # probe script deletes its own playlist and reports PROBE_CLEANUP_OK;
@@ -206,7 +216,7 @@ probe_mode() {
   else
     cat "$WORK/probe.out" >> "$LOG" 2>/dev/null || true
   fi
-  logfile "GATE FAILED: probe playlist order (ambiguous or failed; real playlist untouched; delete any leftover 'SeTeR Probe *' playlist in Music if one remains)"
+  logerr "GATE FAILED: probe playlist order (ambiguous or failed; real playlist untouched; delete any leftover 'SeTeR Probe *' playlist in Music if one remains)"
   return 1
 }
 
@@ -246,15 +256,20 @@ fi
 # sort may have changed since the probe, re-run sortprobe first:
 # a stale mapping is a wrong mapping.
 # CRITICAL: this function is always called inside $(...) (its
-# output IS the mapping), so it must log with logfile() ONLY.
-# log() tees to stdout, which would pollute the captured mapping
-# string and make the bridge refuse it. The .1 runner logged with
-# log() here, so no build through run.sh could run at all (mode
-# 31): every captured mapping carried a log line in front of it.
+# output IS the mapping), so it must NEVER write to stdout except
+# the final mapping word. log() tees to stdout, which would pollute
+# the captured mapping string and make the bridge refuse it. The .1
+# runner logged with log() here, so no build through run.sh could
+# run at all (mode 31): every captured mapping carried a log line
+# in front of it. The .2 runner went to the other extreme and used
+# logfile() for failures, which hid them from the terminal: a
+# shuffle stopped after "compute shuffle order" with no visible
+# error. The .3 rule is: failures go through logerr() (log file
+# AND stderr, never stdout), success info stays logfile-only.
 mapping_for_build() {
   local map_file="$STATE/sort-mapping.txt" mapping throwaway ts now
   if [ ! -f "$map_file" ]; then
-    logfile "GATE FAILED: no sort-matched mapping recorded; run ./run.sh sortprobe <throwaway> on a throwaway set to the target's sort first"
+    logerr "GATE FAILED: no sort-matched mapping recorded; run ./run.sh sortprobe <throwaway> on a throwaway set to the target's sort first"
     return 1
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
@@ -262,12 +277,12 @@ mapping_for_build() {
   ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
   now="$(date +%s)"
   if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
-    logfile "GATE FAILED: recorded mapping is not forward or reversed (got '$mapping'); re-run sortprobe"
+    logerr "GATE FAILED: recorded mapping is not forward or reversed (got '$mapping'); re-run sortprobe"
     return 1
   fi
-  case "$ts" in ''|*[!0-9]*) logfile "GATE FAILED: recorded mapping has no valid timestamp; re-run sortprobe"; return 1;; esac
+  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping has no valid timestamp; re-run sortprobe"; return 1;; esac
   if [ $((now - ts)) -gt 86400 ]; then
-    logfile "GATE FAILED: recorded mapping is older than 24 hours (throwaway '$throwaway'); re-run sortprobe so the mapping matches the target's current sort"
+    logerr "GATE FAILED: recorded mapping is older than 24 hours (throwaway '$throwaway'); re-run sortprobe so the mapping matches the target's current sort"
     return 1
   fi
   logfile "sort mapping for builds: $mapping (measured on throwaway '$throwaway' at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
