@@ -239,41 +239,58 @@ class ProbeParsingTests(unittest.TestCase):
 class BridgeStructureTests(unittest.TestCase):
     """Presence checks only: the AppleScript cannot run here.
 
-    These assert the mode handlers and probe script exist and name the
-    same three modes as order_direction.py. They prove the wiring was
-    written, not that Music behaves; the Mac throwaway procedure in
-    BRIDGE-SAFETY.md is what proves behaviour.
+    These assert the mapping handlers and sort-probe script exist
+    and name the same mapping values as order_direction.py's
+    mapping section. They prove the wiring was written, not that
+    Music behaves; the Mac throwaway procedure in BRIDGE-SAFETY.md
+    is what proves behaviour. (2026-10-29: the probe-mode handlers
+    these tests used to assert are gone by design; the sort-matched
+    mapping replaced them, see BRIDGE-SAFETY.md mode 30.)
     """
 
     def _bridge_text(self, name: str) -> str:
         return (ROOT / "bridge" / name).read_text(encoding="utf-8")
 
     def test_probe_script_exists_and_reports_a_verdict(self):
+        # The old fresh-probe script is a standalone sanity check
+        # only now; no build consults it, but it still exists and
+        # still reports a verdict.
         text = self._bridge_text("probe-order.applescript")
         self.assertIn("PROBE_VERDICT:", text)
         self.assertIn("PROBE_CLEANUP_OK", text)
         self.assertIn("SeTeR Shuffle Probe", text)
 
-    def test_apply_and_undo_are_mode_aware(self):
+    def test_sort_probe_script_exists_and_reports_a_mapping(self):
+        text = self._bridge_text("sort-probe.applescript")
+        self.assertIn("MAPPING:", text)
+        self.assertIn("SORTPROBE_OK", text)
+        self.assertIn("mappingFromBuild", text)
+
+    def test_apply_and_undo_are_mapping_aware(self):
         for name in ("apply-order.applescript", "undo.applescript"):
             text = self._bridge_text(name)
-            self.assertIn("insert-reversed", text, name)
-            self.assertIn("read-reversed", text, name)
-            self.assertIn("buildForApply", text, name)
-            self.assertIn("buildForRestore", text, name)
-            self.assertIn("expectedForApply", text, name)
-            self.assertIn("expectedForRestore", text, name)
+            self.assertIn("parseMapping", text, name)
+            self.assertIn("buildForMapping", text, name)
+            self.assertIn("verifyAgainst", text, name)
+            # The dead probe-mode handlers must not come back.
+            for dead in ("buildForApply", "buildForRestore",
+                         "expectedForApply", "expectedForRestore",
+                         "parseMode"):
+                self.assertNotIn(dead, text, name)
 
-    def test_restore_original_is_mode_aware_with_explicit_flip(self):
+    def test_restore_original_is_mapping_aware_with_no_flip(self):
         text = self._bridge_text("restore-original.applescript")
-        self.assertIn("insert-reversed", text)
-        self.assertIn("read-reversed", text)
-        # The old silent flip is gone from the default path; it survives
-        # only as an explicit, documented last-resort mode.
-        self.assertIn("flip", text)
+        self.assertIn("parseMapping", text)
+        self.assertIn("buildForMapping", text)
+        # No probe path and no flip path at all in this script now.
+        self.assertNotIn("parseMode", text)
+        self.assertNotIn("runFlipMode", text)
+        self.assertNotIn("buildForRestore", text)
 
-    def test_run_sh_probes_before_every_apply_and_undo(self):
+    def test_run_sh_requires_a_fresh_mapping_before_builds(self):
         text = (ROOT / "run.sh").read_text(encoding="utf-8")
-        self.assertIn("probe", text)
-        self.assertIn("probe_mode", text)
-        self.assertIn("probe-order.applescript", text)
+        self.assertIn("mapping_for_build", text)
+        self.assertIn("sortprobe", text)
+        self.assertIn("sort-mapping.txt", text)
+        # Builds must not consult the fresh probe anymore.
+        self.assertNotIn("probe_mode_result", text)

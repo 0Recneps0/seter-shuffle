@@ -8,20 +8,24 @@
 --    "Delete" here always means "remove a song entry from this
 --    playlist": it never deletes a song from the library, and no
 --    line in this file ever deletes from library playlist 1.
---  * ORDER DIRECTION IS PROBED, NEVER GUESSED. On 2026-10-28 the .4
---    undo failed on a real 806-song playlist in a loop, for the same
---    reason apply did: duplicating into a playlist can land tracks
---    in reverse order on that Mac, or the every-track read can be
---    reversed, and the backup files alone cannot tell which. So
---    run.sh runs probe-order.applescript first and passes its
---    verdict here as the mode argument, and every build and verify
---    in this script follows it (see buildForRestore /
---    expectedForRestore, which mirror seter_shuffle/order_direction.py
---    exactly). An unknown, missing, or ambiguous mode aborts before
---    anything changes. There is NO flip-on-failure fallback here:
---    a failed verify restores the pre-undo snapshot and exits
---    non-zero, because a wrong flip on a real playlist is exactly
---    the .4 bug.
+--  * BUILD MAPPING IS MEASURED ON A SORT-MATCHED THROWAWAY, NEVER
+--    ON A FRESH PLAYLIST AND NEVER ON THE TARGET. On 2026-10-28 the
+--    .4 undo failed on a real 806-song playlist in a loop, and the
+--    .5 bridge then failed the same way even though its fresh
+--    3-song probe reported "forward": a fresh playlist does not
+--    share the real playlist's sort (the user confirmed the real
+--    playlist is sorted by playlist order DESCENDING, and a
+--    read-only diagnostic showed its list read reversed against
+--    the original backup while its first list track carries index
+--    1, which kills track index as a manual-order reference). So
+--    run.sh first runs bridge/sort-probe on a throwaway the user
+--    set to the SAME sort as the target, and passes the measured
+--    mapping here: "forward" or "reversed" (see buildForMapping,
+--    which mirrors seter_shuffle/order_direction.py's mapping
+--    section exactly). Verification ALWAYS compares the list read
+--    against the backup order, never against the duplicate order.
+--    There is NO flip-on-failure: a failed verify restores the
+--    pre-undo snapshot and exits non-zero.
 --  * The backup file is validated BEFORE anything is deleted: it
 --    must exist and be readable, with no blank lines in the middle
 --    and no whitespace inside an ID. A missing or corrupt backup
@@ -38,8 +42,9 @@
 --    happen here: a failed undo restores from the pre-undo snapshot,
 --    and if even that fails, both backup paths are named loudly in
 --    the error.
---  * After rebuilding, the playlist must verify exactly under the
---    probed mode. Any mismatch or any backup song missing from the
+--  * After rebuilding, the playlist must verify exactly against
+--    the backup order under the measured mapping. Any mismatch or
+--    any backup song missing from the
 --    library triggers a restore from the pre-undo snapshot and a
 --    non-zero exit.
 --  * An empty backup file is legitimate: it snapshots an empty
@@ -59,15 +64,16 @@
 -- pre-undo backup file (written and verified before any change) in
 -- the state directory, plus the original backup file, which undo
 -- never overwrites. Recovery is: re-run undo.applescript with the
--- original backup file (via run.sh, so the probe runs again). If
+-- original backup file (via run.sh, which sort-probes first). If
 -- the playlist is left partial, re-running undo is safe to repeat:
 -- it always snapshots first.
 --
--- Usage (always via run.sh, which probes first):
---   osascript undo.applescript <playlist-name> <backup-txt> <mode> [pre-undo-backup-txt]
--- mode: "forward", "insert-reversed", or "read-reversed" (from the
---   probe; required, never defaulted, so an old unprobed call fails
---   loudly instead of building in the wrong direction).
+-- Usage (always via run.sh, which sort-probes first):
+--   osascript undo.applescript <playlist-name> <backup-txt> <mapping> [pre-undo-backup-txt]
+-- mapping: "forward" or "reversed" (from bridge/sort-probe on a
+--   throwaway carrying the target's sort; required, never
+--   defaulted, so an unprobed call fails loudly instead of
+--   building with a guessed mapping).
 -- backup-txt: one persistent ID per line, in list-read snapshot
 --   order. An empty file restores an empty playlist. If the pre-undo
 --   path is omitted it defaults to <backup-txt>.pre-undo. The
@@ -78,15 +84,16 @@
 -- interaction here. The Python core was tested on Linux; this
 -- script was not, because this machine has no Music app or osascript.
 -- Treat it as reviewed, not tested, until the Mac verification
--- procedure in BRIDGE-SAFETY.md has been run, starting with the probe.
+-- procedure in BRIDGE-SAFETY.md has been run, starting with the
+-- sort-matched throwaway probe.
 
 on run argv
 	if (count of argv) < 3 then
-		error "undo.applescript: usage: <playlist-name> <backup-txt> <mode> [pre-undo-backup-txt] (mode is required: run via run.sh, which probes first)" number 1
+		error "undo.applescript: usage: <playlist-name> <backup-txt> <mapping> [pre-undo-backup-txt] (mapping is required: run via run.sh, which sort-probes first)" number 1
 	end if
 	set playlistName to item 1 of argv
 	set backupPath to item 2 of argv
-	set orderMode to my parseMode(item 3 of argv)
+	set buildMapping to my parseMapping(item 3 of argv)
 	set preUndoPath to backupPath & ".pre-undo"
 	if (count of argv) > 3 then set preUndoPath to item 4 of argv
 	if playlistName is "" then
@@ -107,70 +114,31 @@ on run argv
 	set currentIDs to my playlistIDs(destPl)
 	my writeBackupAtomically(preUndoPath, currentIDs)
 
-	-- Rebuild from the backup in the probed direction, collecting
-	-- failures instead of silently skipping songs that left the
-	-- library.
-	set buildIDs to my buildForRestore(backupIDs, orderMode)
-	set buildFailed to {}
-	try
-		with timeout of 3600 seconds
-			tell application "Music"
-				delete (every track of destPl whose media kind is song)
-			end tell
-			tell application "Music"
-				repeat with pid in buildIDs
-					set pidStr to contents of pid
-					try
-						set sourceTrack to (first track of library playlist 1 whose persistent ID is pidStr)
-						duplicate sourceTrack to destPl
-					on error
-						set end of buildFailed to pidStr
-					end try
-				end repeat
-			end tell
-		end timeout
-	on error errMsg number errNum
-		set restoreResult to my tryRestore(destPl, currentIDs, orderMode)
+	-- Rebuild from the backup under the measured mapping, with
+	-- verification against the backup order itself.
+	set buildResult to my buildAndVerifyMapping(destPl, backupIDs, buildMapping)
+	if not (ok of buildResult) then
+		set buildFailed to failed of buildResult
+		set restoreResult to my tryRestoreMapping(destPl, currentIDs, buildMapping)
 		if ok of restoreResult then
-			error "undo: rebuild failed for \"" & playlistName & "\" (" & errMsg & "); playlist restored to its pre-undo state from " & preUndoPath & "." number 1
+			if (count of buildFailed) > 0 then
+				error "undo: restored " & ((count of backupIDs) - (count of buildFailed)) & " of " & (count of backupIDs) & " songs to \"" & playlistName & "\"; " & (count of buildFailed) & " song(s) were not found in the library (" & my joinList(buildFailed) & "). Playlist restored to its pre-undo state from " & preUndoPath & "; the missing songs cannot be restored until they are back in the library." number 1
+			else
+				error "undo: verification failed for \"" & playlistName & "\" (final song order does not match the backup order under mapping " & buildMapping & "); playlist restored to its pre-undo state from " & preUndoPath & "." number 1
+			end if
 		else
-			error "undo: CRITICAL: rebuild failed for \"" & playlistName & "\" (" & errMsg & ") AND pre-undo restore failed; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
-		end if
-	end try
-
-	if (count of buildFailed) > 0 then
-		set restoreResult to my tryRestore(destPl, currentIDs, orderMode)
-		if ok of restoreResult then
-			error "undo: restored " & ((count of backupIDs) - (count of buildFailed)) & " of " & (count of backupIDs) & " songs to \"" & playlistName & "\"; " & (count of buildFailed) & " song(s) were not found in the library (" & my joinList(buildFailed) & "). Playlist restored to its pre-undo state from " & preUndoPath & "; the missing songs cannot be restored until they are back in the library." number 1
-		else
-			error "undo: CRITICAL: " & (count of buildFailed) & " song(s) not found AND pre-undo restore failed; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
-		end if
-	end if
-
-	set verified to false
-	try
-		set verified to my verifyAgainst(destPl, my expectedForRestore(backupIDs, orderMode))
-	on error errMsg
-		set restoreResult to my tryRestore(destPl, currentIDs, orderMode)
-		if ok of restoreResult then
-			error "undo: verification could not run for \"" & playlistName & "\" (" & errMsg & "); playlist restored to its pre-undo state from " & preUndoPath & "." number 1
-		else
-			error "undo: CRITICAL: verification could not run AND pre-undo restore failed for \"" & playlistName & "\"; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
-		end if
-	end try
-	if not verified then
-		set restoreResult to my tryRestore(destPl, currentIDs, orderMode)
-		if ok of restoreResult then
-			error "undo: verification failed for \"" & playlistName & "\" (final song order does not match the probed-mode expectation); playlist restored to its pre-undo state from " & preUndoPath & "." number 1
-		else
-			error "undo: CRITICAL: verification failed AND pre-undo restore failed for \"" & playlistName & "\"; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+			if (count of buildFailed) > 0 then
+				error "undo: CRITICAL: " & (count of buildFailed) & " song(s) not found AND pre-undo restore failed; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+			else
+				error "undo: CRITICAL: verification failed AND pre-undo restore failed for \"" & playlistName & "\"; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+			end if
 		end if
 	end if
 
 	if (count of backupIDs) is 0 then
 		return "UNDO OK: restored an empty playlist to \"" & playlistName & "\" (backup was empty; pre-undo state saved at " & preUndoPath & ")"
 	end if
-	return "UNDO OK: restored " & (count of backupIDs) & " songs to \"" & playlistName & "\" in exact backup order (mode " & orderMode & "; pre-undo state saved at " & preUndoPath & ")"
+	return "UNDO OK: restored " & (count of backupIDs) & " songs to \"" & playlistName & "\" in exact backup order (mapping " & buildMapping & "; pre-undo state saved at " & preUndoPath & ")"
 end run
 
 -- Resolve by filtered lookup, never by a bare name reference, and
@@ -213,12 +181,15 @@ on assertUserPlaylist(pl)
 	if not ok then error "Refusing to modify \"" & plName & "\": it isn't a regular user playlist (or it is the Library itself), and changing it could remove songs from your library."
 end assertUserPlaylist
 
-on parseMode(modeText)
-	if modeText is "forward" or modeText is "insert-reversed" or modeText is "read-reversed" then
-		return modeText
+-- The build mapping, validated, never defaulted. It comes from
+-- bridge/sort-probe on a throwaway carrying the target's sort.
+-- An old probe mode or sort class here fails loudly.
+on parseMapping(mappingText)
+	if mappingText is "forward" or mappingText is "reversed" then
+		return mappingText
 	end if
-	error "undo: unknown or missing order mode \"" & modeText & "\" (expected forward, insert-reversed, or read-reversed from the probe; run via run.sh)." number 1
-end parseMode
+	error "undo: unknown or missing build mapping \"" & mappingText & "\" (expected forward or reversed from sort-probe on a sort-matched throwaway; run via run.sh, and re-probe if the target's sort may have changed)." number 1
+end parseMapping
 
 on reverseList(a)
 	set outList to {}
@@ -228,27 +199,72 @@ on reverseList(a)
 	return outList
 end reverseList
 
--- Mirror of seter_shuffle/order_direction.py (see apply-order for
--- the full explanation). Restore builds always verify against the
--- snapshot itself; only the duplicate order changes with the mode.
-on buildForApply(orderIDs, orderMode)
-	if orderMode is "insert-reversed" then return my reverseList(orderIDs)
-	return orderIDs
-end buildForApply
+-- Mirror of seter_shuffle/order_direction.py's mapping section.
+on buildForMapping(desiredIDs, buildMapping)
+	if buildMapping is "reversed" then return my reverseList(desiredIDs)
+	return desiredIDs
+end buildForMapping
 
-on expectedForApply(orderIDs, orderMode)
-	if orderMode is "read-reversed" then return my reverseList(orderIDs)
-	return orderIDs
-end expectedForApply
+on rebuildList(pl, idList)
+	set failedIDs to {}
+	try
+		my assertUserPlaylist(pl)
+	on error
+		return {"assert-failed"}
+	end try
+	try
+		with timeout of 3600 seconds
+			tell application "Music"
+				delete (every track of pl whose media kind is song)
+			end tell
+			tell application "Music"
+				repeat with pid in idList
+					set pidStr to contents of pid
+					try
+						set sourceTrack to (first track of library playlist 1 whose persistent ID is pidStr)
+						duplicate sourceTrack to pl
+					on error
+						set end of failedIDs to pidStr
+					end try
+				end repeat
+			end tell
+		end timeout
+	on error
+		set end of failedIDs to "rebuild-error"
+	end try
+	return failedIDs
+end rebuildList
 
-on buildForRestore(snapshotIDs, orderMode)
-	if orderMode is "forward" then return snapshotIDs
-	return my reverseList(snapshotIDs)
-end buildForRestore
+-- Build a desired list-read order under the measured mapping and
+-- verify it exactly. Returns {ok:boolean, failed:list}. No flip on
+-- failure: the caller restores from the pre-undo snapshot.
+on buildAndVerifyMapping(pl, desiredIDs, buildMapping)
+	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
+	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
+	set verified to false
+	try
+		set verified to my verifyAgainst(pl, desiredIDs)
+	on error
+		set verified to false
+	end try
+	if verified then
+		return {ok:true, failed:{}}
+	else
+		return {ok:false, failed:{}}
+	end if
+end buildAndVerifyMapping
 
-on expectedForRestore(snapshotIDs, orderMode)
-	return snapshotIDs
-end expectedForRestore
+-- Restore from a list-read snapshot under the measured mapping.
+-- Returns {ok:boolean, failed:list}; a failed restore is reported,
+-- never claimed as a success.
+on tryRestoreMapping(pl, snapshotIDs, buildMapping)
+	try
+		my assertUserPlaylist(pl)
+	on error errMsg
+		return {ok:false, failed:{}}
+	end try
+	return my buildAndVerifyMapping(pl, snapshotIDs, buildMapping)
+end tryRestoreMapping
 
 on playlistIDs(pl)
 	tell application "Music"
@@ -268,54 +284,6 @@ on verifyAgainst(pl, expectedIDs)
 	set actualIDs to my playlistIDs(pl)
 	return my listsEqual(actualIDs, expectedIDs)
 end verifyAgainst
-
--- Restore from a list-read snapshot and verify exactly under the
--- probed mode. Returns a record {ok:boolean, failed:list}; a failed
--- restore is reported, never claimed as a success.
-on tryRestore(pl, snapshotIDs, orderMode)
-	try
-		my assertUserPlaylist(pl)
-	on error errMsg
-		return {ok:false, failed:{}}
-	end try
-	set failedIDs to {}
-	set restoreIDs to my buildForRestore(snapshotIDs, orderMode)
-	try
-		with timeout of 3600 seconds
-			tell application "Music"
-				delete (every track of pl whose media kind is song)
-			end tell
-			tell application "Music"
-				repeat with pid in restoreIDs
-					set pidStr to contents of pid
-					try
-						set sourceTrack to (first track of library playlist 1 whose persistent ID is pidStr)
-						duplicate sourceTrack to pl
-					on error
-						set end of failedIDs to pidStr
-					end try
-				end repeat
-			end tell
-		end timeout
-	on error errMsg
-		return {ok:false, failed:failedIDs}
-	end try
-	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
-	-- Verify without throwing: if Music is gone, the restore did not
-	-- prove itself, and the caller must hear "failed", not a raw
-	-- Music error that hides whether a restore was attempted.
-	set verified to false
-	try
-		set verified to my verifyAgainst(pl, my expectedForRestore(snapshotIDs, orderMode))
-	on error
-		set verified to false
-	end try
-	if verified then
-		return {ok:true, failed:{}}
-	else
-		return {ok:false, failed:failedIDs}
-	end if
-end tryRestore
 
 on joinList(idList)
 	set AppleScript's text item delimiters to ", "

@@ -24,23 +24,30 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   This is the part that is fully testable on any machine.
 - **Bridge** (`bridge/`, AppleScript files): the only code
   that talks to Music. `dump-library.applescript` dumps a library or
-  playlist to JSON. `probe-order.applescript` measures this Mac's
-  playlist order direction on a 3-song probe playlist it creates
-  and deletes itself, reporting forward, insert-reversed, or
-  read-reversed, or ambiguous (which aborts everything); run.sh
-  runs it before every apply and undo. `apply-order.applescript`
-  snapshots a playlist's IDs to a backup file BEFORE changing
-  anything, rebuilds it in the probed direction, verifies exactly
-  under that mode, and restores from the backup on any failure; it
-  refuses the Library itself, smart playlists, and anything that is
-  not a regular user playlist, refuses ambiguous playlist names
-  instead of guessing, and fails if the library shrank during the
-  run. `undo.applescript` replays a backup file with the same
+  playlist to JSON. `sort-probe.applescript` measures the
+  end-to-end build-to-list mapping on a throwaway the user sets to
+  the target playlist's sort (Playlist Order descending for the
+  2026-10-28 failure), reporting forward, reversed, or other
+  (which aborts everything); run.sh records that mapping and
+  requires a fresh one (24 hours) before every apply and undo.
+  The old `probe-order.applescript` (fresh 3-song probe) is a
+  standalone sanity check only and is consulted by no build: a
+  fresh playlist does not share a real playlist's sort, and the
+  track `index` channel it used is not a manual-order reference
+  (2026-10-29 diagnostic; see BRIDGE-SAFETY.md mode 30).
+  `apply-order.applescript` snapshots a playlist's IDs to a backup
+  file BEFORE changing anything, rebuilds it under the recorded
+  mapping, verifies exactly against the desired list-read order,
+  and restores from the backup on any failure; it refuses the
+  Library itself, smart playlists, and anything that is not a
+  regular user playlist, refuses ambiguous playlist names instead
+  of guessing, and fails if the library shrank during the run.
+  `undo.applescript` replays a backup file with the same
   strictness, and snapshots the current playlist first so a failed
   undo is recoverable. `restore-original.applescript` is a one-off
-  recovery script (probe by default, explicit "flip" mode only for
-  throwaways). The bridge never decides an order, and never flips
-  on failure: a failed verify restores and exits non-zero. Full
+  recovery script that also takes a recorded mapping (no probe,
+  no flip). The bridge never decides an order, and never flips on
+  failure: a failed verify restores and exits non-zero. Full
   failure-mode table, the one case AppleScript cannot cover (power
   loss / force-quit mid-write), and the Mac verification procedure:
   see `BRIDGE-SAFETY.md`. The bridge has been reviewed line by
@@ -214,17 +221,22 @@ BRIDGE-SAFETY.md mode 29):
   been observed from here.
 
 Suggested Mac verification order: `./check-python.sh` first, then
-`./run.sh probe` (measures this Mac's playlist order direction on a
-3-song probe playlist it creates and deletes; an ambiguous verdict
-aborts everything by design), then `./run.sh probe-keep` and LOOK at
-the probe playlist in Music itself to confirm the on-screen order
-matches the verdict, then `./run.sh audit` (changes nothing, and
+the BRIDGE-SAFETY.md Stage 0 sequence: the read-only diagnostic on
+the target, the UI sort check in Music, then
+`./run.sh sortprobe "<throwaway>"` on a throwaway set to the
+target's sort (Playlist Order descending for the 2026-10-28
+failure), which must return a forward or reversed mapping and
+restore the throwaway; an "other" mapping aborts everything by
+design. The old `./run.sh probe` (fresh 3-song probe) is a
+standalone sanity check only and does not substitute for the
+sort-matched probe. Then `./run.sh audit` (changes nothing, and
 answers whether BPM is truly missing or the dump is failing), then
 `./run.sh flowPreview` (changes nothing), then the full throwaway
-procedure in BRIDGE-SAFETY.md (Stage 1 happy path, Stage 2 negative
-tests, Stage 3 a real playlist you can afford to have rewritten).
-Nothing in this procedure runs on a real playlist first, and nothing
-runs on "My New Sandwich Recipe" until Stage 3 at the earliest.
+procedure in BRIDGE-SAFETY.md (Stage 0 controls, Stage 1 happy
+path, Stage 2 negative tests, Stage 3 a real playlist you can
+afford to have rewritten, with explicit approval). Nothing in
+this procedure runs on a real playlist first, and nothing runs on
+"My New Sandwich Recipe" until Stage 3 at the earliest.
 
 ## Known differences and quirks, kept on purpose
 

@@ -6,6 +6,110 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-29 — Sort-matched build mapping replaces the fresh probe (fifth Python change, after a second real failure)
+
+**Why:** on 2026-10-28 at 23:46 PT the .5 bridge was run on the
+real playlist "My New Sandwich Recipe" (806 songs) again, skipping
+the throwaway stages. Its fresh 3-song probe reported "forward" on
+all channels, yet apply failed verification and restore failed,
+and undo failed the same way, exactly as in .4. The backup taken
+at the start of the .5 run equals the original backup exactly, and
+the pre-undo snapshot is again the EXACT REVERSE of the original
+backup, 806/806, same set. No song left the library. The user
+then confirmed the missing property: the real playlist is sorted
+in Music by playlist order DESCENDING, which no fresh probe
+playlist shares. A read-only diagnostic on 2026-10-29 then killed
+the draft sort design (classify by comparing the every-track list
+against the track-index order): the current list read is the exact
+reverse of the original backup by its ends, positional first/last
+agree with the list, and the list's first track carries index 1,
+which no "list is reverse of manual index order" story predicts.
+So index is not a manual-order reference on this Music version,
+and both the fresh probe and any index classification are dead.
+NOT PUBLISHED: this tree is unreviewed by the parent and unproven
+on a Mac; nothing here has been pushed.
+
+**What changed (all in `seter-shuffle-python/`, nothing else):**
+
+- New `bridge/sort-probe.applescript`: the only direction
+  authority for builds. It takes a throwaway the user has set to
+  the target's sort, snapshots it atomically, builds a rotation
+  of its order (items 2..n plus item 1; for 5+ distinct songs
+  neither the snapshot order nor its reverse), reads it back,
+  and classifies the end-to-end mapping: "forward" (read ==
+  build), "reversed" (read == exact reverse of build), or
+  "other" (anything else: another column sort, a partial build,
+  or unpredictable behaviour). It then restores the throwaway
+  under the measured mapping and verifies that restore; a failed
+  restore is a hard error naming the snapshot file. It requires
+  at least 5 distinct song IDs, refuses ambiguous names and
+  non-user playlists, and never touches any other playlist.
+- `run.sh`: new `./run.sh sortprobe <throwaway>` command that
+  runs the sort-probe, parses its `MAPPING:` line, and records
+  the mapping with the throwaway name and a timestamp in the
+  state dir (valid 24 hours). Apply and undo now read that
+  recorded mapping and refuse without a fresh one; they pass the
+  mapping (not a probe mode) to the bridge scripts. The old
+  `probe` / `probe-keep` commands stay as standalone sanity
+  checks only and are consulted by no build.
+- `bridge/apply-order.applescript`, `bridge/undo.applescript`,
+  and `bridge/restore-original.applescript`: all converted to
+  mapping-only. The mapping argument is required (old probe-mode
+  strings fail loudly). Build/verify formulas: to land list-read
+  order D, duplicate D under "forward" and reverse(D) under
+  "reversed"; verification always compares the list read
+  against D. Restore uses the same formulas with D = the backup
+  order. An "other" mapping refuses before any change. There is
+  no flip on a failed verify anywhere: restore from backup and
+  exit non-zero. The retired 2026-10-28 one-off fix script on
+  the user's Mac (`~/Downloads/seter-fix-playlist.applescript`)
+  must still never be run; the rewritten tree file is a
+  different, mapping-based script and is itself unproven.
+- `bridge/diagnose-playlist.applescript`: header only. It now
+  states explicitly that track index is NOT a manual-order
+  reference and must never be used as a classification input.
+  Its printed lines are unchanged.
+- `bridge/probe-order.applescript`: header only. It is now
+  marked retired from builds; no build may wire it back in.
+- `seter_shuffle/order_direction.py`: legacy probe-mode
+  functions kept and marked legacy; the mapping section
+  (`parse_mapping`, `mapping_from_build_result`,
+  `build_for_mapping`, `expected_for_mapping`) is the single
+  source of truth for the formulas, mirrored by the AppleScript
+  handlers `buildForMapping` / `verifyAgainst`. The
+  Python sort-classification functions from the discarded first
+  design were removed, and their test file deleted.
+- `tests/test_sort_mapping.py`: 14 tests covering mapping
+  classification (including the rotate probe-order unambiguity
+  point), the forward/reversed build formulas, the
+  verify-expectation-is-desired invariant, a reversed round-trip,
+  and the restore formula with the real backup ends (first
+  `B49A108A0E5553DB`, last `54BC5E32EB0D0F8E`).
+- `BRIDGE-SAFETY.md`: new failure mode 30 at the top (sort
+  mechanism, exact-reverse evidence, why the .5 probe missed it,
+  why index classification was discarded, the abort behaviour,
+  and the falsifiers), audit item A1 updated to the confirmed
+  model, the .5 probe section marked superseded, and the Mac
+  procedure rewritten: Stage 0 is now the read-only diagnostic
+  plus a full-dump comparison, the UI sort check, the
+  sort-matched sort-probe gate, and the throwaway sort controls
+  (descending must fail on old code and pass on new code,
+  ascending/manual must pass, title-sorted must abort
+  untouched); Stage 3 is a real playlist only with explicit
+  user approval after seeing Stage 0-2, plus a display eyeball
+  after any restore. Nothing touches "My New Sandwich Recipe"
+  before Stage 3.
+- `README-PYTHON.md`: bridge description and suggested Mac
+  verification order rewritten around sort-probe and the
+  mapping gate.
+
+**Still unproven on a Mac:** every AppleScript change above.
+The Mac procedure in BRIDGE-SAFETY.md is the proof plan, in
+order, throwaways first. The restore goal the bridge can
+measure is list-read order == backup order; whether the
+display follows it is a Stage 3 eyeball check, not something
+any script proves.
+
 ## 2026-10-28 — Probe-driven order direction (fourth Python change, after a real failure)
 
 **Why:** on 2026-10-28 the .4 bridge was run straight on a real

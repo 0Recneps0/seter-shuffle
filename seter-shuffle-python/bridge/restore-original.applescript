@@ -1,40 +1,31 @@
 -- restore-original.applescript: ONE-OFF RECOVERY, not part of the normal shuffle flow.
 --
--- Restores a playlist to the order in a backup file. This script was
--- first written the night of the 2026-10-28 failure, when duplicating
--- tracks into a playlist landed them in reverse order on that Mac
--- and the .4 apply/undo loop kept failing verification. It originally
--- "fixed" that by flipping the duplicate order whenever its own
--- check came out backwards. That guessing is now REMOVED from the
--- default path, and this header explains why, because the flip is
--- actively dangerous under one of the two mechanisms behind the
--- failure:
+-- Restores a playlist to the order in a backup file, under a build
+-- mapping measured on a sort-matched throwaway (see
+-- bridge/sort-probe.applescript and seter_shuffle/order_direction.py's
+-- mapping section). It takes NO probe and NO flip mode anymore:
 --
---   * If duplicating inserts at the top (insert-reversed), a flip
---     is correct: duplicating reversed lands forwards.
---   * If duplicating appends normally but the every-track read is
---     reversed (read-reversed), a playlist that is ALREADY correct
---     on screen reads backwards, so the old flip logic rebuilds it
---     in reverse order and then declares success on a playlist it
---     just broke. The backup files from 2026-10-28 cannot tell
---     these two apart, so a flip must never be the default.
+--   * The 2026-10-28 probe (fresh 3-song playlist, "forward") did
+--     not predict the real playlist, whose sort is Playlist Order
+--     descending. A fresh playlist's direction says nothing about
+--     a sorted target, so probing is not a fallback here either.
+--   * The old flip logic is REMOVED, not merely demoted: under a
+--     read/display split it rebuilt an already-correct playlist
+--     in reverse order and called that a success, and the 2026-10-29
+--     diagnostic (list read reversed against the backup while the
+--     list's first track carries index 1) killed track index as a
+--     manual-order reference, so no index-based assess path
+--     survives here either.
 --
--- Default path (mode "auto", or an explicit probed mode): the script
--- first runs the same probe as bridge/probe-order.applescript on a
--- 3-song probe playlist it creates and deletes itself, and then
--- builds and verifies with the probed mode's formulas (see
--- buildForRestore / expectedForRestore, which mirror
--- seter_shuffle/order_direction.py). An ambiguous probe aborts with
--- the real playlist untouched. There is no flip in this path.
---
--- Explicit "flip" mode: the old assess-and-flip behaviour, kept ONLY
--- as a last resort for a throwaway playlist when the probe is
--- unavailable (for example, a library with fewer than 3 songs, or a
--- Music version that does not expose the track `index` property).
--- It is documented here as unsafe for a real playlist under
--- read-reversed, and it must never be used on one. If you are
--- reading this because someone told you to run "flip" on a real
--- playlist, stop and run the probe path instead.
+-- Mapping (from run.sh's sort-probe, required as an argument):
+-- "forward" means building X lands list read X; "reversed" means
+-- building X lands list read reverse(X). To land list read D, this
+-- script duplicates D under "forward" and reverse(D) under
+-- "reversed", and verifies the list read against D, always. Any
+-- other mapping string, or a missing one, aborts before any change.
+-- A failed verify restores the pre-fix snapshot (under the same
+-- mapping) and reports failure loudly; it never flips, never
+-- guesses, and never claims success on an unproven playlist.
 --
 -- Safety, same contract as the other bridge scripts:
 --  * Only a regular user playlist is ever modified, resolved by an
@@ -54,27 +45,24 @@
 --    AppleScript's default timeout mid-build.
 --
 -- Usage:
---   osascript restore-original.applescript <playlist-name> <backup-txt> [mode] [snapshot-txt]
--- mode: "auto" (default: probe first), "forward",
---   "insert-reversed", "read-reversed", or "flip" (throwaway-only
---   last resort, see above). The snapshot path defaults to
---   <backup-txt>.fix-snapshot.
+--   osascript restore-original.applescript <playlist-name> <backup-txt> <mapping> [snapshot-txt]
+-- mapping: "forward" or "reversed" (required). The snapshot path
+--   defaults to <backup-txt>.fix-snapshot.
 -- This takes a few minutes for 800 songs. Do not touch Music while
 -- it runs. The final line says FIX OK or FIX FAILED.
 --
 -- UNVERIFIED ON A MAC (see BRIDGE-SAFETY.md): every Music
--- interaction here, including the probe's `index` property read.
--- Treat this as reviewed, not tested, until the Mac verification
--- procedure in BRIDGE-SAFETY.md has been run, starting with the probe.
+-- interaction here. Treat this as reviewed, not tested, until the
+-- Mac verification procedure in BRIDGE-SAFETY.md has been run,
+-- starting with the sort-matched throwaway probe.
 
 on run argv
-	if (count of argv) < 2 then
-		error "fix: usage: <playlist-name> <backup-txt> [mode] [snapshot-txt]" number 1
+	if (count of argv) < 3 then
+		error "fix: usage: <playlist-name> <backup-txt> <mapping> [snapshot-txt] (mapping is required: forward or reversed from sort-probe on a sort-matched throwaway)" number 1
 	end if
 	set playlistName to item 1 of argv
 	set backupPath to item 2 of argv
-	set modeText to "auto"
-	if (count of argv) > 2 then set modeText to item 3 of argv
+	set buildMapping to my parseMapping(item 3 of argv)
 	set snapshotPath to backupPath & ".fix-snapshot"
 	if (count of argv) > 3 then set snapshotPath to item 4 of argv
 	if playlistName is "" then
@@ -88,143 +76,37 @@ on run argv
 	my assertUserPlaylist(destPl)
 	set currentIDs to my playlistIDs(destPl)
 	my writeBackupAtomically(snapshotPath, currentIDs)
-	if modeText is "flip" then
-		return my runFlipMode(destPl, backupIDs, currentIDs, playlistName, backupPath, snapshotPath)
+	-- Already exactly right: change nothing.
+	if my verifyAgainst(destPl, backupIDs) then
+		return "FIX OK: playlist \"" & playlistName & "\" already matches the backup (" & (count of backupIDs) & " songs). Nothing was changed. Snapshot saved at " & snapshotPath & "."
 	end if
-	set orderMode to missing value
-	if modeText is "auto" then
-		set orderMode to my probeMode()
-	else
-		set orderMode to my parseMode(modeText)
-	end if
-	-- Already exactly right under the probed mode: change nothing.
-	if my verifyAgainst(destPl, my expectedForRestore(backupIDs, orderMode)) then
-		return "FIX OK: playlist \"" & playlistName & "\" already matches the backup under mode " & orderMode & " (" & (count of backupIDs) & " songs). Nothing was changed. Snapshot saved at " & snapshotPath & "."
-	end if
-	set failed to my rebuild(destPl, my buildForRestore(backupIDs, orderMode))
-	if (count of failed) is 0 and my verifyAgainst(destPl, my expectedForRestore(backupIDs, orderMode)) then
-		return "FIX OK: restored \"" & playlistName & "\" to the backup order (" & (count of backupIDs) & " songs, mode " & orderMode & "). Snapshot of the pre-fix state saved at " & snapshotPath & "."
+	set failed to my rebuild(destPl, my buildForMapping(backupIDs, buildMapping))
+	if (count of failed) is 0 and my verifyAgainst(destPl, backupIDs) then
+		return "FIX OK: restored \"" & playlistName & "\" to the backup order (" & (count of backupIDs) & " songs, mapping " & buildMapping & "). Snapshot of the pre-fix state saved at " & snapshotPath & "."
 	end if
 	-- Could not prove the restore. Put the snapshot back, then
 	-- report failure honestly; never claim success on an unproven
-	-- playlist, and never silently flip (see the header).
-	set snapFailed to my rebuild(destPl, my buildForRestore(currentIDs, orderMode))
-	if (count of snapFailed) is 0 and my verifyAgainst(destPl, my expectedForRestore(currentIDs, orderMode)) then
-		error "FIX FAILED: could not restore \"" & playlistName & "\" to the backup order (mode " & orderMode & "), so the playlist was put back to its pre-fix state. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Nothing was lost from the library." number 1
+	-- playlist, and never flip (see the header).
+	set snapFailed to my rebuild(destPl, my buildForMapping(currentIDs, buildMapping))
+	if (count of snapFailed) is 0 and my verifyAgainst(destPl, currentIDs) then
+		error "FIX FAILED: could not restore \"" & playlistName & "\" to the backup order (mapping " & buildMapping & "), so the playlist was put back to its pre-fix state. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Nothing was lost from the library." number 1
 	end if
-	error "FIX FAILED CRITICAL: could not restore \"" & playlistName & "\" to the backup order (mode " & orderMode & "), AND the pre-fix snapshot could not be put back either. Playlist may be partial. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Keep both files and report this message; do not run the old undo again." number 1
+	error "FIX FAILED CRITICAL: could not restore \"" & playlistName & "\" to the backup order (mapping " & buildMapping & "), AND the pre-fix snapshot could not be put back either. Playlist may be partial. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Keep both files and report this message; do not run the old undo again." number 1
 end run
 
--- The old assess-and-flip flow, kept ONLY for explicit "flip" mode
--- (throwaway playlists, probe unavailable). See the header for why
--- this must never run on a real playlist: under read-reversed it
--- rebuilds an already-correct playlist in reverse order and calls
--- that a success.
-on runFlipMode(destPl, backupIDs, currentIDs, playlistName, backupPath, snapshotPath)
-	set state to my assess(destPl, backupIDs)
-	if state is "good" then
-		return "FIX OK (flip mode): playlist \"" & playlistName & "\" already matches the backup (" & (count of backupIDs) & " songs, exact order). Nothing was changed. Snapshot saved at " & snapshotPath & "."
-	else if state is "display-ok" then
-		return "FIX OK (flip mode): playlist \"" & playlistName & "\" is already in backup order as Music shows it (" & (count of backupIDs) & " songs). Nothing was changed. Snapshot saved at " & snapshotPath & "."
+-- The build mapping, validated, never defaulted.
+on parseMapping(mappingText)
+	if mappingText is "forward" or mappingText is "reversed" then
+		return mappingText
 	end if
-	set failed to my rebuild(destPl, backupIDs)
-	if (count of failed) is 0 then
-		set state to my assess(destPl, backupIDs)
-		if state is "good" or state is "display-ok" then
-			return "FIX OK (flip mode): restored \"" & playlistName & "\" to the backup order (" & (count of backupIDs) & " songs). Snapshot of the pre-fix state saved at " & snapshotPath & "."
-		else if state is "flip" then
-			set failed2 to my rebuild(destPl, my reverseList(backupIDs))
-			if (count of failed2) is 0 then
-				set state2 to my assess(destPl, backupIDs)
-				if state2 is "good" or state2 is "display-ok" then
-					return "FIX OK (flip mode): restored \"" & playlistName & "\" to the backup order (" & (count of backupIDs) & " songs). Music inserted the first build backwards, so the fix rebuilt it in reverse order, which landed forwards. Snapshot of the pre-fix state saved at " & snapshotPath & "."
-				end if
-			end if
-		end if
-	end if
-	set snapFailed to my rebuild(destPl, currentIDs)
-	if (count of snapFailed) is 0 then
-		set snapState to my assess(destPl, currentIDs)
-		if snapState is "flip" then
-			set snapFailed2 to my rebuild(destPl, my reverseList(currentIDs))
-			if (count of snapFailed2) is 0 then
-				set snapState to my assess(destPl, currentIDs)
-			end if
-		end if
-		if snapState is "good" or snapState is "display-ok" then
-			error "FIX FAILED (flip mode): could not restore \"" & playlistName & "\" to the backup order, so the playlist was put back to its pre-fix state. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Nothing was lost from the library." number 1
-		end if
-	end if
-	error "FIX FAILED CRITICAL (flip mode): could not restore \"" & playlistName & "\" to the backup order, AND the pre-fix snapshot could not be put back either. Playlist may be partial. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Keep both files and report this message." number 1
-end runFlipMode
+	error "fix: unknown or missing build mapping \"" & mappingText & "\" (expected forward or reversed from sort-probe on a sort-matched throwaway)." number 1
+end parseMapping
 
--- Run the probe in-process (same logic as probe-order.applescript):
--- create a 3-song probe playlist, read it back by list, by index,
--- and by position, decide a mode, delete the probe playlist. An
--- ambiguous result errors here, before the real playlist is touched.
--- The positional read travels through the same scripting bridge as
--- the list read, so it is a contradiction check only, never the sole
--- basis for a direction (see probe-order.applescript's header).
-on probeMode()
-	set probeName to "SeTeR Shuffle Probe (restore)"
-	tell application "Music"
-		set matches to every playlist whose name is probeName
-	end tell
-	if (count of matches) > 0 then
-		error "fix: probe: refusing: a playlist named \"" & probeName & "\" already exists; delete or rename it and re-run." number 1
-	end if
-	set probePl to missing value
-	try
-		tell application "Music"
-			set libSongs to every track of library playlist 1 whose media kind is song
-		end tell
-		if (count of libSongs) < 3 then
-			error "fix: probe: library has fewer than 3 songs; cannot probe playlist order." number 1
-		end if
-		set pickedTracks to {item 1 of libSongs, item 2 of libSongs, item 3 of libSongs}
-		set pickedIDs to {}
-		tell application "Music"
-			repeat with t in pickedTracks
-				set end of pickedIDs to persistent ID of (contents of t)
-			end repeat
-		end tell
-		if (item 1 of pickedIDs) is (item 2 of pickedIDs) or (item 1 of pickedIDs) is (item 3 of pickedIDs) or (item 2 of pickedIDs) is (item 3 of pickedIDs) then
-			error "fix: probe: first 3 library songs are not distinct; cannot probe." number 1
-		end if
-		tell application "Music"
-			set probePl to make new user playlist with properties {name:probeName}
-		end tell
-		tell application "Music"
-			repeat with t in pickedTracks
-				duplicate (contents of t) to probePl
-			end repeat
-		end tell
-		set listIDs to my playlistIDs(probePl)
-		set indexOrder to my probeIndexOrderFor(probePl, pickedIDs)
-		set posEnds to my probePositionalEnds(probePl)
-		set verdict to my probeVerdictFor(pickedIDs, listIDs, indexOrder, posEnds)
-		try
-			tell application "Music"
-				delete probePl
-			end tell
-		on error
-			error "fix: probe: probe playlist \"" & probeName & "\" could not be deleted after probing; delete it in Music, then re-run. Nothing else was changed." number 1
-		end try
-		if verdict is "ambiguous" then
-			error "fix: probe: ambiguous result (list/index/positional reads do not fit any known model, or a read failed); refusing to build with a guessed direction. Delete nothing; report the probe lines." number 1
-		end if
-		return verdict
-	on error errMsg number errNum
-		if probePl is not missing value then
-			try
-				tell application "Music"
-					delete probePl
-				end tell
-			end try
-		end if
-		error errMsg number errNum
-	end try
-end probeMode
+-- Mirror of seter_shuffle/order_direction.py's mapping section.
+on buildForMapping(desiredIDs, buildMapping)
+	if buildMapping is "reversed" then return my reverseList(desiredIDs)
+	return desiredIDs
+end buildForMapping
 
 on resolvePlaylist(playlistName)
 	tell application "Music"
@@ -261,13 +143,6 @@ on assertUserPlaylist(pl)
 	if not ok then error "fix: refusing to modify \"" & plName & "\": it isn't a regular user playlist (or it is the Library itself)."
 end assertUserPlaylist
 
-on parseMode(modeText)
-	if modeText is "forward" or modeText is "insert-reversed" or modeText is "read-reversed" then
-		return modeText
-	end if
-	error "fix: unknown order mode \"" & modeText & "\" (expected auto, forward, insert-reversed, read-reversed, or flip)." number 1
-end parseMode
-
 on playlistIDs(pl)
 	tell application "Music"
 		return persistent ID of every track of pl whose media kind is song
@@ -290,125 +165,10 @@ on reverseList(a)
 	return outList
 end reverseList
 
--- Mirror of seter_shuffle/order_direction.py.
-on buildForApply(orderIDs, orderMode)
-	if orderMode is "insert-reversed" then return my reverseList(orderIDs)
-	return orderIDs
-end buildForApply
-
-on expectedForApply(orderIDs, orderMode)
-	if orderMode is "read-reversed" then return my reverseList(orderIDs)
-	return orderIDs
-end expectedForApply
-
-on buildForRestore(snapshotIDs, orderMode)
-	if orderMode is "forward" then return snapshotIDs
-	return my reverseList(snapshotIDs)
-end buildForRestore
-
-on expectedForRestore(snapshotIDs, orderMode)
-	return snapshotIDs
-end expectedForRestore
-
 on verifyAgainst(pl, expectedIDs)
 	set actualIDs to my playlistIDs(pl)
 	return my listsEqual(actualIDs, expectedIDs)
 end verifyAgainst
-
--- Positional ends for the flip-mode assess path (general playlist;
--- unreliable when the playlist holds non-song entries).
-on positionalEnds(pl)
-	tell application "Music"
-		set totalTracks to count of tracks of pl
-		set songCount to count of (every track of pl whose media kind is song)
-		if totalTracks is not songCount then return {firstID:"", lastID:"", reliable:false}
-		if songCount is 0 then return {firstID:"", lastID:"", reliable:true}
-		set firstID to persistent ID of track 1 of pl
-		set lastID to persistent ID of track songCount of pl
-	end tell
-	return {firstID:firstID, lastID:lastID, reliable:true}
-end positionalEnds
-
--- Flip-mode assess only. See the header: this logic is unsafe under
--- read-reversed, which is why it survives only in explicit "flip" mode.
-on assess(pl, expectedIDs)
-	set actual to my playlistIDs(pl)
-	set revExpected to my reverseList(expectedIDs)
-	set listGood to my listsEqual(actual, expectedIDs)
-	set listReversed to my listsEqual(actual, revExpected)
-	set ends to my positionalEnds(pl)
-	if not (reliable of ends) then
-		if listGood then return "good"
-		if listReversed then return "flip"
-		return "other"
-	end if
-	if (count of expectedIDs) is 0 then
-		if (count of actual) is 0 then return "good"
-		return "other"
-	end if
-	set posGood to ((firstID of ends) is item 1 of expectedIDs) and ((lastID of ends) is item -1 of expectedIDs)
-	set posReversed to ((firstID of ends) is item -1 of expectedIDs) and ((lastID of ends) is item 1 of expectedIDs)
-	if listGood and posGood then return "good"
-	if listReversed and posGood then return "display-ok"
-	if posReversed then return "flip"
-	return "other"
-end assess
-
--- Probe helpers (same logic as probe-order.applescript).
-on probeIndexOrderFor(pl, pickedIDs)
-	set n to count of pickedIDs
-	set byIndex to {}
-	repeat n times
-		set end of byIndex to missing value
-	end repeat
-	repeat with pid in pickedIDs
-		set pidStr to contents of pid
-		set idx to missing value
-		try
-			tell application "Music"
-				set idx to index of (first track of pl whose persistent ID is pidStr)
-			end tell
-		on error
-			return missing value
-		end try
-		if idx is missing value then return missing value
-		if idx < 1 or idx > n then return missing value
-		if (item idx of byIndex) is not missing value then return missing value
-		set item idx of byIndex to pidStr
-	end repeat
-	repeat with v in byIndex
-		if (contents of v) is missing value then return missing value
-	end repeat
-	return byIndex
-end probeIndexOrderFor
-
-on probePositionalEnds(pl)
-	tell application "Music"
-		set totalTracks to count of tracks of pl
-		set songCount to count of (every track of pl whose media kind is song)
-		if totalTracks is not songCount then return missing value
-		if songCount is not 3 then return missing value
-		set firstID to persistent ID of track 1 of pl
-		set lastID to persistent ID of track 3 of pl
-	end tell
-	return {firstID:firstID, lastID:lastID}
-end probePositionalEnds
-
-on probeVerdictFor(pickedIDs, listIDs, indexOrder, posEnds)
-	if indexOrder is missing value then return "ambiguous"
-	if posEnds is missing value then return "ambiguous"
-	set revPicked to my reverseList(pickedIDs)
-	set listForward to my listsEqual(listIDs, pickedIDs)
-	set listReversed to my listsEqual(listIDs, revPicked)
-	set indexForward to my listsEqual(indexOrder, pickedIDs)
-	set indexReversed to my listsEqual(indexOrder, revPicked)
-	set posForward to ((firstID of posEnds) is item 1 of pickedIDs) and ((lastID of posEnds) is item 3 of pickedIDs)
-	set posReversed to ((firstID of posEnds) is item 3 of pickedIDs) and ((lastID of posEnds) is item 1 of pickedIDs)
-	if listForward and indexForward and posForward then return "forward"
-	if listReversed and indexReversed and posReversed then return "insert-reversed"
-	if listReversed and indexForward and posForward then return "read-reversed"
-	return "ambiguous"
-end probeVerdictFor
 
 -- Delete the playlist's songs and duplicate the given IDs into it,
 -- in the given order. Returns the IDs that could not be found in

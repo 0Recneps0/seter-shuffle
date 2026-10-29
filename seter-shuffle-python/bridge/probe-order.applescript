@@ -1,3 +1,13 @@
+-- RETIRED FROM BUILDS (2026-10-29). This script is now a standalone
+-- manual sanity check ONLY (`./run.sh probe`). No build consults it:
+-- a fresh 3-song playlist reported "forward" on 2026-10-28 while the
+-- real sorted 806-song playlist still failed every build, and the
+-- track `index` channel it relies on was killed as a manual-order
+-- reference by the 2026-10-29 diagnostic (list read reversed against
+-- the backup, yet the list's first track carries index 1). Builds
+-- use bridge/sort-probe on a throwaway carrying the target's sort
+-- instead. Do not wire this script back into a build path.
+--
 -- probe-order.applescript (SeTeR Shuffle, Python experimental core)
 --
 -- MEASURES, instead of guessing, which way Music orders a playlist on

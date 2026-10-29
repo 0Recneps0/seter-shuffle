@@ -15,29 +15,48 @@
 #   ./run.sh rediscover             refresh "SeTeR Rediscover" and record
 #                                   history ONLY after a successful apply
 #   ./run.sh undo <playlist>        restore a playlist from its last backup
-#   ./run.sh probe                  measure this Mac's playlist order
-#                                   direction on a 3-song probe playlist
-#                                   (created and deleted by the probe),
-#                                   change nothing else
+#   ./run.sh probe                  (legacy) measure direction on a
+#                                   fresh 3-song probe playlist; a
+#                                   standalone sanity check ONLY, no
+#                                   build consults it anymore
+#   ./run.sh sortprobe <throwaway>  measure the build-to-list mapping
+#                                   on a throwaway YOU set to the
+#                                   same sort as the target playlist
+#                                   (Playlist Order descending for
+#                                   the 2026-10-28 failure); snapshots
+#                                   the throwaway, builds a rotation,
+#                                   reads it back, restores it, and
+#                                   records the mapping for builds
+#                                   (fresh for 24 hours)
 #   ./run.sh probe-keep             like probe, but LEAVE the probe
 #                                   playlist in place so its on-screen
 #                                   order in Music can be eyeballed
 #                                   against the probe verdict, then
 #                                   delete it in Music when done
 #
-# ORDER DIRECTION (2026-10-28 failure): duplicating tracks into a
-# playlist can land them in reverse order on a Mac, or the
-# every-track read can be reversed; the .4 bridge guessed neither
-# and failed verification in a loop on a real 806-song playlist.
-# Every apply and undo below therefore probes FIRST (probe_mode):
-# the probe creates a 3-song playlist, duplicates in a known order,
-# reads it back by list, by track index, and by position, and reports
-# one of forward / insert-reversed / read-reversed, or ambiguous.
-# An ambiguous or failed probe aborts the run with the real playlist
-# untouched. The mode is then passed to apply/undo, which build and
-# verify with it (see bridge/probe-order.applescript and
-# seter_shuffle/order_direction.py). There is no flip-on-failure
-# fallback anywhere in the normal flow.
+# BUILD MAPPING (2026-10-28 failure, 2026-10-29 diagnosis): the .4
+# bridge failed verification in a loop on a real 806-song playlist,
+# and the .5 bridge failed the same way even though a fresh 3-song
+# probe reported "forward": a fresh playlist does not share the
+# real playlist's sort (the user confirmed the real playlist is
+# sorted by Playlist Order descending). A later diagnostic also
+# killed track index as a manual-order reference (list read
+# reversed against the backup, yet the list's first track carries
+# index 1). So builds below NEVER consult a fresh probe and NEVER
+# use track index. Instead, the user first runs ./run.sh sortprobe
+# on a throwaway set to the SAME sort as the target; sort-probe
+# builds a rotation on it, reads it back, restores it, and records
+# the end-to-end mapping (forward: building X lands list read X;
+# reversed: building X lands list read reverse(X)). Apply and undo
+# read that recorded mapping (fresh for 24 hours, else they refuse)
+# and pass it to the bridge scripts, which build and verify with it
+# (see bridge/sort-probe.applescript and
+# seter_shuffle/order_direction.py's mapping section). A sort-probe
+# that returns anything else refuses the build upstream. There is
+# no flip-on-failure fallback anywhere in the normal flow, and the
+# old probe-order script is a standalone sanity check only: its
+# verdict can never override a sort-matched mapping, because no
+# build reads it.
 #
 # State lives under ~/Library/Logs/seter-shuffle-python/ on the Mac:
 # dumps, orders, backups, and the run log. Nothing here touches the
@@ -122,9 +141,9 @@ log "python: $CHECK_OUT"
 
 CMD="${1:-}"
 case "$CMD" in
-  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|probe|probe-keep) ;;
+  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|probe|probe-keep|sortprobe) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>|probe|probe-keep}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>|probe|probe-keep|sortprobe <throwaway>}" >&2
     exit 2
     ;;
 esac
@@ -192,17 +211,81 @@ if [ "$CMD" = "probe-keep" ]; then
   exit 1
 fi
 
+# Read the recorded sort-matched mapping for builds, or refuse.
+# sortprobe writes $STATE/sort-mapping.txt with lines:
+#   MAPPING: forward|reversed
+#   THROWAWAY: <name the user set to the target's sort>
+#   TIMESTAMP: <epoch seconds>
+# Builds refuse without it, refuse a stale one (older than 24h),
+# and log the source, so a build never silently uses a mapping
+# measured for a different sort or a different day. If the target's
+# sort may have changed since the probe, re-run sortprobe first:
+# a stale mapping is a wrong mapping.
+mapping_for_build() {
+  local map_file="$STATE/sort-mapping.txt" mapping throwaway ts now
+  if [ ! -f "$map_file" ]; then
+    log "GATE FAILED: no sort-matched mapping recorded; run ./run.sh sortprobe <throwaway> on a throwaway set to the target's sort first"
+    return 1
+  fi
+  mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+  throwaway="$(grep '^THROWAWAY: ' "$map_file" | head -n 1 | sed 's/^THROWAWAY: //')"
+  ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+  now="$(date +%s)"
+  if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
+    log "GATE FAILED: recorded mapping is not forward or reversed (got '$mapping'); re-run sortprobe"
+    return 1
+  fi
+  case "$ts" in ''|*[!0-9]*) log "GATE FAILED: recorded mapping has no valid timestamp; re-run sortprobe"; return 1;; esac
+  if [ $((now - ts)) -gt 86400 ]; then
+    log "GATE FAILED: recorded mapping is older than 24 hours (throwaway '$throwaway'); re-run sortprobe so the mapping matches the target's current sort"
+    return 1
+  fi
+  log "sort mapping for builds: $mapping (measured on throwaway '$throwaway' at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
+  printf '%s' "$mapping"
+  return 0
+}
+
+# Sort-probe command: measure the mapping on a user-sorted throwaway.
+# The user MUST set the throwaway's sort in Music to the target's
+# sort (Playlist Order descending for the 2026-10-28 failure)
+# before running this; run.sh cannot set or verify a playlist's
+# UI sort, so a throwaway with the wrong sort measures the wrong
+# mapping, and the log line below says exactly what was assumed.
+if [ "$CMD" = "sortprobe" ]; then
+  THROWAWAY="${2:-}"
+  [ -n "$THROWAWAY" ] || { echo "usage: $0 sortprobe <throwaway-playlist>" >&2; exit 2; }
+  SNAPSHOT="$STATE/sort-probe-snapshot.txt"
+  log "STEP: sort-probe mapping on throwaway '$THROWAWAY' (assumed sort: same as target; set it in Music before running)"
+  if osascript "$BRIDGE/sort-probe.applescript" "$THROWAWAY" "$SNAPSHOT" 2>&1 | tee -a "$LOG" "$WORK/sortprobe.out"; then
+    mapping="$(grep '^MAPPING: ' "$WORK/sortprobe.out" | head -n 1 | sed 's/^MAPPING: //')"
+    if [ "$mapping" = "forward" ] || [ "$mapping" = "reversed" ]; then
+      {
+        printf 'MAPPING: %s\n' "$mapping"
+        printf 'THROWAWAY: %s\n' "$THROWAWAY"
+        printf 'TIMESTAMP: %s\n' "$(date +%s)"
+      } > "$STATE/sort-mapping.txt"
+      log "GATE OK: sort-probe mapping $mapping recorded for builds (valid 24 hours; throwaway '$THROWAWAY')"
+      log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build"
+      exit 0
+    fi
+  fi
+  log "GATE FAILED: sort-probe did not return a usable mapping; no mapping recorded, no build will run until a clean sort-probe passes"
+  exit 1
+fi
+
 # Undo needs no dump: it only replays a backup file. The undo script
 # itself snapshots the current playlist to <backup>.pre-undo before
-# deleting anything, so a failed undo is recoverable. The probe runs
-# first: an unprobed undo is exactly how the .4 loop failed.
+# deleting anything, so a failed undo is recoverable. It builds
+# under the recorded sort-matched mapping; without a fresh mapping
+# it refuses, because an unmapped undo is exactly how the .4/.5
+# loops failed.
 if [ "$CMD" = "undo" ]; then
   PLAYLIST="${2:-}"
   [ -n "$PLAYLIST" ] || { echo "usage: $0 undo <playlist>" >&2; exit 2; }
   BACKUP="$(backup_path_for "$PLAYLIST")"
-  MODE="$(probe_mode)" || exit 1
-  log "undo $PLAYLIST from $BACKUP (mode $MODE; pre-undo snapshot will be saved at $BACKUP.pre-undo)"
-  step "undo $PLAYLIST" osascript "$BRIDGE/undo.applescript" "$PLAYLIST" "$BACKUP" "$MODE" || exit 1
+  MAPPING="$(mapping_for_build)" || exit 1
+  log "undo $PLAYLIST from $BACKUP (mapping $MAPPING; pre-undo snapshot will be saved at $BACKUP.pre-undo)"
+  step "undo $PLAYLIST" osascript "$BRIDGE/undo.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || exit 1
   log "undo done"
   exit 0
 fi
@@ -222,16 +305,16 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # Validate an order, then apply it, with restore-on-failure. The
 # bridge also validates and verifies on its own side; this function
-# is the runner's half: probe the direction, catch a bad order before
-# Music is touched, and recover if the apply step itself fails after
-# changes start. The probe runs before validation on purpose: a
-# failed probe costs nothing, and an unprobed apply must never run.
+# is the runner's half: read the recorded sort-matched mapping,
+# catch a bad order before Music is touched, and recover if the
+# apply step itself fails after changes start. The mapping is read
+# before validation on purpose: a missing or stale mapping costs
+# nothing, and an unmapped apply must never run.
 apply_order() {
-  local target="$1" mode="$2" backup lib_songs allow_dupes probe_mode_result
+  local target="$1" mode="$2" backup lib_songs allow_dupes build_mapping
   local -a apply_args
   backup="$(backup_path_for "$target")"
-  probe_mode_result="$(probe_mode)" || exit 1
-  log "probe mode for $target: $probe_mode_result"
+  build_mapping="$(mapping_for_build)" || exit 1
   step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$mode" || exit 1
   log "GATE: order validated for $target"
   # Duplicate allowance: "1" only for a one-playlist shuffle whose
@@ -261,17 +344,17 @@ apply_order() {
     rm -f "$backup"
   fi
   if [ -n "$lib_songs" ]; then
-    apply_args=("$target" "$ORDER_TXT" "$backup" "$probe_mode_result" "$allow_dupes" "$lib_songs")
+    apply_args=("$target" "$ORDER_TXT" "$backup" "$build_mapping" "$allow_dupes" "$lib_songs")
   else
-    apply_args=("$target" "$ORDER_TXT" "$backup" "$probe_mode_result" "$allow_dupes")
+    apply_args=("$target" "$ORDER_TXT" "$backup" "$build_mapping" "$allow_dupes")
   fi
   if step "apply order to $target" osascript "$BRIDGE/apply-order.applescript" "${apply_args[@]}"; then
     log "GATE: apply verified for $target (backup at $backup)"
   else
     log "GATE FAILED: apply failed for $target"
     if [ -f "$backup" ]; then
-      log "fresh backup exists at $backup; attempting restore via undo (same probed mode)"
-      if step "restore $target from fresh backup" osascript "$BRIDGE/undo.applescript" "$target" "$backup" "$probe_mode_result"; then
+      log "fresh backup exists at $backup; attempting restore via undo (same recorded mapping)"
+      if step "restore $target from fresh backup" osascript "$BRIDGE/undo.applescript" "$target" "$backup" "$build_mapping"; then
         log "restore from fresh backup succeeded; playlist is back to its pre-run state"
       else
         log "CRITICAL: restore from fresh backup also failed; playlist may be partial; re-run undo with backup $backup"

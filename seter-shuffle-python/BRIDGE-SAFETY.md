@@ -2,7 +2,7 @@
 
 Status, stated plainly: **this document describes a reviewed design,
 not a tested one.** The Python core and its validation were tested on
-Linux (86 tests, all passing). The AppleScript bridge cannot run here:
+Linux (101 tests, all passing). The AppleScript bridge cannot run here:
 this machine has no Music app and no osascript, so no bridge script
 has ever been executed. Nothing below claims a bridge script works.
 The Mac verification procedure at the end is what turns "reviewed"
@@ -46,6 +46,14 @@ playlist is reversed or original from this evidence; the evidence
 proves a reversal happened somewhere in the chain, not what the
 display is now.
 
+SUPERSEDED 2026-10-29 BY MODE 30: this section describes the .5
+probe design, which failed on the real playlist a second time
+because a fresh probe playlist does not share the real playlist's
+sort, and because its index channel is not a manual-order
+reference. It is retained as history only. Builds now use the
+sort-matched mapping (mode 30); the probe script is a standalone
+sanity check and no build reads its verdict.
+
 The fix is a PROBE, not a guess (bridge/probe-order.applescript,
 wired into run.sh before every apply and undo). The probe creates a
 3-song playlist, duplicates in a known order, and reads it back three
@@ -88,11 +96,121 @@ Honest limits of the probe, stated plainly:
   playlist that is already correct on screen, it reads backwards,
   decides a flip is needed, rebuilds in reverse order, and declares
   success on a playlist it just broke. That script has been
-  rewritten: its default path now probes (mode "auto") or takes an
-  explicit probed mode, and the old flip survives ONLY as an explicit
-  "flip" mode, documented as throwaway-only. Never run "flip" on a
-  real playlist, and never run the 2026-10-28 version of that script
-  on any playlist again.
+  rewritten twice since: first to the probe design above, then
+  again on 2026-10-29 to mapping-only (a recorded sort-matched
+  mapping is required; there is no probe path and no flip path in
+  it at all). Never run the 2026-10-28 version of that script on
+  any playlist again.
+
+## Failure mode 30: sort-matched mapping replaces the fresh probe and the index model (2026-10-29, second real failure + diagnostic)
+
+On 2026-10-28 at 23:46 PT the .5 bridge was run on the real playlist
+"My New Sandwich Recipe" (806 songs) again, skipping the throwaway
+stages. Its fresh 3-song probe reported "forward" on all channels,
+yet apply failed verification and restore failed (~107 s), and
+run.sh's undo restore failed verification and pre-undo restore
+failed (~99 s), exactly as in .4. The backup taken at the START of
+the .5 run equals the original .4 backup exactly, so the run started
+from the original list-read order; the pre-undo snapshot taken
+during its undo is again the EXACT REVERSE of the original backup,
+806/806, same set. No song left the library in either run.
+
+The user then confirmed the missing property: the real playlist is
+sorted in Music by playlist order DESCENDING, which no fresh probe
+playlist shares. That is why the .5 probe measured the wrong thing.
+Then the user ran the read-only diagnostic on the real playlist:
+
+  COUNT_SONGS: 806, COUNT_TRACKS: 806
+  LIST_FIRST: 54BC5E32EB0D0F8E, LIST_LAST: B49A108A0E5553DB
+  POS_FIRST: 54BC5E32EB0D0F8E, POS_LAST: B49A108A0E5553DB
+  INDEX_OF_LIST_FIRST: 1
+
+The original backup's first ID is B49A108A0E5553DB and its last is
+54BC5E32EB0D0F8E, so the current list read is the EXACT REVERSE of
+the original backup (ends confirmed; the diagnostic prints ends
+only, so full exactness is a Stage 0 dump comparison, not an
+assumption). Two consequences, both acted on in this build:
+
+  1. A restore to the backup order is actually needed once a fix is
+     proven, not just hypothetical. And "looks normal" is worth
+     nothing as evidence: eyeballing 806 songs cannot settle exact
+     order, and this diagnostic settles the list-read state where
+     eyeballing could not. (Under a descending sort, a reversed
+     list read can still DISPLAY in the original order, which is
+     one more reason the display must be eyeballed after any
+     restore; see the procedure.)
+  2. Track index is DEAD as a manual-order reference, and the
+     list-vs-index sort classification drafted for this build was
+     discarded before publication for exactly this reason. If
+     index were manual order and the list were sorted descending
+     (reverse of manual), the list's first track would carry index
+     806, not 1. So either index follows the current view (carrying
+     no manual information) or the playlist's manual order itself
+     is now reverse(B) and the list read is the manual order. The
+     two readings cannot be told apart from index, so index is
+     never used as a classification input anywhere in the bridge
+     anymore. It is printed by the diagnostic as a reported value
+     only. Any future design that classifies a sort from index is
+     wrong on this evidence and must not be revived.
+
+The replacement model measures ONE observable quantity on a
+throwaway carrying the target's sort: the end-to-end build-to-list
+mapping (bridge/sort-probe.applescript, seter_shuffle/
+order_direction.py's mapping section). The user sets a throwaway's
+sort in Music to the target's sort (Playlist Order descending for
+this failure), sort-probe snapshots it, builds a ROTATION of its
+order (items 2..n plus item 1, which for 5+ distinct songs is
+neither the snapshot order nor its reverse), reads it back, and
+classifies: "forward" (read == build), "reversed" (read == exact
+reverse of build), or "other" (anything else: another column sort,
+a partial build, or behaviour the bridge cannot predict). It then
+restores the throwaway under the measured mapping and verifies
+that restore; a failed restore is a hard error. run.sh records
+the mapping with the throwaway name and a timestamp; builds
+refuse without a mapping fresher than 24 hours, and pass it to
+apply/undo/restore-original as a required argument.
+
+Build/verify formulas, per mapping (desired list-read order D):
+forward: duplicate D, verify list read == D. Reversed: duplicate
+reverse(D), verify list read == D. Other: no build at all; the
+sort-probe refuses upstream and the bridge scripts refuse the
+string. There is no flip on a failed verify: restore from backup
+and exit non-zero. Restore worked through concretely with B for
+the original backup order and the current list read reverse(B):
+a restore wants list read B again, so it duplicates B under a
+forward mapping and reverse(B) under a reversed mapping, and that
+statement holds under EITHER index reading above, because it
+depends only on the measured mapping, never on what index means.
+The restore goal the bridge can measure is the list-read order B;
+whether the display follows it is a Stage 3 eyeball check, not
+something any script proves.
+
+What would kill this model (falsifiers, all checked in the
+procedure, not assumed away):
+  * A descending-sorted throwaway whose sort-probe returns
+    "forward" and whose builds then pass, while the target still
+    fails: the mapping would not be determined by the sort.
+  * A sort-matched throwaway returning "other": the mapping is
+    not forward/reversed for that sort, and no build may proceed.
+  * The Stage 0 full dump showing the current list is NOT the
+    exact reverse of the backup (ends match by coincidence): the
+    restore target and the failure story both need rework.
+  * A descending-sorted throwaway passing on the OLD (.5) code:
+    the sort would not explain the original failures, and the
+    whole sort theory would be dead, not just the mapping.
+  * The diagnostic showing list == index order on the real
+    playlist despite the reported descending sort, with a full
+    dump confirming it: the list would not follow the sort at
+    all, and the mapping would need a different explanation.
+
+The fresh-probe script (bridge/probe-order.applescript) and its
+`./run.sh probe` command remain as a standalone manual sanity
+check only. No build reads a probe verdict, so a probe verdict can
+never override a sort-matched mapping; the disagreement case the
+.5 design worried about cannot arise in a build path, because the
+build path has no probe input. That is deliberate, not an
+oversight: the only direction authority is the sort-matched
+mapping, recorded by sort-probe.
 
 ## What the bridge is allowed to do
 
@@ -161,7 +279,7 @@ that proves the guard on a real Mac.
 | 18 | Undo restores only partially | Old undo reported success even if some backup songs could not be found. | Undo collects lookup failures, verifies exactly after rebuilding, and on any failure restores the pre-undo snapshot and exits non-zero, naming both backup paths on a CRITICAL failure. | Undo from a backup containing a bogus ID (edit a copy of a real backup); it must fail loudly and leave the pre-undo playlist intact. |
 | 19 | Undo of an empty backup | Old undo's behaviour on an empty backup was untested. | Empty backup is valid (mode 13): undo deletes the playlist's songs and verifies an empty result. | Undo a throwaway playlist from its first-run (empty) backup; it must end empty with a success message. |
 | 20 | Stale backup mistaken for a fresh one | The old runner reused one backup path per playlist, so a failed apply could "restore" from an older backup and revert the playlist to a much older state. | run.sh preserves any previous backup as `<backup>.prev` and clears the backup path before an apply, so the presence of the backup file after the apply step proves this run wrote it. On apply failure with no fresh backup, the log says the playlist was not changed, instead of restoring from a stale file. | Run an apply, let it fail before the backup step (e.g. bad order), and confirm the log says "no fresh backup was written" and the playlist is unchanged. |
-| 21 | Two playlist names collide after sanitizing | Old backup names replaced spaces and slashes with underscores, so "My Playlist" and "My_Playlist" shared one backup file. | Backup filenames now include a short hash of the full playlist name, so distinct names cannot collide. Old backup files under old names still exist and can be used by calling undo.applescript directly with that file and a probed mode argument (required now). | Create "A B" and "A_B" throwaway playlists, back up both, confirm two distinct backup files exist in the state dir. |
+| 21 | Two playlist names collide after sanitizing | Old backup names replaced spaces and slashes with underscores, so "My Playlist" and "My_Playlist" shared one backup file. | Backup filenames now include a short hash of the full playlist name, so distinct names cannot collide. Old backup files under old names still exist and can be used by calling undo.applescript directly with that file and a recorded sort-mapping argument (required now). | Create "A B" and "A_B" throwaway playlists, back up both, confirm two distinct backup files exist in the state dir. |
 | 22 | Dump is partial or misaligned | The old dump's bulk-read helper padded every list to full length, so its "count is not n" check could never fire, and the `favorited` to `loved` fallback could never run. A mid-read library change could have put values on the wrong tracks. | Required lists (names, artists, albums, genres, played counts, played dates, added dates) must all have exactly n entries or the dump aborts unwritten. The bulk helper now returns a missing value on any failure or wrong count, so the fallback actually runs. | Hard to trigger deliberately; the guard is proven by code review and by the audit command reporting sane counts on a real library. |
 | 23 | Failed dump leaves a stale dump for the next step | A dump written to a fixed path could be reused by a later step after a failed run. | run.sh writes each dump to a fresh temporary directory per run, and previews/applies read only that run's dump. | Run a failing dump (e.g. rename the bridge temporarily), then confirm no stale dump exists at a reusable path. |
 | 24 | History recorded after a failed apply | Would burn a song's Rediscover cooldown even though the playlist never changed. | `record-history` runs only after a successful apply (unchanged behaviour, now wired through the step helper so a failed apply cannot fall through to it). | Run a failing rediscover; confirm the history file is byte-identical afterwards. |
@@ -180,7 +298,7 @@ about a real playlist, not about code tidiness.
 
 | # | Candidate bug | Trigger | Can it bite? | Fix / status |
 |---|---|---|---|---|
-| A1 | Playlist UI sort setting (manual vs title/artist sort) changes the order AppleScript sees or the order Music displays after a build | User sorts a playlist by a column in Music, then shuffles it | Unknown, plausible but NOT the 2026-10-28 cause: a title/artist sort would not produce the exact reverse of the original order, which is what the backup files show | No code fix available (Music exposes no playlist sort property to AppleScript). Mitigation is procedural: Stage 0 below says to leave the throwaway sorted manually, and the procedure notes to check whether a sorted playlist re-sorts after a build. If it does, that playlist must be set back to manual sort before any build. |
+| A1 | Playlist UI sort setting changes the order AppleScript sees after a build | User sorts a playlist by a column in Music, then shuffles it | CONFIRMED as the leading model for the 2026-10-28 failure (mode 30): the real playlist is sorted by Playlist Order descending, and its list read is the exact reverse of its original backup. A title/artist sort would not produce that exact reverse, so the sort here is playlist-order descending specifically. | Fixed procedurally, not by reading the sort (Music exposes no playlist sort property to AppleScript): a throwaway carrying the target's sort is measured by sort-probe, and builds run only under that recorded mapping; any other sort returns "other" and aborts. Stage 0 also requires checking whether a sorted playlist re-sorts after a build (see mode 30's falsifiers). |
 | A2 | iCloud Music Library sync reorders, restores, or conflicts with a build in progress | Playlist syncs while a 2-minute delete/re-add loop runs | Theoretical; sync does not reorder a playlist on its own, but a remote edit landing mid-build could change the playlist between snapshot and verify, which would then (correctly) fail verification and restore | No code fix; the backup-and-restore design already covers it (verify fails, restore runs). Procedural: do not edit the playlist on another device during a build, and pause sync-sensitive edits until the run finishes. |
 | A3 | Currently-playing track deleted from its playlist mid-run | The playlist being shuffled is the one now playing | Minor, real: deleting the playing track's playlist entry does not remove it from the library, so playback itself survives, but the up-next queue may rebuild or skip | No abort added: shuffling the playlist you are listening to is a normal use case, and aborting on it would break the daily shuffle. Procedural: pause playback before a build if the queue matters; noted in Stage 0. |
 | A4 | Cloud-only / unavailable / not-downloaded tracks fail to duplicate | A playlist entry whose library track is missing, removed from the catalog, or undownloaded | Handled already: the build collects lookup failures instead of skipping silently, then restores from backup and names the missing IDs. It cannot bite as data loss, only as a refused run | No fix needed; covered by modes 7 and 18. |
@@ -198,8 +316,8 @@ about a real playlist, not about code tidiness.
 | A16 | Dump JSON escaping of exotic control characters | Track name contains a control character other than backslash, quote, newline, carriage return, or tab | Real but rare: the old escaper left such characters raw, making the JSON unparseable, which stopped the run fail-closed (safe, but the library could not be used at all until the track was renamed) | Fixed: jsonEscape in dump-library.applescript is now a character loop that escapes every control character as \u00XX; non-ASCII passes through as UTF-8. Like all bridge changes here, this is untested on a Mac until the procedure runs. |
 | A17 | CLI shuffle --size produces an order validate-order then refuses | Direct CLI use: `shuffle --size N` truncates the shuffled list, but validate-order's shuffle rule requires the full dump set | Fail-closed confusion only: run.sh never passes --size for shuffle, so no run.sh flow hits it; a direct CLI user gets a refusal with no explanation that --size was the cause | No code change (refusing is the safe behaviour); noted here so the refusal is understood. Do not "fix" it by loosening the shuffle rule. |
 | A18 | Python validate-backup accepts a file of only newlines; the bridge undo refuses it | Backup file containing only blank lines | No operational impact: run.sh never calls validate-backup in the apply/undo flow (undo validates the backup itself, fail-closed), and a bridge-written backup is never only newlines (an empty backup is a zero-byte file). The inconsistency is documented, not papered over | No fix; the bridge's refusal is the safer side, and changing the .4 test that codified "only newlines counts as empty" would churn a settled rule for no operational gain. |
-| A19 | The 2026-10-28 one-off fix script's flip logic (restore-original as first written) | Running it on a playlist that is already correct on screen, under read-reversed | Real and dangerous: it reads backwards, decides a flip is needed, rebuilds in reverse order, and declares success on a playlist it just broke (worked through in mode 29 above) | Fixed: rewritten with a probe default (mode "auto") and explicit probed modes; the flip survives only as explicit "flip" mode, documented as throwaway-only. Never run the 2026-10-28 version of that script again, on any playlist. |
-| A20 | run.sh probe output parsing | Probe verdict line malformed, duplicated, or missing | Cannot silently pass: probe_mode requires exactly one PROBE_VERDICT line naming one of the three modes AND a PROBE_CLEANUP_OK line, or the gate fails and the real playlist is untouched. The parsing pipeline itself is covered by a Python test against a sample probe block | No fix needed; tested. |
+| A19 | The 2026-10-28 one-off fix script's flip logic (restore-original as first written) | Running it on a playlist that is already correct on screen, under read-reversed | Real and dangerous: it reads backwards, decides a flip is needed, rebuilds in reverse order, and declares success on a playlist it just broke (worked through in mode 29 above) | Fixed 2026-10-29: rewritten mapping-only (a recorded sort-matched mapping is required; no probe path, no flip path). Never run the 2026-10-28 version of that script again, on any playlist. |
+| A20 | run.sh probe output parsing | Probe verdict line malformed, duplicated, or missing | Cannot silently pass: probe_mode requires exactly one PROBE_VERDICT line naming one of the three modes AND a PROBE_CLEANUP_OK line, or the gate fails. NOTE 2026-10-29: this now gates only the standalone `./run.sh probe` command; builds use the sort-mapping gate instead (mode 30). The parsing pipeline itself is covered by a Python test against a sample probe block | No fix needed; tested. |
 
 ## The uncovered case, stated without softening
 
@@ -215,8 +333,9 @@ directory that a reboot might clean. Recovery is:
 2. Re-run undo for that playlist:
    `./run.sh undo "<playlist name>"`
    (or call undo.applescript directly with the backup file and a
-   probed mode argument, if the backup predates the hashed
-   filenames, mode 21; the mode argument is required now).
+   recorded sort-mapping argument, if the backup predates the
+   hashed filenames, mode 21; the mapping argument is required
+   now).
 3. Check that the playlist's songs and order match what they were
    before the interrupted run. If undo also reports a failure, the
    backup file named in the error is the file to keep: do not delete
@@ -239,23 +358,65 @@ Sandwich Recipe" or any other real playlist until Stage 3, and Stage
 3 says explicitly to pick a playlist you can afford to have
 rewritten, not the daily playlist on its first run.
 
-### Stage 0: probe, then eyeball it (do this first, before any build)
+### Stage 0: diagnostic, then sort-matched probe (do this first, before any build)
 
-1. Run `./run.sh probe` and confirm it prints a PROBE_VERDICT line
-   naming one of forward, insert-reversed, or read-reversed, plus
-   PROBE_CLEANUP_OK, and that no "SeTeR Probe *" playlist remains
-   in Music. If the verdict is ambiguous, or the probe fails, STOP:
-   no apply or undo will run, by design. Report the probe lines.
-2. Run `./run.sh probe-keep`, then LOOK at the probe playlist in
-   Music itself: its on-screen order must match the verdict (for
-   "forward" and "read-reversed" the on-screen order is the picked
-   order printed in PROBE_PICKED; for "insert-reversed" it is the
-   reverse of it). This eyeball step is the only truly independent
-   read available (see mode 29's limits), so do not skip it. Then
-   delete the probe playlist in Music by hand.
-3. Leave the throwaway playlist sorted manually (not sorted by a
-   column in Music; see audit item A1), and pause playback before
-   each build (see A3).
+Nothing in this stage modifies a real playlist. The diagnostic is
+read-only; the sort-probe touches only its own throwaway.
+
+1. Read-only diagnostic on the target, if it is a real playlist you
+   may one day restore: `osascript bridge/diagnose-playlist.applescript
+   "<playlist name>"`. Record COUNT_SONGS, LIST_FIRST, LIST_LAST,
+   POS_FIRST, POS_LAST, INDEX_OF_LIST_FIRST. Compare LIST_FIRST /
+   LIST_LAST against the backup file's first/last lines: first ==
+   backup first and last == backup last means the current list
+   state is the backup order; first == backup last and last ==
+   backup first means the exact reverse; neither means shuffled or
+   partial, so stop and report the lines verbatim. Do NOT infer
+   manual order from INDEX_OF_LIST_FIRST (see mode 30): it is a
+   reported value only. For full exactness (the diagnostic prints
+   ends only), run the read-only dump
+   `osascript bridge/dump-library.applescript /tmp/<name>-now.json
+   "<playlist name>"` and compare its full ID list against the
+   backup and against reverse(backup).
+2. UI sort check on the target, in Music itself: which column (if
+   any) shows a sort arrow, and which direction? Report the column
+   and direction exactly, or "no sort arrow, manual order". Also
+   note whether playback is coming from the playlist and whether a
+   track in it is selected. This is the sort the throwaway in step
+   3 must carry.
+3. Sort-matched throwaway probe (the gate for every build):
+   create a throwaway playlist with at least 5 distinct songs, set
+   its sort in Music to EXACTLY the target's sort from step 2
+   (Playlist Order descending for the 2026-10-28 failure), and run
+   `./run.sh sortprobe "<throwaway name>"`. It must print
+   `MAPPING: forward` or `MAPPING: reversed` plus SORTPROBE_OK,
+   record the mapping (valid 24 hours), and restore the throwaway
+   to its snapshot. An "other" mapping, a failed restore, or a
+   missing mapping file means STOP: no build will run, by design.
+   If the throwaway's sort is not the target's sort, the mapping
+   is the wrong mapping; set the sort correctly and re-probe.
+   The old `./run.sh probe` (fresh playlist) is a standalone
+   sanity check only and is NOT a substitute for this step: it
+   measures a playlist that does not share the target's sort, and
+   no build reads its verdict.
+4. Throwaway sort controls (all throwaway-only, before any build
+   that matters):
+   a. A throwaway sorted by Playlist Order DESCENDING must
+      reproduce the original failure mode on the OLD code path
+      (or at least fail verification) and then PASS with the new
+      sort-aware code (shuffle, then undo, exact order both ways).
+      If a descending-sorted throwaway passes on the old code,
+      the sort theory is dead: stop and report that.
+   b. A throwaway on manual / Playlist Order ascending sort must
+      pass with the new code (shuffle, then undo, exact order).
+   c. A throwaway sorted by Title (or any other column) must
+      ABORT untouched: sort-probe must return "other" and no build
+      may run on it. If a build proceeds on a title-sorted
+      throwaway, the abort path is broken: stop.
+   d. Keep playback paused before each build, and leave throwaways
+      on the sort being tested (do not re-sort mid-test).
+
+### Stage 1: throwaway playlist, happy path
 
 ### Stage 1: throwaway playlist, happy path
 
@@ -271,8 +432,11 @@ rewritten, not the daily playlist on its first run.
    playlist now holds exactly the same songs in the printed order
    (same count, same songs, new order, both copies of the duplicate
    entry present and reordered as positions, not merged), and that
-   the library song count is unchanged. If the run's log shows a
-   probe gate, confirm the mode matches Stage 0's verdict.
+   the library song count is unchanged. The run's log must show
+   the recorded sort mapping from Stage 0 step 3, and the
+   throwaway's sort must be the sort that mapping was measured
+   under; a build under any other mapping, or with no mapping
+   file, must refuse before touching the playlist.
 7. Run `./run.sh undo "<throwaway name>"` and confirm the playlist
    is back to the exact order noted in step 2, including the
    duplicate entry in its original position.
@@ -303,18 +467,35 @@ order) and the run exits non-zero with a message naming the problem:
 8. Backup collision: create "A B" and "A_B" playlists, run an apply
    on each, confirm two distinct backup files (mode 21).
 
-### Stage 3: real playlist, then undo
+### Stage 3: real playlist, then undo (explicit approval required)
 
 1. Pick a real playlist you can afford to have rewritten (not the
-   daily playlist on its first run).
-2. Note its exact order.
+   daily playlist on its first run). Do NOT run this stage on "My
+   New Sandwich Recipe" until: (a) Stage 0 steps 1-4 have all
+   passed, including a descending-sorted throwaway passing with
+   the new code and a title-sorted throwaway aborting; (b) the
+   real playlist's current list-read state has been measured by
+   Stage 0 step 1 and the backup it will be restored from has
+   been verified against that measurement; and (c) the user has
+   explicitly approved this run after seeing (a) and (b), knowing
+   the two prior real-playlist runs both failed in the same loop.
+2. Note its exact order (and its UI sort, which must match the
+   sort the recorded mapping was measured under; if it does not,
+   re-probe first and do not proceed on a stale mapping).
 3. Run the shuffle or flow apply, confirm the new order matches
    the printed order exactly, and confirm the library song count
    is unchanged.
 4. Run undo and confirm the original order is restored exactly.
-5. Read `~/Library/Logs/seter-shuffle-python/run.log` and confirm
+5. Eyeball the display: after the restore, the first and last
+   songs shown in Music must match the backup order's first and
+   last songs (by name, via a read-only dump if needed). The
+   bridge verifies the LIST read, not the display; if the display
+   disagrees with the list read after a verified restore, report
+   that as a finding, do not paper over it.
+6. Read `~/Library/Logs/seter-shuffle-python/run.log` and confirm
    every step shows GATE OK, or that any GATE FAILED line names
-   the gate that fired (mode 26).
+   the gate that fired (mode 26), and that the log names the
+   recorded sort mapping used.
 
 ### Stage 4: the uncovered case (throwaway playlist only)
 
@@ -349,7 +530,8 @@ order) and the run exits non-zero with a message naming the problem:
   reports ambiguous and every apply/undo refuses (fail-closed, loud,
   playlist untouched). That would be a false refusal, not a data
   loss; the fallback then is the manual eyeball step plus an
-  explicit probed mode passed to the scripts, never a guessed mode.
+  explicit recorded sort-mapping passed to the scripts, never a
+  guessed mode (mode 30).
 - The probe's positional read travels through the same scripting
   bridge as the list read (mode 29's limits). If Stage 0's eyeball
   step disagrees with the probe verdict, believe the eyeball step,
@@ -358,11 +540,11 @@ order) and the run exits non-zero with a message naming the problem:
 - Backup files from before the hashed naming (mode 21) are not
   found by the new `./run.sh undo`, because it computes the new
   name. They are still valid: call undo.applescript directly with
-  the old file path AND a probed mode argument (the mode argument
-  is required now; an old two-argument undo call fails loudly
-  instead of building unprobed).
-- Direct (non-run.sh) calls to apply-order and undo now REQUIRE a
-  mode argument, and restore-original defaults to probing ("auto").
-  Old call shapes without a mode fail loudly before anything
-  changes. That breakage is intentional: an unprobed build is how
-  the .4 failure happened.
+  the old file path AND a recorded sort-mapping argument (the
+  mapping argument is required now; an old two-argument undo call
+  fails loudly instead of building unmapped).
+- Direct (non-run.sh) calls to apply-order, undo, and
+  restore-original now REQUIRE a recorded sort-mapping argument.
+  Old call shapes without a mapping fail loudly before anything
+  changes. That breakage is intentional: an unmapped build is how
+  the .4/.5 failures happened.
