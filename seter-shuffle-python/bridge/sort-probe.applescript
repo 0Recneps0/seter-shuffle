@@ -50,6 +50,15 @@
 --     snapshot file, and the throwaway is left for the user to
 --     inspect rather than silently left shuffled.
 --
+-- DELETE-EMPTY VERIFICATION (2026-10-29 doubling failure): the
+-- same guard as the build scripts. Both rebuilds here (rotation
+-- build and snapshot restore) delete, re-read, and confirm 0 song
+-- entries, retrying up to 5 times with a 5-second settle delay
+-- (deletePlaylistSongs); if entries remain, nothing is
+-- duplicated, so the throwaway cannot be doubled by the probe
+-- itself. A delete failure on the rotation build reports the
+-- throwaway unchanged when it still matches the snapshot.
+--
 -- Output: a block of lines ending with either
 --   MAPPING: forward
 --   MAPPING: reversed
@@ -107,6 +116,12 @@ on run argv
 	set end of buildIDs to item 1 of snapshotIDs
 	set failed to my rebuild(destPl, buildIDs)
 	if (count of failed) > 0 then
+		-- Delete-empty failure: nothing was duplicated, so if the
+		-- throwaway still matches the snapshot it is unchanged;
+		-- say so plainly instead of implying a restore was needed.
+		if failed contains "delete-not-empty" and my verifyAgainst(destPl, snapshotIDs) then
+			error "sort-probe: delete did not take effect after retries (throwaway still holds song entries); nothing was duplicated and the throwaway is unchanged. Snapshot at " & snapshotPath & ". Do not build a real playlist until the delete works on a throwaway." number 1
+		end if
 		set snapFailed to my rebuild(destPl, snapshotIDs)
 		error "sort-probe: build failed for \"" & playlistName & "\" (" & my joinList(failed) & " song(s) not found in the library); throwaway restore attempted, snapshot at " & snapshotPath & "; check the throwaway in Music before re-running." number 1
 	end if
@@ -129,7 +144,17 @@ on run argv
 		end try
 	end if
 	if mapping is "other" then
-		error "sort-probe: MAPPING: other (read-back after building the rotation matched neither the build order nor its reverse; the throwaway's sort or behaviour is not one the bridge can build into). Throwaway restored: " & restored & ". Snapshot at " & snapshotPath & ". Set the throwaway sort to Playlist Order (same as the target) and re-probe; do not build a real playlist on an 'other' mapping." number 1
+		-- "other" is an abort, never a build, and the message must
+		-- say exactly what happened to the throwaway: restored to
+		-- its snapshot (safe to re-probe after fixing the sort),
+		-- or left holding the rotation order (restore it from the
+		-- snapshot before anything else). No build will run on an
+		-- "other" mapping, by design, in this script or in run.sh.
+		if restored then
+			error "sort-probe: MAPPING: other (read-back after building the rotation matched neither the build order nor its reverse; the throwaway's sort or behaviour is not one the bridge can build into). The throwaway WAS restored to its snapshot, so it is safe to fix its sort and re-probe. Snapshot at " & snapshotPath & ". Set the throwaway sort to Playlist Order (same as the target) and re-probe; do not build a real playlist on an 'other' mapping." number 1
+		else
+			error "sort-probe: MAPPING: other (read-back after building the rotation matched neither the build order nor its reverse; the throwaway's sort or behaviour is not one the bridge can build into). The throwaway was NOT restored and may still hold the rotation order: restore it from the snapshot at " & snapshotPath & " before re-probing. Set the throwaway sort to Playlist Order (same as the target) and re-probe; do not build a real playlist on an 'other' mapping." number 1
+		end if
 	end if
 	if not restored then
 		error "sort-probe: MAPPING: " & mapping & " but the throwaway restore to its snapshot could not be verified; throwaway may still hold the rotation order. Snapshot at " & snapshotPath & "; restore it by hand or re-run sort-probe, and do not build a real playlist until the throwaway restores cleanly." number 1
@@ -173,9 +198,15 @@ on assertUserPlaylist(pl)
 end assertUserPlaylist
 
 on playlistIDs(pl)
-	tell application "Music"
-		return persistent ID of every track of pl whose media kind is song
-	end tell
+	-- Bulk read under a generous timeout, like the build loops:
+	-- a 1612-entry playlist must not be cut off by AppleScript's
+	-- default timeout mid-read (a failed read fails the verify,
+	-- which restores; a slow read must not be mistaken for one).
+	with timeout of 3600 seconds
+		tell application "Music"
+			return persistent ID of every track of pl whose media kind is song
+		end tell
+	end timeout
 end playlistIDs
 
 on listsEqual(a, b)
@@ -215,11 +246,17 @@ on rebuild(pl, idList)
 	on error
 		return {"assert-failed"}
 	end try
+	set emptied to false
 	try
 		with timeout of 3600 seconds
-			tell application "Music"
-				delete (every track of pl whose media kind is song)
-			end tell
+			set emptied to my deletePlaylistSongs(pl)
+		end timeout
+	on error
+		set emptied to false
+	end try
+	if not emptied then return {"delete-not-empty"}
+	try
+		with timeout of 3600 seconds
 			tell application "Music"
 				repeat with pid in idList
 					set pidStr to contents of pid
@@ -237,6 +274,34 @@ on rebuild(pl, idList)
 	end try
 	return failedIDs
 end rebuild
+
+-- Delete-EMPTY verification (2026-10-29 doubling failure; see the
+-- header and apply-order.applescript). Deletes, re-reads, and
+-- confirms 0 song entries, retrying up to 5 times with a 5-second
+-- settle delay. Returns true only on a verified-empty re-read;
+-- returns false (never throws) otherwise. Callers must treat false
+-- as "do not duplicate anything".
+on deletePlaylistSongs(pl)
+	repeat with attempt from 1 to 5
+		try
+			tell application "Music"
+				delete (every track of pl whose media kind is song)
+			end tell
+		on error
+		end try
+		delay 5
+		set remaining to -1
+		try
+			tell application "Music"
+				set remaining to count of (every track of pl whose media kind is song)
+			end tell
+		on error
+			set remaining to -1
+		end try
+		if remaining is 0 then return true
+	end repeat
+	return false
+end deletePlaylistSongs
 
 on joinList(idList)
 	set AppleScript's text item delimiters to ", "

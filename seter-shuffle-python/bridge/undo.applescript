@@ -52,6 +52,18 @@
 --    restores an empty playlist and succeeds. A backup file that
 --    contains duplicate IDs is also legitimate: a real playlist
 --    can hold the same song twice, and undo reproduces it exactly.
+--  * DELETE-EMPTY VERIFICATION (2026-10-29 doubling failure): the
+--    same guard as apply-order. A delete that is assumed but not
+--    verified is a known-unsafe step after a real playlist doubled
+--    to 1612 entries (each song twice) between the 00:21 diagnostic
+--    and the 00:41 run on 2026-10-29, consistent with a rebuild
+--    duplicating on top of entries a lagging delete had not
+--    removed. Every rebuild here deletes, re-reads, and confirms
+--    0 song entries, retrying up to 5 times with a 5-second settle
+--    delay (deletePlaylistSongs); if entries remain, nothing is
+--    duplicated, and the run restores the pre-undo snapshot only
+--    if the playlist was actually changed, or reports it unchanged
+--    if it was not.
 --  * Non-song entries in the playlist are never deleted and are
 --    left in place; only song entries are managed and verified.
 --  * Build and restore loops run inside `with timeout of 3600
@@ -119,6 +131,22 @@ on run argv
 	set buildResult to my buildAndVerifyMapping(destPl, backupIDs, buildMapping)
 	if not (ok of buildResult) then
 		set buildFailed to failed of buildResult
+		-- Delete-empty failure: nothing was duplicated (see
+		-- deletePlaylistSongs). Restore the pre-undo snapshot only
+		-- if the playlist was actually changed (a partial delete);
+		-- if it still matches the pre-undo snapshot exactly, it is
+		-- unchanged and no restore is needed or attempted.
+		if buildFailed contains "delete-not-empty" then
+			if my verifyAgainst(destPl, currentIDs) then
+				error "undo: delete did not take effect after retries (playlist still holds song entries); nothing was duplicated and the playlist is unchanged. Pre-undo state saved at " & preUndoPath & ". Do not re-run until the delete works on a throwaway." number 1
+			end if
+			set restoreResult to my tryRestoreMapping(destPl, currentIDs, buildMapping)
+			if ok of restoreResult then
+				error "undo: delete did not take effect after retries, so the backup was not applied; playlist restored to its pre-undo state from " & preUndoPath & "." number 1
+			else
+				error "undo: CRITICAL: delete did not take effect AND pre-undo restore failed; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+			end if
+		end if
 		set restoreResult to my tryRestoreMapping(destPl, currentIDs, buildMapping)
 		if ok of restoreResult then
 			if (count of buildFailed) > 0 then
@@ -212,11 +240,17 @@ on rebuildList(pl, idList)
 	on error
 		return {"assert-failed"}
 	end try
+	set emptied to false
 	try
 		with timeout of 3600 seconds
-			tell application "Music"
-				delete (every track of pl whose media kind is song)
-			end tell
+			set emptied to my deletePlaylistSongs(pl)
+		end timeout
+	on error
+		set emptied to false
+	end try
+	if not emptied then return {"delete-not-empty"}
+	try
+		with timeout of 3600 seconds
 			tell application "Music"
 				repeat with pid in idList
 					set pidStr to contents of pid
@@ -234,6 +268,35 @@ on rebuildList(pl, idList)
 	end try
 	return failedIDs
 end rebuildList
+
+-- Delete-EMPTY verification (2026-10-29 doubling failure; see the
+-- header and apply-order.applescript). Deletes, re-reads, and
+-- confirms 0 song entries, retrying up to 5 times with a 5-second
+-- settle delay. Returns true only on a verified-empty re-read;
+-- returns false (never throws) if entries remain, the count cannot
+-- be read, or a delete attempt errors. Callers must treat false
+-- as "do not duplicate anything".
+on deletePlaylistSongs(pl)
+	repeat with attempt from 1 to 5
+		try
+			tell application "Music"
+				delete (every track of pl whose media kind is song)
+			end tell
+		on error
+		end try
+		delay 5
+		set remaining to -1
+		try
+			tell application "Music"
+				set remaining to count of (every track of pl whose media kind is song)
+			end tell
+		on error
+			set remaining to -1
+		end try
+		if remaining is 0 then return true
+	end repeat
+	return false
+end deletePlaylistSongs
 
 -- Build a desired list-read order under the measured mapping and
 -- verify it exactly. Returns {ok:boolean, failed:list}. No flip on
@@ -267,9 +330,15 @@ on tryRestoreMapping(pl, snapshotIDs, buildMapping)
 end tryRestoreMapping
 
 on playlistIDs(pl)
-	tell application "Music"
-		return persistent ID of every track of pl whose media kind is song
-	end tell
+	-- Bulk read under a generous timeout, like the build loops:
+	-- a 1612-entry playlist must not be cut off by AppleScript's
+	-- default timeout mid-read (a failed read fails the verify,
+	-- which restores; a slow read must not be mistaken for one).
+	with timeout of 3600 seconds
+		tell application "Music"
+			return persistent ID of every track of pl whose media kind is song
+		end tell
+	end timeout
 end playlistIDs
 
 on listsEqual(a, b)

@@ -17,6 +17,9 @@ Commands:
   record-history       Append picked IDs to a Rediscover history file
                        (the runner calls this only after a successful
                        apply, so a failed apply never burns cooldown)
+  dedupe               Unique songs of a playlist dump, first
+                       occurrence order (removes duplicate entries;
+                       never invents or drops a distinct song)
   validate-order       Safety gate: check an order text file against
                        the library dump and (optionally) the order
                        JSON before the bridge ever runs. Refuses an
@@ -181,6 +184,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--playlist", default="SeTeR Flow")
 
     p = sub.add_parser(
+        "dedupe",
+        help="unique songs of a playlist dump, first occurrence order",
+    )
+    _add_common(p)
+    _add_settings(p)
+    p.add_argument("--playlist", default=None)
+
+    p = sub.add_parser(
         "audit", help="tag-coverage audit of a library dump (changes nothing)"
     )
     p.add_argument("--library", required=True, help="library JSON dump")
@@ -194,7 +205,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--library", required=True, help="library JSON dump")
     p.add_argument("--order-txt", required=True, help="one ID per line")
     p.add_argument("--order-json", default=None, help="order JSON to agree with")
-    p.add_argument("--mode", default=None, choices=["shuffle", "flow", "rediscover"])
+    p.add_argument(
+        "--mode",
+        default=None,
+        choices=["shuffle", "flow", "rediscover", "dedupe"],
+    )
     p.add_argument("--expected-count", type=int, default=None)
 
     p = sub.add_parser(
@@ -264,13 +279,16 @@ def _run(args: argparse.Namespace) -> int:
         return 0
 
     # Only a one-playlist shuffle may see duplicate IDs in a dump
-    # (see --allow-duplicates above). Every other command keeps the
-    # strict default: in a library dump one ID is one song, so a
-    # repeat there is still a dump error, not two songs.
+    # (see --allow-duplicates above), plus dedupe itself, whose
+    # whole job is reading a dump that repeats IDs. Every other
+    # command keeps the strict default: in a library dump one ID is
+    # one song, so a repeat there is still a dump error, not two
+    # songs.
     tracks = load_library(
         args.library,
         allow_duplicates=(
-            args.command == "shuffle" and getattr(args, "allow_duplicates", False)
+            args.command == "dedupe"
+            or (args.command == "shuffle" and getattr(args, "allow_duplicates", False))
         ),
     )
     settings = _settings_from(args)
@@ -278,7 +296,27 @@ def _run(args: argparse.Namespace) -> int:
     now = datetime.now(timezone.utc)
     command = args.command
 
-    if command == "shuffle":
+    if command == "dedupe":
+        # Unique songs, first occurrence order: the dedupe order is
+        # a subset of the dump, never an invented ID, and it keeps
+        # the current list-read order of first appearances. It does
+        # NOT restore a backup order: on a reversed doubled playlist
+        # the result is unique songs in reversed order, and a
+        # backup-order restore is a separate step afterwards.
+        seen: set[str] = set()
+        ordered = []
+        for track in tracks:
+            if track.persistent_id not in seen:
+                seen.add(track.persistent_id)
+                ordered.append(track)
+        removed = len(tracks) - len(ordered)
+        energies = None
+        eligible = len(tracks)
+        header = (
+            f"Dedupe: {len(ordered)} unique songs from {len(tracks)} "
+            f"input tracks ({removed} duplicate entr{'y' if removed == 1 else 'ies'} removed)."
+        )
+    elif command == "shuffle":
         ordered = shuffle_tracks(
             tracks,
             spacing=settings.artist_spacing,

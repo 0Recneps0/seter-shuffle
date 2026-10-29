@@ -6,6 +6,135 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-29 — Delete-empty verification, dedupe, and a full runner sweep (sixth Python change, after a third real failure)
+
+**Why:** on 2026-10-29 at 00:41 PT Spencer ran the OLD .5 code
+again (a second download folder, not the sort-aware .1 build) on
+the real playlist, and the dump counted 1612 songs: the playlist
+had doubled between the 00:21 diagnostic (806 songs) and the
+00:41 run to exactly two copies of each song, backup =
+reverse(original) twice, pre-undo snapshot = original twice. The
+.5 apply and undo then failed verification in the same loop. The
+`.prev` backup (13701 bytes) still equals the original 806-song
+order, and Spencer says he has his own backup playlist, so
+recovery is not urgent — but the script must be fixed, and this
+build also sweeps every other open issue in BRIDGE-SAFETY.md and
+INVESTIGATION-2026-10-28.md instead of only the two named items.
+NOT PUBLISHED YET: this tree is unreviewed by the parent and
+unproven on a Mac; nothing here has been pushed by this build
+(the parent creates the release).
+
+**What changed (all in `seter-shuffle-python/`, nothing else):**
+
+- Delete-empty verification, in apply-order, undo,
+  restore-original, and sort-probe (new `deletePlaylistSongs`
+  handler in each): delete, re-read, confirm 0 song entries,
+  retry up to 5 times with a 5-second settle delay; if entries
+  remain, return the `delete-not-empty` sentinel and duplicate
+  NOTHING. Callers restore from the verified backup (apply) or
+  the pre-undo snapshot (undo) only if the playlist was actually
+  changed (a partial delete), and report "playlist unchanged" if
+  it still matches the backup/snapshot exactly. The doubling
+  mechanism itself (delete lagging at 806-song scale) is
+  UNPROVEN: the guard does not depend on it, and if no throwaway
+  reproduces the lag, the guard stands as prevention, not as a
+  proven root cause. Bulk reads (`playlistIDs`, `librarySize`)
+  are now inside 3600-second timeout blocks like the build loops.
+- Dedupe command: `./run.sh dedupe <playlist>` dumps one
+  playlist, computes unique songs in first-occurrence order
+  (`seter_shuffle/order_direction.py::dedupe_ids`, plus the CLI
+  `dedupe` command), validates it with a new `dedupe` mode
+  (exactly the dump's unique set, each ID once; a repeat, a drop,
+  or an invented ID refuses), then applies it through the SAME
+  safe rebuild path (snapshot backup, delete-empty verification,
+  sort-aware duplicate, exact verify, restore on failure).
+  Dedupe forces the bridge duplicate allowance to "0" (its order
+  is unique by construction). If the playlist holds no
+  duplicates, run.sh applies NOTHING (no rebuild of a clean
+  playlist). Documented everywhere it matters: dedupe preserves
+  first-occurrence order in the current list-read order, NOT the
+  original backup order, so on a reversed doubled playlist it
+  yields unique songs in reversed order and a backup-order
+  restore is still a separate step afterwards.
+- Runner bug fix, found by code review (BRIDGE-SAFETY.md mode
+  31): the .1 runner's `mapping_for_build` logged with `log()`
+  (tee to stdout) while every caller captures it with `$(...)`,
+  so every captured mapping carried a log line and the bridge
+  refused it. **No .1 build through run.sh could have run at
+  all** (direct osascript calls with a clean mapping word would
+  have worked, but run.sh is the documented path). Fixed by
+  logging with `logfile()` only inside `mapping_for_build`, and
+  guarded by a structural test that extracts the function body
+  and refuses any `log ` call in it. The fix was verified by
+  extracting the .2 function verbatim and capturing it to
+  exactly `[reversed]` (the .1 function captured to a polluted
+  two-line string in the same harness).
+- Backup chain (BRIDGE-SAFETY.md mode 32): the 00:41 run
+  overwrote the main backup with the doubled state, and only
+  `.prev` saved the original; one more failed run would have
+  overwritten `.prev` too. `apply_order` now writes the
+  pre-change snapshot to a fresh per-run file
+  (`<backup>.run-<timestamp>-<pid>.txt`), installs it as the
+  main backup ONLY after a verified successful apply (previous
+  main backup preserved as `.prev`), and keeps the newest 10
+  per-run snapshots. On apply failure the restore attempt uses
+  the per-run snapshot and the log states the main backup was
+  NOT overwritten. Undo never writes to the main backup path.
+- Stale-mapping and restore gaps (mode 33): a sort-probe failure
+  now DELETES the recorded mapping file (and writes it atomically
+  on success), so a failed re-probe cannot leave an old mapping
+  in place for a build under an unknown sort. New
+  `./run.sh restore <playlist> <backup-txt>` gives
+  restore-original the same freshness-checked gate as undo;
+  direct osascript calls remain possible and remain ungated on
+  freshness by construction, and the docs now say so plainly:
+  use run.sh, never call a bridge script directly for a build.
+  `run.sh undo` refuses before anything is deleted when the main
+  backup file is missing, listing recent backups instead.
+- Sort-probe "other" aborts now report the throwaway's state in
+  words (restored to snapshot vs left holding the rotation
+  order), not just a boolean, and run.sh's sort-probe failure
+  path names the throwaway snapshot file to check.
+- Undo, apply, and restore parity, checked by re-reading all
+  three: every run.sh path reads the recorded mapping fresh
+  (<24h), forward/reversed only, passes it identically, and the
+  bridge scripts each refuse any other mapping string before
+  resolving anything. No run.sh path builds without a mapping,
+  and no bridge script builds with an "other" mapping. The one
+  remaining bypass is direct osascript invocation (freshness
+  only, not mapping presence), documented as expert-only above.
+- Mac procedure updates (BRIDGE-SAFETY.md Stage 2): dedupe on a
+  doubled throwaway, dedupe again on the clean throwaway (must
+  apply nothing), a failing apply must leave the main backup
+  byte-identical, and a failed sort-probe must make the next
+  build refuse for lack of a mapping.
+- Tests: 128 passed, 0 failed here (101 previous + 27 new in
+  `tests/test_delete_empty_and_dedupe.py`: dedupe order
+  computation including the reversed-doubled shape, dedupe
+  validation file and in-memory, CLI dedupe on dump files
+  including the empty-playlist nonzero exit, and structural
+  guards for the delete-empty handler in all four scripts, the
+  logfile-only mapping reader, the per-run backup chain, the
+  sort-probe mapping deletion, and the restore command). Shell
+  syntax of run.sh checked with `bash -n`.
+
+**Still unproven on a Mac (honest list, with the test that would
+prove each):** every AppleScript change above, as before; the
+delete-lag mechanism itself (a throwaway whose delete can be
+shown to lag, or a doubled throwaway deduped cleanly, proves the
+guard, not the mechanism); the sort-matched mapping end to end
+(sortprobe on a descending throwaway, then descending/ascending/
+title controls, then negatives, then dedupe on a doubled
+throwaway, real playlist only at Stage 3 with Spencer's explicit
+approval); the per-run backup chain under a real failing apply;
+the size-ladder and selection-context and duplicate-copy tests
+from INVESTIGATION-2026-10-28.md step 5, which no throwaway run
+has yet performed and which could still implicate a property
+beyond sort; and whether the current doubled real playlist's
+state matches the last snapshots (a fresh read-only diagnostic
+is still owed before any real-playlist step). Nothing here
+claims any of that is proven.
+
 ## 2026-10-29 — Sort-matched build mapping replaces the fresh probe (fifth Python change, after a second real failure)
 
 **Why:** on 2026-10-28 at 23:46 PT the .5 bridge was run on the

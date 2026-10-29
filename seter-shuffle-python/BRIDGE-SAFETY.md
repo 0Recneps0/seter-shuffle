@@ -2,7 +2,7 @@
 
 Status, stated plainly: **this document describes a reviewed design,
 not a tested one.** The Python core and its validation were tested on
-Linux (101 tests, all passing). The AppleScript bridge cannot run here:
+Linux (128 tests, all passing). The AppleScript bridge cannot run here:
 this machine has no Music app and no osascript, so no bridge script
 has ever been executed. Nothing below claims a bridge script works.
 The Mac verification procedure at the end is what turns "reviewed"
@@ -212,6 +212,96 @@ build path has no probe input. That is deliberate, not an
 oversight: the only direction authority is the sort-matched
 mapping, recorded by sort-probe.
 
+## Failure mode 31: run.sh captured a log line into the mapping (2026-10-29, runner bug found by code review, not by a Mac run)
+
+The .1 runner's `mapping_for_build` logged its success line with
+`log()`, which tees to stdout, while every caller captures its
+output with `$(mapping_for_build)`. The captured "mapping" was
+therefore a two-line string (a timestamped log line, then the real
+mapping word), which every bridge script's `parseMapping` refuses
+before anything changes. Proven here, not assumed: a harness
+extracting the .1 function verbatim and capturing it produced
+`[2026-10-29 ... sort mapping for builds: forward ...\nforward]`,
+not `[forward]`. Consequence, stated plainly: **no build through
+run.sh could have run at all under .1** — every apply and undo
+would have failed at the mapping argument, playlist untouched. A
+direct osascript call with a clean mapping word would have worked,
+but run.sh is the documented path, so .1 was effectively
+unrunnable, not merely unproven. The fix is in run.sh only:
+`mapping_for_build` now logs with `logfile()` (log file only),
+never `log()`, and a structural test extracts the function body
+and refuses any `log ` call in it. The fix was re-verified the
+same way: the .2 function extracted verbatim captures to exactly
+`[reversed]`. The probe_mode function already had this discipline
+(logfile-only inside command substitution); mapping_for_build was
+the one place it was missed, which is why the test now guards the
+function text rather than trusting the pattern.
+
+## Failure mode 32: a failed run overwrote the only good backup (2026-10-29, real failure)
+
+The 00:41 run on 2026-10-29 took its pre-change snapshot from a
+playlist that had already doubled (1612 entries) and wrote it to
+the main backup path, overwriting the original 806-song backup.
+Only the `.prev` copy (the previous run's backup, preserved by the
+runner before clearing the path) still held the original order,
+and one more failed run would have overwritten `.prev` with the
+doubled state too: a chain of length one is not a safety net, it
+is a countdown. The snapshot itself was not wrong — a backup is a
+pre-change snapshot, and the pre-change state really was doubled —
+but letting a failed run destroy the last good state is. The fix
+is in run.sh's `apply_order`, and it changes backup semantics:
+the apply script now writes its snapshot to a fresh per-run file
+(`<backup>.run-<timestamp>-<pid>.txt`), never to the main backup
+path. Only after a verified successful apply is that file
+installed as the main backup (previous main backup preserved as
+`.prev`), and the per-run file is kept, not deleted: the newest
+10 per-run snapshots form a chain. On an apply failure, the
+restore attempt uses the per-run snapshot, and the log says
+explicitly that the main backup was NOT overwritten. Undo never
+writes to the main backup path at all (it writes only the
+`.pre-undo` snapshot), and `run.sh undo` now refuses before
+anything is deleted if the main backup file is missing, listing
+recent backups instead of letting the script discover it after a
+delete. What this does NOT fix: if the playlist is already
+corrupted before a run, the per-run snapshot faithfully records
+the corrupted state — that is correct snapshot behaviour, and the
+recovery for it is the chain (an older per-run snapshot, or the
+user's own backup playlist), not the newest file. Never assume
+the newest backup is the good one; check it against a known state
+before restoring from it.
+
+## Failure mode 33: stale mapping, un-gated restore, and missing-backup undo (runner gaps, fixed in run.sh)
+
+Three smaller runner gaps, all fail-closed now:
+
+  * A failed sort-probe used to leave a previously recorded
+    mapping in place. A re-probe that returns "other" means the
+    current sort is unknown, so a build under the old mapping
+    would be building under an unverified sort. A sort-probe
+    failure now DELETES the recorded mapping file and logs that
+    it did, so the next build refuses until a clean sort-probe
+    passes. The mapping file is also written atomically
+    (temp file + rename) on success.
+  * `restore-original.applescript` had no run.sh path, so its
+    only invocation was a direct osascript call, which bypasses
+    the 24-hour mapping freshness check by construction: a script
+    cannot know when its mapping argument was measured. There is
+    now `./run.sh restore <playlist> <backup-txt>`, which checks
+    the backup file exists and the mapping is fresh before
+    calling the script, exactly like undo. Direct osascript calls
+    to any bridge script remain possible and remain ungated on
+    freshness; the rule is now written down, not implied: never
+    call a bridge script directly for a build, use run.sh. The
+    scripts still require a mapping argument and refuse anything
+    but forward/reversed, so a direct call cannot build
+    unmapped, only stale-mapped.
+  * Undo, apply, and restore now share the exact same gate
+    sequence in run.sh: recorded mapping, fresh (<24h),
+    forward/reversed only, passed identically to the bridge
+    script, and the bridge script's own parseMapping refusal as
+    the second check. No run.sh path builds without a mapping,
+    and no bridge script builds with an "other" mapping.
+
 ## What the bridge is allowed to do
 
 - Modify exactly one regular user playlist, resolved by name, and
@@ -250,6 +340,16 @@ mapping, recorded by sort-probe.
 - Never deletes non-song entries (videos, etc.) from a playlist:
   every delete is filtered to `whose media kind is song`, and
   verification only compares song IDs.
+- Never duplicates into a non-empty playlist (mode 32's guard):
+  every rebuild deletes, re-reads, and confirms 0 song entries,
+  retrying the delete up to 5 times with a 5-second settle delay,
+  and duplicates nothing if entries remain. A delete that is
+  assumed but not verified is a known-unsafe step after the
+  2026-10-29 doubling, and this guard does not depend on what
+  made the delete lag: whatever the cause, a build that would
+  have doubled the playlist now aborts instead, restoring only if
+  the playlist was actually changed and reporting it unchanged if
+  it was not.
 
 ## Failure-mode table
 
@@ -287,6 +387,10 @@ that proves the guard on a real Mac.
 | 26 | Bridge errors missing from the log | The old runner piped only stdout to the log, so AppleScript errors could vanish. | Every step runs through run.sh's `step()` helper, which sends both stdout and stderr to the log and writes a GATE OK / GATE FAILED line, so the log proves which gate fired. | Trigger any failure and confirm the error text and the GATE FAILED line are both in `~/Library/Logs/seter-shuffle-python/run.log`. |
 | 27 | Restore's own verify throws instead of reporting failure | A restore that could not verify would throw a raw Music error, hiding whether a restore was attempted. | `tryRestore` never throws from its verify step: a verify error returns `{ok:false}`, and the caller reports it as a failed restore with the backup path. | Covered by mode 14's test; the message must name the backup file, not a raw Music error. |
 | 28 | Trimming an empty string reads a character that does not exist | AppleScript does not guarantee short-circuit evaluation, so a condition like "count > 0 and character 1 is a space" could read character 1 of an empty string. | `trimText` in both scripts is written as plain loops guarded by `t is not ""`, so no character of an empty string is ever read. | Covered by modes 5, 10, and 12 (empty and malformed files exercise trimText). |
+| 29 | Delete lags at large-playlist scale, doubling the playlist (delete-empty guard) | A rebuild assumed its delete took effect and duplicated a full copy on top of entries the delete had not removed; the real playlist doubled from 806 to 1612 entries (each song exactly twice) between the 00:21 diagnostic and the 00:41 run on 2026-10-29. Mechanism unproven, but the guard does not depend on it. | `deletePlaylistSongs` in apply, undo, restore-original, and sort-probe: delete, re-read, confirm 0 song entries, retry up to 5 times with a 5-second settle delay; on failure return `delete-not-empty` and duplicate nothing; callers restore only if the playlist changed, else report it unchanged. | Doubled throwaway test (Stage 2 step 9): a throwaway with each song twice must dedupe cleanly, and a throwaway whose delete is forced to fail (if a failure can be induced) must abort with the playlist unchanged, never doubled. The delete-lag mechanism itself is still unproven on a Mac: if no throwaway reproduces it, the guard stands as prevention, not as a proven root cause. |
+| 30 | run.sh captured a log line into the mapping (narrative mode 31) | `mapping_for_build` logged with `log()` (tee to stdout) while callers captured it with `$(...)`, so every captured mapping carried a log line and the bridge refused it: no .1 build through run.sh could run at all. | `mapping_for_build` logs with `logfile()` only; a structural test extracts the function body and refuses any `log ` call in it. | Run any build through run.sh (not direct osascript) on a throwaway: the apply must reach Music instead of failing at the mapping argument. If it fails there, the capture bug is back. |
+| 31 | Failed run overwrote the only good backup (narrative mode 32) | The 00:41 run wrote a doubled-state snapshot to the main backup path; only `.prev` saved the original, and one more failed run would have overwritten `.prev` too. | Per-run snapshot files, installed as the main backup only after a verified successful apply; previous main backup kept as `.prev`; newest 10 per-run snapshots kept as a chain; failure restores use the per-run snapshot and leave the main backup untouched. | Run a failing apply on a throwaway (e.g. a bad order that passes Python validation but fails in the bridge, or a forced failure), then confirm the main backup file is byte-identical to before the run and a per-run snapshot exists. |
+| 32 | Stale mapping survived a failed re-probe; restore had no gated path; undo could discover a missing backup after deleting (narrative mode 33) | A failed sort-probe left the old mapping in place; restore-original could only be called directly (no freshness check); undo resolved the playlist before checking the backup file existed (the script itself validates first, so this was a clarity gap, not a data-loss path). | Sort-probe failure deletes the recorded mapping; `./run.sh restore` gates backup existence and mapping freshness like undo; `run.sh undo` refuses with a list of recent backups when the main backup file is missing. | Fail a sort-probe (e.g. on a title-sorted throwaway returning "other"), then attempt a build: it must refuse for lack of a mapping, not proceed under the old one. Run `./run.sh restore` on a throwaway with a missing backup file: it must refuse untouched. |
 
 ## Further audit (2026-10-28): other potential bugs, beyond the reversal
 
@@ -466,6 +570,23 @@ order) and the run exits non-zero with a message naming the problem:
    then undo. Must end empty with success (modes 13, 19).
 8. Backup collision: create "A B" and "A_B" playlists, run an apply
    on each, confirm two distinct backup files (mode 21).
+9. Dedupe on a doubled throwaway (the 2026-10-29 recovery path):
+   make a throwaway with each song twice (duplicate every entry in
+   Music), run `./run.sh dedupe "<throwaway>"`, and confirm it ends
+   with each song exactly once, in first-occurrence order, and that
+   the run log names the per-run snapshot. Then run dedupe again
+   on the now-clean throwaway: it must report no duplicates and
+   apply nothing (no rebuild of a clean playlist).
+10. Failing apply must not touch the main backup: note the main
+    backup file's bytes, force an apply failure on a throwaway
+    (for example, an order file edited to fail in the bridge after
+    Python validation), and confirm the main backup file is
+    byte-identical afterwards, a per-run snapshot file exists, and
+    the log says the main backup was not overwritten.
+11. Failed sort-probe deletes the mapping: run sortprobe on a
+    title-sorted throwaway (must return "other"), then attempt a
+    build: it must refuse for lack of a recorded mapping, not
+    proceed under any previous mapping.
 
 ### Stage 3: real playlist, then undo (explicit approval required)
 
@@ -547,4 +668,17 @@ order) and the run exits non-zero with a message naming the problem:
   restore-original now REQUIRE a recorded sort-mapping argument.
   Old call shapes without a mapping fail loudly before anything
   changes. That breakage is intentional: an unmapped build is how
-  the .4/.5 failures happened.
+  the .4/.5 failures happened. But direct calls still bypass the
+  24-hour freshness check (a script cannot know when its mapping
+  argument was measured), so the supported path is run.sh only,
+  including `./run.sh restore` for restore-original; a direct call
+  is expert-only and must be given a mapping measured within 24
+  hours on a throwaway carrying the target's sort.
+- The newest backup file is not automatically the good one: since
+  the per-run change, the main backup is installed only after a
+  verified successful apply, and per-run snapshots (newest 10)
+  plus `.prev` form the chain. Before restoring from any backup,
+  check it against a known state (a dump comparison, or the
+  backup's first/last lines against a known order); a snapshot
+  taken from an already-corrupted playlist faithfully records the
+  corruption, and restoring from it would restore the corruption.

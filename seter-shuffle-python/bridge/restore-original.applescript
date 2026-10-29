@@ -40,6 +40,14 @@
 --    playlist". It never deletes a song from the library, and no
 --    line in this file ever deletes from library playlist 1.
 --  * Non-song entries are never deleted and are left in place.
+--  * DELETE-EMPTY VERIFICATION (2026-10-29 doubling failure): the
+--    same guard as apply-order/undo. Every rebuild here deletes,
+--    re-reads, and confirms 0 song entries, retrying up to 5 times
+--    with a 5-second settle delay (deletePlaylistSongs); if
+--    entries remain, nothing is duplicated, and the script reports
+--    the playlist unchanged when it still matches the pre-fix
+--    snapshot, or falls through to the snapshot-restore path when
+--    it was partially changed.
 --  * Build and restore loops run inside `with timeout of 3600
 --    seconds` blocks, so a large playlist is not cut off by
 --    AppleScript's default timeout mid-build.
@@ -83,6 +91,14 @@ on run argv
 	set failed to my rebuild(destPl, my buildForMapping(backupIDs, buildMapping))
 	if (count of failed) is 0 and my verifyAgainst(destPl, backupIDs) then
 		return "FIX OK: restored \"" & playlistName & "\" to the backup order (" & (count of backupIDs) & " songs, mapping " & buildMapping & "). Snapshot of the pre-fix state saved at " & snapshotPath & "."
+	end if
+	-- Delete-empty failure: nothing was duplicated. If the playlist
+	-- still matches the pre-fix snapshot exactly, it is unchanged
+	-- and no snapshot restore is needed; report that plainly
+	-- instead of the CRITICAL path below, which would wrongly
+	-- imply a partial playlist.
+	if failed contains "delete-not-empty" and my verifyAgainst(destPl, currentIDs) then
+		error "FIX FAILED: delete did not take effect after retries (playlist still holds song entries); nothing was duplicated and the playlist is unchanged, still in its pre-fix state. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Do not re-run until the delete works on a throwaway." number 1
 	end if
 	-- Could not prove the restore. Put the snapshot back, then
 	-- report failure honestly; never claim success on an unproven
@@ -144,9 +160,15 @@ on assertUserPlaylist(pl)
 end assertUserPlaylist
 
 on playlistIDs(pl)
-	tell application "Music"
-		return persistent ID of every track of pl whose media kind is song
-	end tell
+	-- Bulk read under a generous timeout, like the build loops:
+	-- a 1612-entry playlist must not be cut off by AppleScript's
+	-- default timeout mid-read (a failed read fails the verify,
+	-- which restores; a slow read must not be mistaken for one).
+	with timeout of 3600 seconds
+		tell application "Music"
+			return persistent ID of every track of pl whose media kind is song
+		end tell
+	end timeout
 end playlistIDs
 
 on listsEqual(a, b)
@@ -170,10 +192,13 @@ on verifyAgainst(pl, expectedIDs)
 	return my listsEqual(actualIDs, expectedIDs)
 end verifyAgainst
 
--- Delete the playlist's songs and duplicate the given IDs into it,
--- in the given order. Returns the IDs that could not be found in
--- the library (empty means every song was placed). Never throws
--- for a missing song; the caller decides what a failure means.
+-- Delete the playlist's songs, PROVE the playlist is empty, and
+-- only then duplicate the given IDs into it, in the given order.
+-- Returns the IDs that could not be found in the library (empty
+-- means every song was placed). Never throws for a missing song;
+-- the caller decides what a failure means. If the delete cannot
+-- be verified empty (deletePlaylistSongs), returns
+-- {"delete-not-empty"} and duplicates NOTHING.
 on rebuild(pl, idList)
 	set failedIDs to {}
 	try
@@ -181,11 +206,17 @@ on rebuild(pl, idList)
 	on error
 		return {"assert-failed"}
 	end try
+	set emptied to false
 	try
 		with timeout of 3600 seconds
-			tell application "Music"
-				delete (every track of pl whose media kind is song)
-			end tell
+			set emptied to my deletePlaylistSongs(pl)
+		end timeout
+	on error
+		set emptied to false
+	end try
+	if not emptied then return {"delete-not-empty"}
+	try
+		with timeout of 3600 seconds
 			tell application "Music"
 				repeat with pid in idList
 					set pidStr to contents of pid
@@ -203,6 +234,34 @@ on rebuild(pl, idList)
 	end try
 	return failedIDs
 end rebuild
+
+-- Delete-EMPTY verification (2026-10-29 doubling failure; see the
+-- header and apply-order.applescript). Deletes, re-reads, and
+-- confirms 0 song entries, retrying up to 5 times with a 5-second
+-- settle delay. Returns true only on a verified-empty re-read;
+-- returns false (never throws) otherwise. Callers must treat false
+-- as "do not duplicate anything".
+on deletePlaylistSongs(pl)
+	repeat with attempt from 1 to 5
+		try
+			tell application "Music"
+				delete (every track of pl whose media kind is song)
+			end tell
+		on error
+		end try
+		delay 5
+		set remaining to -1
+		try
+			tell application "Music"
+				set remaining to count of (every track of pl whose media kind is song)
+			end tell
+		on error
+			set remaining to -1
+		end try
+		if remaining is 0 then return true
+	end repeat
+	return false
+end deletePlaylistSongs
 
 on trimText(t)
 	set spaceChar to " "

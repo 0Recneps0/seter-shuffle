@@ -42,18 +42,30 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   Library itself, smart playlists, and anything that is not a
   regular user playlist, refuses ambiguous playlist names instead
   of guessing, and fails if the library shrank during the run.
-  `undo.applescript` replays a backup file with the same
-  strictness, and snapshots the current playlist first so a failed
-  undo is recoverable. `restore-original.applescript` is a one-off
-  recovery script that also takes a recorded mapping (no probe,
-  no flip). The bridge never decides an order, and never flips on
-  failure: a failed verify restores and exits non-zero. Full
-  failure-mode table, the one case AppleScript cannot cover (power
-  loss / force-quit mid-write), and the Mac verification procedure:
-  see `BRIDGE-SAFETY.md`. The bridge has been reviewed line by
-  line but never executed: this machine has no Music app or
-  osascript, so until the Mac procedure in `BRIDGE-SAFETY.md` has
-  been run, treat it as reviewed, not tested.
+  Every rebuild first proves its delete took effect: it deletes,
+  re-reads, and confirms 0 song entries, retrying up to 5 times
+  with a 5-second settle delay, and duplicates nothing if entries
+  remain (2026-10-29 doubling failure: a real playlist doubled to
+  1612 entries, consistent with a lagging delete; the guard does
+  not depend on that mechanism being proven). `undo.applescript`
+  replays a backup file with the same strictness, and snapshots
+  the current playlist first so a failed undo is recoverable.
+  `restore-original.applescript` is a one-off recovery script that
+  also takes a recorded mapping (no probe, no flip), runnable
+  through `./run.sh restore` with the same freshness-checked
+  mapping gate as undo. Backups are per-run: the apply writes to
+  a fresh per-run snapshot file, installed as the main backup only
+  after a verified successful apply, so a failed run can never
+  overwrite the only good backup (the 00:41 run did exactly that
+  under the old scheme). The bridge never decides an order, and
+  never flips on failure: a failed verify restores and exits
+  non-zero. Full failure-mode table, the one case AppleScript
+  cannot cover (power loss / force-quit mid-write), and the Mac
+  verification procedure: see `BRIDGE-SAFETY.md`. The bridge has
+  been reviewed line by line but never executed: this machine has
+  no Music app or osascript, so until the Mac procedure in
+  `BRIDGE-SAFETY.md` has been run, treat it as reviewed, not
+  tested.
 - **Validation** (`seter_shuffle/validate.py`, plus `validate-order`
   and `validate-backup` CLI commands): the same refuse rules as the
   bridge, applied in Python before osascript ever runs, so a bad
@@ -90,6 +102,19 @@ From this directory:
 ./run.sh rediscover             # refresh "SeTeR Rediscover" (history is
                                 # recorded only after a successful apply)
 ./run.sh undo "SeTeR Flow"      # restore a playlist from its last backup
+./run.sh dedupe "My Playlist"   # remove duplicate entries (unique songs,
+                                # first-occurrence order); applies nothing
+                                # if the playlist has no duplicates.
+                                # NOTE: dedupe preserves the current
+                                # list-read order, not a backup order,
+                                # so on a reversed doubled playlist
+                                # it yields unique songs in reversed
+                                # order; a backup-order restore is a
+                                # separate step afterwards.
+./run.sh restore "My Playlist" backup.txt
+                                # restore a playlist from a given backup
+                                # file (freshness-checked mapping, same
+                                # gate as undo)
 ```
 
 Direct core commands (no Music involved, useful for testing):
@@ -99,9 +124,11 @@ python3 -m seter_shuffle.cli audit --library dump.json
 python3 -m seter_shuffle.cli flowPreview --library dump.json --seed 42
 python3 -m seter_shuffle.cli flow --library dump.json --out order.json --order-txt order.txt
 python3 -m seter_shuffle.cli shuffle --library dump.json --out order.json --order-txt order.txt
+python3 -m seter_shuffle.cli dedupe --library dump.json --out order.json --order-txt order.txt
 python3 -m seter_shuffle.cli rediscover-preview --library dump.json --history rediscover-history.tsv
 python3 -m seter_shuffle.cli record-history --history rediscover-history.tsv --ids-file order.txt
 python3 -m seter_shuffle.cli validate-order --library dump.json --order-txt order.txt --order-json order.json --mode shuffle
+python3 -m seter_shuffle.cli validate-order --library dump.json --order-txt order.txt --order-json order.json --mode dedupe
 python3 -m seter_shuffle.cli validate-backup --backup backup.txt
 ```
 
@@ -178,7 +205,7 @@ edit `run.sh` if you want different ones baked in.
 
 ## What was actually tested, and what was not
 
-Tested here, for real (41 tests, all passing):
+Tested here, for real (128 tests, all passing):
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -197,7 +224,13 @@ audit counts matching a known fixture (including BPM zero vs
 missing), the missing-BPM spread, gospel/Christian/latin/afrobeats/
 soundtrack genre mapping, BPM-present songs scoring exactly as
 before, the skip penalty applying only without BPM, and the
-movement/familiarity tie-break being deterministic.
+movement/familiarity tie-break being deterministic, plus the new
+work: dedupe first-occurrence order (including the reversed-doubled
+shape), dedupe validation refusing repeats, drops, and invented
+IDs, the CLI dedupe command on dump files, and structural guards
+for the delete-empty handler in all four bridge scripts, the
+logfile-only mapping reader, the per-run backup chain, the
+sort-probe mapping deletion on failure, and the restore command.
 
 NOT tested, and not claimed to work until a Mac run proves it (the
 full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md). This warning is

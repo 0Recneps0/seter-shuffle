@@ -47,6 +47,12 @@ Mode rules (on top of the above):
     no less. For a whole-library shuffle the dump is the library; for
     a one-playlist shuffle the dump is that playlist, so the rule is
     the same either way: a shuffle reorders, it never adds or drops.
+  - dedupe: the order must be exactly the dump's UNIQUE song set,
+    each ID exactly once, in any order (the core emits first-
+    occurrence order). An order that drops a distinct song, repeats
+    one, or invents one is refused. This says nothing about which
+    order the unique songs end up in: dedupe preserves the current
+    list-read first-occurrence order, not a backup order.
   - flow / rediscover: every ID must be Flow-eligible (enabled and
     not disliked). The core already filters this; validation is the
     second check, not the picker.
@@ -149,7 +155,7 @@ def validate_order_file(
 ) -> list[str]:
     """Validate an order file against a library dump.
 
-    mode is None, "shuffle", "flow", or "rediscover". Raises
+    mode is None, "shuffle", "flow", "rediscover", or "dedupe". Raises
     ValueError listing every problem found. Returns the validated
     IDs in order on success.
     """
@@ -226,6 +232,17 @@ def validate_order_file(
                 f"(same songs, same multiplicities): "
                 f"order has {len(ids)} IDs, dump has {len(tracks)} songs"
             )
+    elif mode == "dedupe":
+        # Exactly the dump's unique set, each ID once: a dedupe
+        # order must neither drop a distinct song nor keep a
+        # second copy of one, and (via the multiplicity/missing
+        # checks above) it cannot invent an ID either.
+        if Counter(ids) != Counter({pid: 1 for pid in library_ids}):
+            errors.append(
+                f"dedupe order must be exactly the dump's unique songs "
+                f"(each once): order has {len(ids)} IDs, dump has "
+                f"{len(tracks)} entries and {len(library_ids)} unique songs"
+            )
     elif mode in ("flow", "rediscover"):
         ineligible = [
             pid
@@ -297,6 +314,12 @@ def validate_order_text(
                 errors.append("shuffle order must be exactly the library songs (same multiplicities)")
         elif set(id_list) != library_ids or len(id_list) != len(library_ids):
             errors.append("shuffle order must be exactly the library song set")
+    if mode == "dedupe":
+        if Counter(id_list) != Counter({pid: 1 for pid in library_ids}):
+            errors.append(
+                "dedupe order must be exactly the library's unique songs "
+                "(each once)"
+            )
     if mode in ("flow", "rediscover") and eligible_ids is not None:
         bad = [pid for pid in id_list if pid not in eligible_ids]
         if bad:

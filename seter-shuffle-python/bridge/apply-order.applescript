@@ -60,6 +60,24 @@
 --    be found in the
 --    library, or any library shrink during the run restores the
 --    playlist from the backup and exits non-zero.
+--  * DELETE-EMPTY VERIFICATION (2026-10-29 doubling failure): a
+--    delete that is assumed but not verified is now a known-unsafe
+--    step. Between the 00:21 diagnostic (806 songs) and the 00:41
+--    run on 2026-10-29, "My New Sandwich Recipe" doubled to 1612
+--    entries, exactly two copies of each song in reverse-backup
+--    order twice: consistent with a rebuild duplicating a full
+--    copy on top of entries a lagging delete had not removed.
+--    The mechanism is unproven, but the guard does not depend on
+--    it: every rebuild here first deletes, then RE-READS the
+--    playlist and confirms it holds 0 song entries, retrying the
+--    delete up to 5 times with a 5-second settle delay between
+--    attempts (deletePlaylistSongs). If entries remain after the
+--    retries, NOTHING is duplicated into the playlist: the run
+--    aborts, restoring from the verified backup only if the
+--    playlist was actually changed (a partial delete), and
+--    reporting "playlist unchanged" if it was not. A build that
+--    duplicates into a non-empty playlist can never happen from
+--    this script again, whatever made the delete lag.
 --  * Any error after changes start triggers a restore attempt, and
 --    the script still exits non-zero. If the restore itself fails,
 --    the error says so loudly and names the backup file, so the
@@ -184,6 +202,22 @@ on run argv
 	set buildResult to my buildAndVerifyMapping(destPl, orderIDs, buildMapping)
 	if not (ok of buildResult) then
 		set buildFailed to failed of buildResult
+		-- Delete-empty failure: nothing was duplicated (see
+		-- deletePlaylistSongs). Restore only if the playlist was
+		-- actually changed (a partial delete); if it still
+		-- matches the backup exactly, it is unchanged and no
+		-- restore is needed or attempted.
+		if buildFailed contains "delete-not-empty" then
+			if my verifyAgainst(destPl, backupIDs) then
+				error "apply-order: delete did not take effect after retries (playlist still holds song entries); nothing was duplicated and the playlist is unchanged. Backup at " & backupPath & ". Do not re-run until the delete works on a throwaway." number 1
+			end if
+			set restoreResult to my tryRestoreMapping(destPl, backupIDs, buildMapping)
+			if ok of restoreResult then
+				error "apply-order: delete did not take effect after retries, so nothing was applied; playlist restored from backup at " & backupPath & "." number 1
+			else
+				error "apply-order: CRITICAL: delete did not take effect AND restore failed for \"" & playlistName & "\"; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
+			end if
+		end if
 		set restoreResult to my tryRestoreMapping(destPl, backupIDs, buildMapping)
 		if ok of restoreResult then
 			if (count of buildFailed) > 0 then
@@ -244,13 +278,17 @@ on buildForMapping(desiredIDs, buildMapping)
 	return desiredIDs
 end buildForMapping
 
--- Delete the playlist's songs and duplicate the given IDs into it,
--- in the given order. Returns the IDs that could not be found in
--- the library (empty means every song was placed). Never throws
--- for a missing song; the caller decides what a failure means.
--- An outer error (Music quitting mid-build, for example) is
--- reported as a single "rebuild-error" entry, so the caller still
--- restores instead of trusting a partial build.
+-- Delete the playlist's songs, PROVE the playlist is empty, and
+-- only then duplicate the given IDs into it, in the given order.
+-- Returns the IDs that could not be found in the library (empty
+-- means every song was placed). Never throws for a missing song;
+-- the caller decides what a failure means. An outer error (Music
+-- quitting mid-build, for example) is reported as a single
+-- "rebuild-error" entry, so the caller still restores instead of
+-- trusting a partial build. If the delete cannot be verified
+-- empty (deletePlaylistSongs), returns {"delete-not-empty"} and
+-- duplicates NOTHING: duplicating into a non-empty playlist is
+-- how a doubled playlist happens, and it is refused here outright.
 on rebuildList(pl, idList)
 	set failedIDs to {}
 	try
@@ -258,11 +296,17 @@ on rebuildList(pl, idList)
 	on error
 		return {"assert-failed"}
 	end try
+	set emptied to false
 	try
 		with timeout of 3600 seconds
-			tell application "Music"
-				delete (every track of pl whose media kind is song)
-			end tell
+			set emptied to my deletePlaylistSongs(pl)
+		end timeout
+	on error
+		set emptied to false
+	end try
+	if not emptied then return {"delete-not-empty"}
+	try
+		with timeout of 3600 seconds
 			tell application "Music"
 				repeat with pid in idList
 					set pidStr to contents of pid
@@ -280,6 +324,43 @@ on rebuildList(pl, idList)
 	end try
 	return failedIDs
 end rebuildList
+
+-- Delete-EMPTY verification (2026-10-29 doubling failure; see the
+-- header). Deletes the playlist's song entries, then re-reads the
+-- playlist and confirms it holds 0 song entries, retrying the
+-- delete up to 5 times with a 5-second settle delay between
+-- attempts, because a delete at 806-song scale may lag or not
+-- take effect before a duplicate loop starts. Returns true only
+-- on a verified-empty re-read; returns false (never throws) if
+-- entries remain after the retries, if the count cannot be read,
+-- or if a delete attempt errors. Callers must treat false as
+-- "do not duplicate anything". Non-song entries are never
+-- deleted and are not counted: the count filters to song entries
+-- only, exactly like every other read in this script.
+on deletePlaylistSongs(pl)
+	repeat with attempt from 1 to 5
+		try
+			tell application "Music"
+				delete (every track of pl whose media kind is song)
+			end tell
+		on error
+			-- A failed delete event proves nothing about the
+			-- playlist's contents; fall through to the re-read,
+			-- which is the only evidence this handler trusts.
+		end try
+		delay 5
+		set remaining to -1
+		try
+			tell application "Music"
+				set remaining to count of (every track of pl whose media kind is song)
+			end tell
+		on error
+			set remaining to -1
+		end try
+		if remaining is 0 then return true
+	end repeat
+	return false
+end deletePlaylistSongs
 
 -- Build a desired list-read order under the measured mapping and
 -- verify it exactly. Returns {ok:boolean, failed:list}. A false
@@ -366,15 +447,23 @@ on assertUserPlaylist(pl)
 end assertUserPlaylist
 
 on librarySize()
-	tell application "Music"
-		return count of tracks of library playlist 1
-	end tell
+	with timeout of 3600 seconds
+		tell application "Music"
+			return count of tracks of library playlist 1
+		end tell
+	end timeout
 end librarySize
 
 on playlistIDs(pl)
-	tell application "Music"
-		return persistent ID of every track of pl whose media kind is song
-	end tell
+	-- Bulk read under a generous timeout, like the build loops:
+	-- a 1612-entry playlist must not be cut off by AppleScript's
+	-- default timeout mid-read (a failed read fails the verify,
+	-- which restores; a slow read must not be mistaken for one).
+	with timeout of 3600 seconds
+		tell application "Music"
+			return persistent ID of every track of pl whose media kind is song
+		end tell
+	end timeout
 end playlistIDs
 
 on listsEqual(a, b)

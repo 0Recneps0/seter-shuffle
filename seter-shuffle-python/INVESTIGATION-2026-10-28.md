@@ -309,6 +309,46 @@ depends on which step above proves the mechanism:
   exposed, track kinds and cloud statuses of its entries), not
   another build attempt.
 
+## 7. Addendum, 2026-10-29: what this investigation's open items became
+
+This section is an addendum, not a rewrite: the investigation above
+stands as written, including its "not a fix" status. What changed
+after it:
+
+- The sort theory (section 4) became the design: the user
+  confirmed Playlist Order descending on the real playlist, the
+  diagnostic killed track index as a manual-order reference, and
+  the .1 build replaced the fresh probe with a sort-matched
+  mapping measured on a throwaway carrying the target's sort
+  (BRIDGE-SAFETY.md mode 30). The .1 build itself then turned out
+  to be unrunnable through run.sh (mode 31: the mapping capture
+  bug), fixed in the .2 build; that bug is a runner bug, not
+  evidence for or against the sort theory.
+- A third real failure, 2026-10-29 00:41 PT (OLD .5 code, not the
+  .1 build): the playlist had doubled to 1612 entries between the
+  00:21 diagnostic and the 00:41 run, backup = reverse(original)
+  twice. This implicates a NEW candidate the investigation did not
+  name: a delete step lagging or not taking effect at 806-song
+  scale, so a rebuild duplicates on top of old entries. It is
+  UNPROVEN (no throwaway has reproduced a lagging delete), and
+  the .2 build guards against it (delete-empty verification)
+  without claiming it as the root cause.
+- Still open from step 5, untested on any throwaway: the size
+  ladder (5d), the selection-context test (5e), and the
+  duplicate-copy test (5b, which would show whether a reversing
+  property travels with a copy). The sort-matched mapping design
+  does not need these to be resolved before throwaway testing,
+  because it measures the end-to-end mapping rather than naming
+  the mechanism — but if a sort-matched throwaway returns
+  "other" or a descending throwaway passes on old code, these
+  unresolved candidates are the first place to look, and the real
+  playlist must still not be touched until the gate below is met.
+- The backup lesson from the 00:41 run is now a design rule, not
+  just a note: a failed run must never overwrite the only good
+  backup. The .2 build writes per-run snapshots and installs one
+  as the main backup only after a verified successful apply
+  (BRIDGE-SAFETY.md mode 32).
+
 ## 7. Gate for touching the real playlist again
 
 ALL of these must be true before any build, apply, undo, or restore

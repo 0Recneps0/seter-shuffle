@@ -273,6 +273,30 @@ def build_for_mapping(desired: Sequence[T], mapping: str) -> list[T]:
     return list(desired)
 
 
+def dedupe_ids(ids: Sequence[T]) -> list[T]:
+    """Unique IDs keeping first occurrence order.
+
+    This is the core of `./run.sh dedupe <playlist>`: a playlist
+    dump lists each entry, so a doubled playlist (the 2026-10-29
+    failure: 1612 entries, each of 806 songs exactly twice) yields
+    its unique songs in first-occurrence order. The result is a
+    SUBSET of the input in the input's order; it never invents an
+    ID, never reorders distinct songs, and never keeps a later
+    copy over an earlier one. It does NOT recover an original
+    backup order: on a reversed doubled playlist (reverse(B)
+    twice) the dedupe result is reverse(B), unique, and a
+    backup-order restore is still a separate step afterwards.
+    The input is never mutated.
+    """
+    seen: set[T] = set()
+    out: list[T] = []
+    for pid in ids:
+        if pid not in seen:
+            seen.add(pid)
+            out.append(pid)
+    return out
+
+
 def expected_for_mapping(desired: Sequence[T], mapping: str) -> list[T]:
     """List-read expectation after a mapping build of `desired`.
 
