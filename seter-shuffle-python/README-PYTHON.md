@@ -22,34 +22,43 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   experimental AppleScript build. It works only on a JSON dump. It
   never opens Music, never edits the dump, and never writes a playlist.
   This is the part that is fully testable on any machine.
-- **Bridge** (`bridge/`, three small AppleScript files): the only code
+- **Bridge** (`bridge/`, AppleScript files): the only code
   that talks to Music. `dump-library.applescript` dumps a library or
-  playlist to JSON. `apply-order.applescript` snapshots a playlist's
-  IDs to a backup file BEFORE changing anything, rebuilds it in the
-  given order, verifies the exact IDs in the exact order, and restores
-  from the backup on any failure; it refuses the Library itself,
-  smart playlists, and anything that is not a regular user playlist,
-  refuses ambiguous playlist names instead of guessing, and fails if
-  the library shrank during the run. `undo.applescript` replays a
-  backup file with the same strictness, and snapshots the current
-  playlist first so a failed undo is recoverable. The bridge never
-  decides an order. Full failure-mode table, the one case AppleScript
-  cannot cover (power loss / force-quit mid-write), and the Mac
-  verification procedure: see `BRIDGE-SAFETY.md`. The bridge has
-  been reviewed line by line but never executed: this machine has
-  no Music app or osascript, so until the Mac procedure in
-  `BRIDGE-SAFETY.md` has been run, treat it as reviewed, not tested.
+  playlist to JSON. `probe-order.applescript` measures this Mac's
+  playlist order direction on a 3-song probe playlist it creates
+  and deletes itself, reporting forward, insert-reversed, or
+  read-reversed, or ambiguous (which aborts everything); run.sh
+  runs it before every apply and undo. `apply-order.applescript`
+  snapshots a playlist's IDs to a backup file BEFORE changing
+  anything, rebuilds it in the probed direction, verifies exactly
+  under that mode, and restores from the backup on any failure; it
+  refuses the Library itself, smart playlists, and anything that is
+  not a regular user playlist, refuses ambiguous playlist names
+  instead of guessing, and fails if the library shrank during the
+  run. `undo.applescript` replays a backup file with the same
+  strictness, and snapshots the current playlist first so a failed
+  undo is recoverable. `restore-original.applescript` is a one-off
+  recovery script (probe by default, explicit "flip" mode only for
+  throwaways). The bridge never decides an order, and never flips
+  on failure: a failed verify restores and exits non-zero. Full
+  failure-mode table, the one case AppleScript cannot cover (power
+  loss / force-quit mid-write), and the Mac verification procedure:
+  see `BRIDGE-SAFETY.md`. The bridge has been reviewed line by
+  line but never executed: this machine has no Music app or
+  osascript, so until the Mac procedure in `BRIDGE-SAFETY.md` has
+  been run, treat it as reviewed, not tested.
 - **Validation** (`seter_shuffle/validate.py`, plus `validate-order`
   and `validate-backup` CLI commands): the same refuse rules as the
   bridge, applied in Python before osascript ever runs, so a bad
   order is caught while the playlist is still untouched. Empty
-  orders, duplicate IDs, IDs missing from the dump, shuffle orders
-  that are not exactly the dump's song set, truncated orders (the
-  text file must agree exactly with the order JSON), and malformed
-  files are all refused. Backups are validated too, with one
-  deliberate difference: duplicates are allowed in a backup (a real
-  playlist can hold the same song twice) and an empty backup is
-  valid (it snapshots an empty playlist).
+  orders, IDs missing from the dump, shuffle orders that are not
+  exactly the dump's songs (same songs, same multiplicities),
+  orders repeating an ID more times than the dump does, truncated
+  orders (the text file must agree exactly with the order JSON),
+  and malformed files are all refused. Backups are validated too,
+  with one deliberate difference: duplicates are allowed in a
+  backup (a real playlist can hold the same song twice) and an empty
+  backup is valid (it snapshots an empty playlist).
 - **Runner** (`run.sh`): wires bridge -> core -> bridge, logs to
   `~/Library/Logs/seter-shuffle-python/run.log`, and keeps backups
   under the same directory. `check-python.sh` verifies a real python3
@@ -184,13 +193,18 @@ before, the skip penalty applying only without BPM, and the
 movement/familiarity tie-break being deterministic.
 
 NOT tested, and not claimed to work until a Mac run proves it (the
-full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md):
+full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md). This warning is
+stronger than it was for .4, because .4 was also "reviewed, not
+tested" and then failed on a real 806-song playlist (its pre-undo
+snapshot came back the exact reverse of the original backup; see
+BRIDGE-SAFETY.md mode 29):
 
-- All three bridge scripts: every Music interaction, including bulk
+- All bridge scripts: every Music interaction, including bulk
   property reads for bpm/year/dates, `month as integer` and the
   date-component ISO formatting in the dump script, `first track ...
-  whose persistent ID is ...`, duplicate-to-playlist ordering, and the
-  verify/restore paths.
+  whose persistent ID is ...`, duplicate-to-playlist ordering, the
+  verify/restore paths, and now the probe itself (including whether
+  the track `index` property is exposed on playlist tracks at all).
 - `run.sh` end to end: it needs osascript and Music, neither of which
   exists on the Linux machine this was built on. Its shell syntax was
   checked (`bash -n`), and its python-path parsing was fixed during
@@ -200,11 +214,17 @@ full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md):
   been observed from here.
 
 Suggested Mac verification order: `./check-python.sh` first, then
-`./run.sh audit` (changes nothing, and answers whether BPM is truly
-missing or the dump is failing), then `./run.sh flowPreview` (changes
-nothing), then `./run.sh flow` on a small test playlist if possible,
-then check the playlist order, the run log, and
-`./run.sh undo "SeTeR Flow"` restoring the backup.
+`./run.sh probe` (measures this Mac's playlist order direction on a
+3-song probe playlist it creates and deletes; an ambiguous verdict
+aborts everything by design), then `./run.sh probe-keep` and LOOK at
+the probe playlist in Music itself to confirm the on-screen order
+matches the verdict, then `./run.sh audit` (changes nothing, and
+answers whether BPM is truly missing or the dump is failing), then
+`./run.sh flowPreview` (changes nothing), then the full throwaway
+procedure in BRIDGE-SAFETY.md (Stage 1 happy path, Stage 2 negative
+tests, Stage 3 a real playlist you can afford to have rewritten).
+Nothing in this procedure runs on a real playlist first, and nothing
+runs on "My New Sandwich Recipe" until Stage 3 at the earliest.
 
 ## Known differences and quirks, kept on purpose
 

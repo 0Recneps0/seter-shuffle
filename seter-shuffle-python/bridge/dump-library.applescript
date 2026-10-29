@@ -31,11 +31,11 @@
 --    load malformed JSON, duplicate persistent IDs, or a non-list
 --    tracks value, so a bad dump still fails closed before any
 --    playlist write.
---  * One honest limitation: JSON escaping here handles backslash,
---    quote, newline, carriage return, and tab. An exotic control
---    character in a track name would make the JSON unparseable, and
---    the Python core then refuses to load it (fail-closed: the run
---    stops before any apply). It cannot silently corrupt an order.
+--  * JSON escaping handles backslash, quote, newline, carriage
+--    return, tab, and every other control character (as \u00XX), so
+--    an exotic control character in a track name cannot make the
+--    JSON unparseable. Non-ASCII characters pass through as UTF-8,
+--    which JSON allows and the Python core reads.
 --
 -- Usage:
 --   osascript dump-library.applescript <output-json-path> [playlist-name]
@@ -240,29 +240,39 @@ on jsonText(s)
 	return "\"" & my jsonEscape(s) & "\""
 end jsonText
 
+-- Character-by-character escape: backslash, quote, and the control
+-- characters get JSON escapes; everything else passes through
+-- unchanged (UTF-8 output, so non-ASCII names are fine). The old
+-- version handled only five escapes and left any other control
+-- character raw, which made the JSON unparseable and stopped the
+-- run fail-closed; this version cannot do that. Written as a loop
+-- over characters rather than text-item splits so no control
+-- character can slip through a delimiter the split did not name.
 on jsonEscape(s)
-	set AppleScript's text item delimiters to "\\"
-	set parts to text items of s
-	set AppleScript's text item delimiters to "\\\\"
-	set s to parts as text
-	set AppleScript's text item delimiters to "\""
-	set parts to text items of s
-	set AppleScript's text item delimiters to "\\\""
-	set s to parts as text
-	set AppleScript's text item delimiters to linefeed
-	set parts to text items of s
-	set AppleScript's text item delimiters to "\\n"
-	set s to parts as text
-	set AppleScript's text item delimiters to return
-	set parts to text items of s
-	set AppleScript's text item delimiters to "\\r"
-	set s to parts as text
-	set AppleScript's text item delimiters to tab
-	set parts to text items of s
-	set AppleScript's text item delimiters to "\\t"
-	set s to parts as text
-	set AppleScript's text item delimiters to ""
-	return s
+	set outText to ""
+	set hexDigits to "0123456789abcdef"
+	repeat with ch in s
+		set c to contents of ch
+		if c is "\\" then
+			set outText to outText & "\\\\"
+		else if c is "\"" then
+			set outText to outText & "\\\""
+		else if c is linefeed then
+			set outText to outText & "\\n"
+		else if c is return then
+			set outText to outText & "\\r"
+		else if c is tab then
+			set outText to outText & "\\t"
+		else if (id of c) < 32 then
+			set codeNum to id of c
+			set hiChar to character ((codeNum div 16) + 1) of hexDigits
+			set loChar to character ((codeNum mod 16) + 1) of hexDigits
+			set outText to outText & "\\u00" & hiChar & loChar
+		else
+			set outText to outText & c
+		end if
+	end repeat
+	return outText
 end jsonEscape
 
 on jsonNumber(x)

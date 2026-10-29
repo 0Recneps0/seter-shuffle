@@ -21,10 +21,16 @@ Refuse rules for an order file (any mode):
     whitespace, no whitespace or control characters inside an ID.
     A blank line in the middle, or a missing trailing structure, is
     treated as corruption, not skipped silently.
-  - No duplicate IDs. The core never emits a duplicate (shuffle,
-    Flow, and Rediscover all pick each song at most once), so a
-    duplicate in the file is corruption, and applying it would create
-    a duplicate entry in the playlist.
+  - No ID may appear more times than it appears in the dump. The
+    core never emits a duplicate for a whole-library order, so a
+    repeat there is corruption. But a one-playlist shuffle may
+    legitimately repeat an ID exactly as many times as the playlist
+    itself repeats that song (Music allows duplicate entries in one
+    playlist), so the rule is multiplicity, not a blanket refusal:
+    an order with more copies of an ID than the dump has is refused,
+    and a shuffle order must match the dump's multiset exactly (see
+    below). The bridge applies the same rule via its duplicate
+    allowance flag for playlist shuffles.
   - Every ID must be present in the library dump. An ID the dump does
     not know is refused with the missing IDs listed, never silently
     skipped (skipping would shift every later song and, worse, would
@@ -67,8 +73,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .tracks import Track, load_library
 
@@ -147,26 +154,31 @@ def validate_order_file(
     IDs in order on success.
     """
     errors: list[str] = []
-    tracks: list[Track] = load_library(library_path)
+    # A one-playlist dump may repeat an ID (duplicate playlist
+    # entries), so the dump is loaded with duplicates allowed and the
+    # checks below are multiplicity checks, not set checks. A
+    # whole-library dump has no repeats, so nothing is loosened there.
+    tracks: list[Track] = load_library(library_path, allow_duplicates=True)
     library_ids = {t.persistent_id for t in tracks}
     by_id = {t.persistent_id: t for t in tracks}
+    dump_counts = Counter(t.persistent_id for t in tracks)
 
     ids, read_errors = _read_lines(order_txt_path)
     errors.extend(read_errors)
     if not ids and not read_errors:
         errors.append("order file is empty: refusing to wipe a playlist to empty")
 
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for pid in ids:
-        if pid in seen and pid not in duplicates:
-            duplicates.append(pid)
-        seen.add(pid)
-    if duplicates:
+    order_counts = Counter(ids)
+    over = [
+        pid
+        for pid, count in order_counts.items()
+        if count > dump_counts.get(pid, 0)
+    ]
+    if over:
         errors.append(
-            f"duplicate persistent IDs in order file (would duplicate "
-            f"playlist entries): {', '.join(duplicates[:10])}"
-            + (f" and {len(duplicates) - 10} more" if len(duplicates) > 10 else "")
+            f"order file repeats IDs more times than the dump does "
+            f"(would invent duplicate playlist entries): {', '.join(over[:10])}"
+            + (f" and {len(over) - 10} more" if len(over) > 10 else "")
         )
 
     missing = [pid for pid in ids if pid not in library_ids]
@@ -204,9 +216,14 @@ def validate_order_file(
                     )
 
     if mode == "shuffle":
-        if set(ids) != library_ids or len(ids) != len(tracks):
+        # Multiset equality, not set equality: a playlist shuffle
+        # must preserve duplicate entries exactly (same songs, same
+        # multiplicities), and a set check would pass an order that
+        # dropped a duplicate entry while keeping one copy of the song.
+        if Counter(ids) != dump_counts:
             errors.append(
-                f"shuffle order must be exactly the dump's song set: "
+                f"shuffle order must be exactly the dump's songs "
+                f"(same songs, same multiplicities): "
                 f"order has {len(ids)} IDs, dump has {len(tracks)} songs"
             )
     elif mode in ("flow", "rediscover"):
@@ -239,22 +256,47 @@ def validate_order_text(
     library_ids: set[str],
     mode: str | None = None,
     eligible_ids: set[str] | None = None,
+    library_counts: Mapping[str, int] | None = None,
 ) -> None:
     """In-memory form of the same rules, for tests and callers that
-    already hold the IDs (no file involved). Raises ValueError."""
+    already hold the IDs (no file involved). Raises ValueError.
+
+    library_counts, when given, is the dump's ID multiplicity, and the
+    shuffle check becomes multiset equality against it (so a playlist
+    shuffle that preserves duplicate entries passes, and one that
+    drops a duplicate entry fails). Without it, the shuffle check is
+    set equality plus a length check, which still catches a dropped
+    duplicate when the library set has no repeats.
+    """
     errors: list[str] = []
     id_list = list(ids)
     if not id_list:
         errors.append("order is empty: refusing to wipe a playlist to empty")
-    seen: set[str] = set()
-    duplicates = [pid for pid in id_list if pid in seen or seen.add(pid)]
-    if duplicates:
-        errors.append(f"duplicate persistent IDs in order: {', '.join(duplicates[:10])}")
+    if library_counts is not None:
+        over = [
+            pid
+            for pid, count in Counter(id_list).items()
+            if count > library_counts.get(pid, 0)
+        ]
+        if over:
+            errors.append(
+                f"order repeats IDs more times than the library does: "
+                f"{', '.join(over[:10])}"
+            )
+    else:
+        seen: set[str] = set()
+        duplicates = [pid for pid in id_list if pid in seen or seen.add(pid)]
+        if duplicates:
+            errors.append(f"duplicate persistent IDs in order: {', '.join(duplicates[:10])}")
     missing = [pid for pid in id_list if pid not in library_ids]
     if missing:
         errors.append(f"order IDs not in library: {', '.join(missing[:10])}")
-    if mode == "shuffle" and set(id_list) != library_ids:
-        errors.append("shuffle order must be exactly the library song set")
+    if mode == "shuffle":
+        if library_counts is not None:
+            if Counter(id_list) != Counter(dict(library_counts)):
+                errors.append("shuffle order must be exactly the library songs (same multiplicities)")
+        elif set(id_list) != library_ids or len(id_list) != len(library_ids):
+            errors.append("shuffle order must be exactly the library song set")
     if mode in ("flow", "rediscover") and eligible_ids is not None:
         bad = [pid for pid in id_list if pid not in eligible_ids]
         if bad:

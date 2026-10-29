@@ -6,6 +6,139 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-28 — Probe-driven order direction (fourth Python change, after a real failure)
+
+**Why:** on 2026-10-28 the .4 bridge was run straight on a real
+playlist, "My New Sandwich Recipe" (806 songs), skipping the
+throwaway stage. Apply, its restore, and undo all failed exact-order
+verification in a loop. No song left the library. The two backup files
+pulled off that Mac prove the inside of the loop: the pre-undo
+snapshot is the EXACT REVERSE of the original backup (806/806 same
+unique IDs, reversed; re-verified from the files, not taken on
+faith). Either duplicating inserts at the top of a playlist, or the
+every-track read returns tracks reversed; the backup files alone
+cannot tell which. The user later said the playlist "looks normal",
+which is consistent with both mechanisms ending back at the original
+display after the full chain, and proves nothing about exact order
+for 806 songs. This change replaces guessing with a probe. NOT
+PUBLISHED YET: this tree is unreviewed by the parent and unproven
+on a Mac; nothing here has been pushed.
+
+**What changed (all in `seter-shuffle-python/`, nothing else):**
+
+- New `bridge/probe-order.applescript`: creates a 3-song probe
+  playlist, duplicates in a known order, and reads it back by the
+  every-track list, by each entry's `index` property (sorted
+  ascending), and by positional first/last tracks. Verdict is
+  "forward", "insert-reversed", or "read-reversed" only when the
+  channels agree on one model; anything else is "ambiguous". The
+  probe deletes its own playlist (and on error paths too) unless
+  run with "keep" for the manual eyeball check. The positional read
+  travels through the same scripting bridge as the list read, so it
+  is a contradiction check only, never the sole basis for a
+  direction; the manual eyeball step in BRIDGE-SAFETY.md is the only
+  truly independent read. If the `index` property is unavailable,
+  the probe reports ambiguous (fail-closed), never a guessed mode.
+- New `seter_shuffle/order_direction.py`: the testable mirror of the
+  bridge's mode formulas. An apply build wants a display order O
+  (duplicate O, except insert-reversed duplicates reverse(O);
+  verify against O, except read-reversed verifies against
+  reverse(O)). Every restore build wants to return to a list-read
+  snapshot T (duplicate T under "forward", reverse(T) under either
+  reversed mode; verify against T in all modes). Apply, undo, and
+  restore-original carry handlers with the same names and the same
+  formulas; if they ever drift from this module, the bridge is
+  wrong even though the Python tests pass.
+- `bridge/apply-order.applescript` and `bridge/undo.applescript`
+  rewritten around the mode: the mode argument is REQUIRED (an old
+  unprobed call fails loudly before anything changes); every build,
+  verify, and restore uses the mode formulas; there is NO
+  flip-on-failure fallback in either script. Build and restore loops
+  run inside `with timeout of 3600 seconds` blocks (the .4 build
+  took ~2 minutes for 806 songs). Apply's argument order changed:
+  mode, then duplicate flag, then optional whole-library song count
+  (run.sh no longer passes a playlist dump's count as a library
+  count; see below).
+- `bridge/restore-original.applescript` rewritten: its default path
+  now probes (mode "auto") or takes an explicit probed mode, and
+  builds/verifies with the mode formulas. The old flip logic
+  survives ONLY as explicit "flip" mode, documented as
+  throwaway-only, because under read-reversed it rebuilds an
+  already-correct playlist in reverse order and calls that a
+  success. Never run the 2026-10-28 version of that script again,
+  and never run "flip" on a real playlist.
+- `run.sh` probes before every apply and undo (probe_mode, fresh
+  timestamped probe playlist per run); an ambiguous or failed probe
+  aborts with the real playlist untouched. New `./run.sh probe`
+  (measure and report) and `./run.sh probe-keep` (leave the probe
+  playlist for the eyeball check, then delete it by hand). Undo and
+  apply-failure restores pass the same probed mode to undo.
+  Backup filenames now also neutralize newlines/carriage returns.
+  One-playlist shuffles pass --allow-duplicates to the CLI and the
+  duplicate allowance flag to apply (see below); whole-library
+  dumps pass the library count as before.
+- Duplicate-entry playlist shuffles now work instead of failing
+  closed (audit item A14): load_library gains allow_duplicates
+  (CLI --allow-duplicates, passed by run.sh only for one-playlist
+  shuffles); validate-order's shuffle check is now multiset
+  equality and its duplicate rule is "no more copies than the
+  dump"; apply-order's duplicate check is skipped only under the
+  allowance flag. Whole-library orders still refuse any repeat.
+- `bridge/dump-library.applescript`: jsonEscape rewritten as a
+  character loop that escapes every control character as \u00XX
+  (audit item A16); the old version left non-standard control
+  characters raw, which made the JSON unparseable and stopped the
+  run fail-closed.
+- `BRIDGE-SAFETY.md`: failure mode 29 (the reversal, with the
+  evidence and both mechanisms), the probe and its honest limits,
+  a full further-audit table (A1-A20: UI sort settings, iCloud
+  sync, now-playing track, cloud-only tracks, ID changes, non-song
+  entries, timeouts, mid-run duplicate names, the .4 library-count
+  argument bug, backup filename characters, stale dumps, order
+  JSON/text gaps, dump order vs display order, the .4 duplicate
+  refusal, .4 hardening re-check, dump escaping, CLI --size,
+  validate-backup inconsistency, the old flip script, probe
+  parsing), and a rewritten Mac procedure starting with Stage 0
+  (probe, then eyeball the kept probe playlist) and forbidding any
+  real playlist before Stage 3.
+- Tests: 86 passed, 0 failed here (67 previous + 19 new in
+  tests/test_probe_mode.py: mode formulas in all modes including
+  empty/single/duplicate inputs and input immutability, multiset
+  shuffle validation, load_library duplicate modes, CLI playlist
+  shuffle with and without --allow-duplicates, probe verdict
+  parsing, and structural presence checks for the probe script and
+  mode handlers). Shell syntax of run.sh and check-python.sh
+  checked with `bash -n`.
+
+**What the Mac run must prove now (bridge constructs, all unverified):**
+
+- The probe itself, first: `./run.sh probe` reports one of the three
+  modes with PROBE_CLEANUP_OK, and `./run.sh probe-keep`'s on-screen
+  probe playlist order in Music matches that verdict. If the verdict
+  is ambiguous, or the eyeball disagrees with it, STOP and report
+  both: no build should proceed on that verdict.
+- Whether the track `index` property is exposed on playlist tracks
+  in this Music version (if not, every probe is ambiguous by design).
+- Then the full throwaway procedure in BRIDGE-SAFETY.md (Stage 1
+  happy path including a duplicate-entry playlist, Stage 2 negative
+  tests, Stage 3 a real playlist you can afford to have rewritten,
+  Stage 4 the force-quit case on a throwaway only). Nothing in this
+  build has run on a Mac, including the probe, the mode formulas in
+  AppleScript, the new jsonEscape loop, and the timeout wrappers.
+
+**Known limits (honest list):**
+
+- The bridge cannot be executed here (no osascript, no Music), so
+  nothing in `bridge/` has run at all. Treat it as reviewed, not tested.
+- The probe's positional read is not independent of its list read
+  (same scripting bridge); the manual eyeball step is the only
+  truly independent check, and it is required, not optional.
+- Direct apply/undo calls without a mode argument now fail loudly
+  by design; only run.sh (or an explicit probed mode) can drive them.
+- The old one-off fix script's flip behaviour is preserved only
+  behind explicit "flip" mode for throwaways; the 2026-10-28 version
+  must not be run again.
+
 ## 2026-10-28 — AppleScript bridge hardening (third Python change)
 
 **Why:** Spencer asked for the bridge to be made extremely

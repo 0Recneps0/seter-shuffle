@@ -144,11 +144,22 @@ def track_from_dict(data: dict) -> Track:
     )
 
 
-def load_library(path: str | Path) -> list[Track]:
+def load_library(path: str | Path, allow_duplicates: bool = False) -> list[Track]:
     """Load a library JSON file: {"tracks": [...]} or a bare [...] list.
 
     Raises ValueError on malformed input instead of silently dropping
     tracks: a half-loaded library must never be written to a playlist.
+
+    By default a duplicate persistent_id is refused: in a whole-library
+    dump one ID is one song, so a repeat is a dump problem. But a
+    one-playlist dump CAN legitimately repeat an ID, because Music
+    allows the same song twice as two entries in one user playlist.
+    Callers that shuffle one playlist pass allow_duplicates=True so
+    those entries survive as separate positions (the shuffle then
+    reorders them, it never merges them); every other caller keeps
+    the strict default. Validation still checks the result against
+    the dump by multiplicity (see validate_order_file), so allowing
+    duplicates here cannot silently drop or invent a playlist entry.
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(raw, dict):
@@ -167,7 +178,7 @@ def load_library(path: str | Path) -> list[Track]:
         if not isinstance(record, dict):
             raise ValueError(f"track record {i} is not an object")
         track = track_from_dict(record)
-        if track.persistent_id in seen:
+        if track.persistent_id in seen and not allow_duplicates:
             # A duplicate ID in the dump is a dump problem, not two songs.
             raise ValueError(f"duplicate persistent_id in library: {track.persistent_id}")
         seen.add(track.persistent_id)

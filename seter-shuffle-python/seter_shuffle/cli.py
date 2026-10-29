@@ -143,6 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_settings(p)
     p.add_argument("--size", type=int, default=None, help="cap the output")
     p.add_argument("--playlist", default=None)
+    # Only for one-playlist shuffles: a playlist dump repeats an ID
+    # for each duplicate playlist entry, and those entries must be
+    # preserved as positions. A whole-library shuffle must NOT pass
+    # this: in a library dump one ID is one song, so a repeat there
+    # is a dump error and must still fail closed. run.sh passes this
+    # flag only when it dumped one playlist, never for the library.
+    p.add_argument("--allow-duplicates", action="store_true")
 
     p = sub.add_parser("rediscover", help="Rediscover picks (no history write)")
     _add_common(p)
@@ -256,7 +263,16 @@ def _run(args: argparse.Namespace) -> int:
         record_rediscover_history(args.history, ids, args.cooldown_days, today)
         return 0
 
-    tracks = load_library(args.library)
+    # Only a one-playlist shuffle may see duplicate IDs in a dump
+    # (see --allow-duplicates above). Every other command keeps the
+    # strict default: in a library dump one ID is one song, so a
+    # repeat there is still a dump error, not two songs.
+    tracks = load_library(
+        args.library,
+        allow_duplicates=(
+            args.command == "shuffle" and getattr(args, "allow_duplicates", False)
+        ),
+    )
     settings = _settings_from(args)
     rng = _rng(args.seed)
     now = datetime.now(timezone.utc)
