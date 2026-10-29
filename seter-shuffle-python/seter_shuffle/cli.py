@@ -17,6 +17,15 @@ Commands:
   record-history       Append picked IDs to a Rediscover history file
                        (the runner calls this only after a successful
                        apply, so a failed apply never burns cooldown)
+  validate-order       Safety gate: check an order text file against
+                       the library dump and (optionally) the order
+                       JSON before the bridge ever runs. Refuses an
+                       empty, duplicate, missing-ID, truncated, or
+                       wrong-count order; never silently fixes one.
+  validate-backup      Check a backup file is readable and well-formed
+                       (duplicates allowed: a real playlist can hold
+                       the same song twice; an empty file is valid:
+                       it snapshots an empty playlist)
 
 Common options:
   --library PATH       library JSON dump (required, except record-history)
@@ -54,6 +63,7 @@ from .rediscover import (
 from .settings import Settings
 from .shuffle import shuffle_tracks
 from .tracks import Track, load_library
+from .validate import validate_backup_file, validate_order_file
 
 
 def _rng(seed: int | None) -> random.Random:
@@ -171,6 +181,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top-genres", type=int, default=20)
 
     p = sub.add_parser(
+        "validate-order",
+        help="safety gate: validate an order file before any bridge write",
+    )
+    p.add_argument("--library", required=True, help="library JSON dump")
+    p.add_argument("--order-txt", required=True, help="one ID per line")
+    p.add_argument("--order-json", default=None, help="order JSON to agree with")
+    p.add_argument("--mode", default=None, choices=["shuffle", "flow", "rediscover"])
+    p.add_argument("--expected-count", type=int, default=None)
+
+    p = sub.add_parser(
+        "validate-backup",
+        help="check a backup file is readable and well-formed",
+    )
+    p.add_argument("--backup", required=True, help="backup file to check")
+
+    p = sub.add_parser(
         "record-history",
         help="append picked IDs to a Rediscover history file (after apply)",
     )
@@ -191,6 +217,22 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "validate-order":
+        ids = validate_order_file(
+            args.library,
+            args.order_txt,
+            order_json_path=args.order_json,
+            mode=args.mode,
+            expected_count=args.expected_count,
+        )
+        print(f"Order valid: {len(ids)} IDs (mode: {args.mode or 'any'}).")
+        return 0
+
+    if args.command == "validate-backup":
+        ids = validate_backup_file(args.backup)
+        print(f"Backup valid: {len(ids)} IDs.")
+        return 0
+
     if args.command == "audit":
         tracks = load_library(args.library)
         report = audit_library(tracks)

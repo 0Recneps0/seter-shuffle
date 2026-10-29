@@ -1,7 +1,41 @@
 -- dump-library.applescript (SeTeR Shuffle, Python experimental core)
 --
--- Dumps the Music library, or one playlist, to the JSON format the
--- Python core reads. READ-ONLY: it changes nothing in Music.
+-- SAFETY NOTES (this script is read-only, but a bad dump is still a
+-- safety problem, because everything downstream trusts it):
+--  * READ-ONLY: this script never deletes, creates, duplicates, or
+--    otherwise modifies anything in Music. It only reads properties
+--    and writes one JSON file. The only write is the output file.
+--  * A playlist name is resolved by a filtered lookup, never by a
+--    bare name reference: zero matches is an error, more than one
+--    match is refused as ambiguous, exactly one is used. A dump of
+--    the wrong playlist would otherwise silently feed the wrong
+--    songs into an order.
+--  * After the bulk reads, every required list must have exactly as
+--    many entries as the PID list. A shorter or longer list means
+--    the library changed mid-read or a read failed partway, and
+--    the per-track values would be misaligned. That aborts before
+--    anything is written: a misaligned dump is worse than no dump.
+--  * Optional properties (bpm, year, skips, rating, favorited,
+--    disliked, enabled) use a bulk read that returns "missing" on
+--    any failure instead of silently padding: if the whole read
+--    fails, every track gets the neutral default, never another
+--    track's value. The favorited -> loved fallback actually runs
+--    now (in the old script it could not: the old helper always
+--    padded to full length, so its "count is not n" check never
+--    fired and loved was never tried).
+--  * The output is written to a temporary file and atomically
+--    renamed into place, so a failed write can never leave a
+--    half-written dump at the output path for the next step to
+--    mistake for a complete one. The runner also works in a fresh
+--    temporary directory per run, and the Python core refuses to
+--    load malformed JSON, duplicate persistent IDs, or a non-list
+--    tracks value, so a bad dump still fails closed before any
+--    playlist write.
+--  * One honest limitation: JSON escaping here handles backslash,
+--    quote, newline, carriage return, and tab. An exotic control
+--    character in a track name would make the JSON unparseable, and
+--    the Python core then refuses to load it (fail-closed: the run
+--    stops before any apply). It cannot silently corrupt an order.
 --
 -- Usage:
 --   osascript dump-library.applescript <output-json-path> [playlist-name]
@@ -14,7 +48,7 @@
 -- become JSON null for bpm / year / dates, and the v2.6 neutral
 -- defaults for everything else (0 counts, false flags, enabled true).
 --
--- UNVERIFIED ON A MAC (see README-PYTHON.md): bulk property reads for
+-- UNVERIFIED ON A MAC (see BRIDGE-SAFETY.md): bulk property reads for
 -- bpm / year / played date / date added, `month as integer`, and the
 -- date-component ISO formatting. The Python core was tested here; this
 -- script was not, because this machine has no Music app or osascript.
@@ -31,10 +65,14 @@ on run argv
 		if playlistName is "" then
 			set sourcePl to library playlist 1
 		else
-			if not (exists playlist playlistName) then
+			set matches to every playlist whose name is playlistName
+			if (count of matches) is 0 then
 				error "dump-library: no playlist named \"" & playlistName & "\"" number 1
+			else if (count of matches) > 1 then
+				error "dump-library: refusing: " & (count of matches) & " playlists are named \"" & playlistName & "\"; refusing to guess which one you mean. Rename one of them and re-run." number 1
+			else
+				set sourcePl to item 1 of matches
 			end if
-			set sourcePl to playlist playlistName
 		end if
 		set libPIDs to persistent ID of every track of sourcePl whose media kind is song
 		set libNames to name of every track of sourcePl whose media kind is song
@@ -47,17 +85,47 @@ on run argv
 	end tell
 	set n to count of libPIDs
 
-	-- Optional signals: any Music cannot provide falls back to neutral.
-	set libBPMs to my bulkOrDefault("bpm", sourcePl, n, missing value)
-	set libYears to my bulkOrDefault("year", sourcePl, n, missing value)
-	set libSkipCounts to my bulkOrDefault("skipped count", sourcePl, n, 0)
-	set libRatings to my bulkOrDefault("rating", sourcePl, n, 0)
-	set libFavFlags to my bulkOrDefault("favorited", sourcePl, n, false)
-	if (count of libFavFlags) is not n then
-		set libFavFlags to my bulkOrDefault("loved", sourcePl, n, false)
+	-- Required lists must all line up with the PID list. If the
+	-- library changed mid-read, per-track values would be misaligned
+	-- (one song's name on another song's row), so abort unwritten.
+	if (count of libNames) is not n or (count of libArtists) is not n or (count of libAlbums) is not n or (count of libGenres) is not n or (count of libPlayCounts) is not n or (count of libPlayDates) is not n or (count of libAddedDates) is not n then
+		error "dump-library: bulk reads do not line up (PID list has " & n & " entries but another list differs); the library may have changed mid-read. Nothing was written; re-run." number 1
 	end if
-	set libDislikeFlags to my bulkOrDefault("disliked", sourcePl, n, false)
-	set libEnabledFlags to my bulkOrDefault("enabled", sourcePl, n, true)
+
+	-- Optional signals: a failed bulk read yields missing values for
+	-- the whole list (neutral defaults below), never another track's
+	-- value, and the favorited -> loved fallback now actually runs.
+	set libBPMs to my bulkListOrMissing("bpm", sourcePl, n)
+	if libBPMs is missing value then
+		set libBPMs to my repeatValue(n, missing value)
+	end if
+	set libYears to my bulkListOrMissing("year", sourcePl, n)
+	if libYears is missing value then
+		set libYears to my repeatValue(n, missing value)
+	end if
+	set libSkipCounts to my bulkListOrMissing("skipped count", sourcePl, n)
+	if libSkipCounts is missing value then
+		set libSkipCounts to my repeatValue(n, 0)
+	end if
+	set libRatings to my bulkListOrMissing("rating", sourcePl, n)
+	if libRatings is missing value then
+		set libRatings to my repeatValue(n, 0)
+	end if
+	set libFavFlags to my bulkListOrMissing("favorited", sourcePl, n)
+	if libFavFlags is missing value then
+		set libFavFlags to my bulkListOrMissing("loved", sourcePl, n)
+	end if
+	if libFavFlags is missing value then
+		set libFavFlags to my repeatValue(n, false)
+	end if
+	set libDislikeFlags to my bulkListOrMissing("disliked", sourcePl, n)
+	if libDislikeFlags is missing value then
+		set libDislikeFlags to my repeatValue(n, false)
+	end if
+	set libEnabledFlags to my bulkListOrMissing("enabled", sourcePl, n)
+	if libEnabledFlags is missing value then
+		set libEnabledFlags to my repeatValue(n, true)
+	end if
 
 	set outLines to {"{\"tracks\": ["}
 	repeat with i from 1 to n
@@ -85,7 +153,10 @@ on run argv
 	set AppleScript's text item delimiters to linefeed
 	set fileText to outLines as text
 	set AppleScript's text item delimiters to ""
-	set fh to open for access (POSIX file outPath) with write permission
+	-- Atomic write: temp file, then rename into place, so a failed
+	-- write can never leave a half-written dump at the output path.
+	set tmpPath to outPath & ".tmp"
+	set fh to open for access (POSIX file tmpPath) with write permission
 	try
 		set eof of fh to 0
 		write fileText to fh as «class utf8»
@@ -94,17 +165,38 @@ on run argv
 		try
 			close access fh
 		end try
+		try
+			do shell script "rm -f " & quoted form of tmpPath
+		end try
 		error "dump-library: could not write " & outPath & ": " & errMsg number errNum
+	end try
+	try
+		do shell script "mv -f " & quoted form of tmpPath & " " & quoted form of outPath
+	on error errMsg
+		try
+			do shell script "rm -f " & quoted form of tmpPath
+		end try
+		error "dump-library: could not install dump at " & outPath & ": " & errMsg number 1
+	end try
+	try
+		do shell script "test -s " & quoted form of outPath
+	on error
+		error "dump-library: dump file at " & outPath & " is empty after writing; refusing to hand a bad dump downstream." number 1
 	end try
 	return "dumped " & n & " songs to " & outPath
 end run
 
--- One bulk property read, with a neutral fallback list if Music cannot
--- provide it. propName is passed as text and evaluated through a tell
--- block per property name; AppleScript cannot indirect a property by
--- string, so each known property has its own branch below.
-on bulkOrDefault(propName, sourcePl, n, defaultVal)
-	set vals to {}
+-- One bulk property read. Returns the value list, or missing value
+-- if the read fails or returns the wrong number of entries. The
+-- caller then fills neutral defaults for the whole list. Returning
+-- missing value (instead of padding) is what makes fallbacks like
+-- favorited -> loved actually work, and guarantees a partial read
+-- can never misalign values onto the wrong tracks.
+-- propName is passed as text and evaluated through a tell block per
+-- property name; AppleScript cannot indirect a property by string,
+-- so each known property has its own branch below.
+on bulkListOrMissing(propName, sourcePl, n)
+	set vals to missing value
 	try
 		tell application "Music"
 			if propName is "bpm" then
@@ -126,14 +218,18 @@ on bulkOrDefault(propName, sourcePl, n, defaultVal)
 			end if
 		end tell
 	end try
-	if (count of vals) is not n then
-		set vals to {}
-		repeat n times
-			set end of vals to defaultVal
-		end repeat
-	end if
+	if vals is missing value then return missing value
+	if (count of vals) is not n then return missing value
 	return vals
-end bulkOrDefault
+end bulkListOrMissing
+
+on repeatValue(n, val)
+	set vals to {}
+	repeat n times
+		set end of vals to val
+	end repeat
+	return vals
+end repeatValue
 
 on safeText(x)
 	if x is missing value then return ""

@@ -27,6 +27,17 @@ if [ -z "$PY" ]; then
   exit 2
 fi
 
+# run.sh splits this script's "<path> (<version>)" output on the first
+# space to find the interpreter, so a path containing a space would
+# silently point at the wrong thing. Fail loudly instead.
+case "$PY" in
+  *" "*)
+    echo "ERROR: Python path '$PY' contains a space, which run.sh cannot split safely." >&2
+    echo "Set SETER_PYTHON to a space-free interpreter path, then re-run." >&2
+    exit 2
+    ;;
+esac
+
 # The macOS stub either fails here or prints no usable version. A real
 # interpreter prints a version and passes the 3.9+ check below.
 VERSION="$("$PY" --version 2>&1)" || {

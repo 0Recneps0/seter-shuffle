@@ -26,11 +26,30 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   that talks to Music. `dump-library.applescript` dumps a library or
   playlist to JSON. `apply-order.applescript` snapshots a playlist's
   IDs to a backup file BEFORE changing anything, rebuilds it in the
-  given order, verifies count plus every expected ID, and restores
-  from the backup on any failure; it refuses smart playlists and
-  anything that is not a regular user playlist, and fails if the
-  library shrank during the run. `undo.applescript` replays a backup
-  file. The bridge never decides an order.
+  given order, verifies the exact IDs in the exact order, and restores
+  from the backup on any failure; it refuses the Library itself,
+  smart playlists, and anything that is not a regular user playlist,
+  refuses ambiguous playlist names instead of guessing, and fails if
+  the library shrank during the run. `undo.applescript` replays a
+  backup file with the same strictness, and snapshots the current
+  playlist first so a failed undo is recoverable. The bridge never
+  decides an order. Full failure-mode table, the one case AppleScript
+  cannot cover (power loss / force-quit mid-write), and the Mac
+  verification procedure: see `BRIDGE-SAFETY.md`. The bridge has
+  been reviewed line by line but never executed: this machine has
+  no Music app or osascript, so until the Mac procedure in
+  `BRIDGE-SAFETY.md` has been run, treat it as reviewed, not tested.
+- **Validation** (`seter_shuffle/validate.py`, plus `validate-order`
+  and `validate-backup` CLI commands): the same refuse rules as the
+  bridge, applied in Python before osascript ever runs, so a bad
+  order is caught while the playlist is still untouched. Empty
+  orders, duplicate IDs, IDs missing from the dump, shuffle orders
+  that are not exactly the dump's song set, truncated orders (the
+  text file must agree exactly with the order JSON), and malformed
+  files are all refused. Backups are validated too, with one
+  deliberate difference: duplicates are allowed in a backup (a real
+  playlist can hold the same song twice) and an empty backup is
+  valid (it snapshots an empty playlist).
 - **Runner** (`run.sh`): wires bridge -> core -> bridge, logs to
   `~/Library/Logs/seter-shuffle-python/run.log`, and keeps backups
   under the same directory. `check-python.sh` verifies a real python3
@@ -66,6 +85,8 @@ python3 -m seter_shuffle.cli flow --library dump.json --out order.json --order-t
 python3 -m seter_shuffle.cli shuffle --library dump.json --out order.json --order-txt order.txt
 python3 -m seter_shuffle.cli rediscover-preview --library dump.json --history rediscover-history.tsv
 python3 -m seter_shuffle.cli record-history --history rediscover-history.tsv --ids-file order.txt
+python3 -m seter_shuffle.cli validate-order --library dump.json --order-txt order.txt --order-json order.json --mode shuffle
+python3 -m seter_shuffle.cli validate-backup --backup backup.txt
 ```
 
 `flowPreview` and `rediscover-preview` never call the apply script and

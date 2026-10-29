@@ -6,6 +6,115 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-28 — AppleScript bridge hardening (third Python change)
+
+**Why:** Spencer asked for the bridge to be made extremely
+bulletproof: no way for songs to be deleted or duplicated, make it
+perfect, take your time. This change is the bridge only; the core
+ordering logic is untouched.
+
+**What changed (all in `seter-shuffle-python/`, nothing else):**
+
+- New `seter_shuffle/validate.py` plus `validate-order` and
+  `validate-backup` CLI commands: the same refuse rules as the
+  bridge, applied in Python before osascript ever runs. Empty
+  orders, duplicate IDs, IDs missing from the dump, shuffle orders
+  that are not exactly the dump's song set, truncated orders (the
+  text file must agree exactly with the order JSON, including its
+  count), malformed/non-UTF-8 files, and expected-count mismatches
+  are all refused with the problem listed. Backups are validated
+  too, with duplicates allowed and an empty backup valid (it
+  snapshots an empty playlist).
+- `bridge/apply-order.applescript` rewritten with a safety header:
+  target resolved by filtered lookup (0 = create, >1 = refuse as
+  ambiguous, 1 = use that object); `assertUserPlaylist` refuses the
+  Library, smart playlists, and anything that is not a regular user
+  playlist, failing closed if any check cannot be performed; order
+  validated before any change (strict read, empty refusal,
+  duplicate check via `sort | uniq -d`); backup written atomically
+  (temp file, `mv -f`, re-read and compared exactly) before any
+  delete, never truncated in place; build collects lookup failures
+  instead of silently skipping; any build, verify, or library-shrink
+  failure restores from backup and exits non-zero; verify-after is
+  an exact ID-list comparison, not a count check; verification
+  itself is wrapped so Music quitting during verify also restores;
+  the restore handler never throws from its own verify step.
+- `bridge/undo.applescript` rewritten with a safety header: backup
+  validated before anything is deleted; target resolved by filtered
+  lookup and never created; current playlist snapshotted first to
+  `<backup>.pre-undo` (atomically written and verified) so a failed
+  undo is recoverable; rebuild collects failures; any rebuild,
+  missing-song, or verification failure restores the pre-undo
+  snapshot and exits non-zero; empty backup restores an empty
+  playlist; backup duplicates reproduced exactly; non-song entries
+  never deleted.
+- `bridge/dump-library.applescript` hardened: filtered playlist
+  resolution (ambiguous names refused); required lists must all
+  have exactly n entries or the dump aborts unwritten, so a mid-read
+  library change cannot misalign values onto the wrong tracks;
+  the bulk-read helper no longer pads to full length (that bug had
+  made its count check dead code and blocked the `favorited` to
+  `loved` fallback, which now actually runs); output written
+  atomically (temp file, `mv -f`, non-empty check), so a failed
+  write never leaves a half-written dump.
+- `run.sh` rewired: a `step()` helper logs GATE OK / GATE FAILED
+  for every step and sends both stdout and stderr to the log, so
+  the log proves which gate fired; `validate-order` runs after the
+  core computes an order and before any apply; the dump's song
+  count is passed to apply as its library-shrink argument; any
+  previous backup is preserved as `<backup>.prev` and the backup
+  path cleared before an apply, so a stale backup can never be
+  mistaken for a fresh one; on apply failure with a fresh backup,
+  the runner attempts a restore via undo before exiting non-zero,
+  and with no fresh backup it logs that the playlist was not
+  changed; history is still recorded only after a successful apply.
+  Backup filenames now include a hash of the playlist name, so two
+  names differing only by spaces and slashes no longer share a
+  backup file (old backup files remain usable by direct osascript
+  call).
+- `check-python.sh` now refuses loudly if the interpreter path
+  contains a space, since run.sh splits its output on the first
+  space.
+- New `BRIDGE-SAFETY.md`: the full failure-mode table (mode, old
+  behaviour, new guard, how to test it on a Mac), the uncovered
+  case and its recovery, and the exact Mac verification procedure
+  (throwaway playlist first, then a real one, then undo, checking
+  counts and exact order at each step).
+
+**What was actually tested here (Linux VM, Python 3.12.3):**
+
+```bash
+python3 -m unittest discover -s tests
+# Ran 67 tests in 0.577s — OK
+bash -n run.sh check-python.sh && echo shell-ok
+# shell-ok
+```
+
+67 passed, 0 failed (41 pre-existing, all still passing, plus 26
+new in `tests/test_bridge_safety.py` covering every validation
+rule: empty, duplicate, missing ID, shuffle count/set mismatch,
+blank middle line, whitespace ID, order-JSON disagreement
+including a truncated text file, expected-count mismatch, flow and
+rediscover ineligible IDs, non-UTF-8 and malformed files, backup
+missing/corrupt/empty/duplicates, and both CLI commands' return
+codes).
+
+**What was NOT tested here, and is not claimed:** every Music
+interaction in the bridge scripts. This machine has no Music app
+and no osascript, so no bridge script has been executed. Proof
+here is line-by-line review (including a grep confirming the only
+Music deletes target asserted user playlists, never
+`library playlist 1`) plus the Python tests above. The Mac
+verification procedure in `BRIDGE-SAFETY.md` is still required,
+and no bridge script should be called proven until it has been
+run. The one case AppleScript cannot fully cover is also stated
+without softening in that document: power loss or force-quit
+mid-write cannot run a restore; recovery is re-running undo from
+the verified backup file in the state directory.
+
+**Not published:** nothing in this change has been pushed or
+released. That decision is for the parent agent.
+
 ## 2026-10-28 — Missing-BPM fallback and tag audit (second Python change)
 
 **Why:** Spencer ran `./run.sh flowPreview` on his Mac on 2026-10-28:
