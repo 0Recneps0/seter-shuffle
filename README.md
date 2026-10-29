@@ -29,6 +29,10 @@ Everything is built around one rule: **never lose songs.** Every change is backe
   14 days, and the result is shuffled with artists spread out. Scales with
   your library (1% of songs, 30 to 500). Refreshed in place so its cover
   artwork survives.
+- **Flow (experimental)**: a curated `SeTeR Flow` playlist ordered so the
+  vibe flows: mid-energy start, a rise to a peak around two-thirds through,
+  then an ease-down ending. Energy comes from BPM, genre, year, plays,
+  rating and favorites only. See [Flow (experimental)](#flow-experimental).
 - **Remove duplicates**: clean repeated songs out of any playlist, keeping
   the original order.
 - **Undo last shuffle**: puts a playlist back exactly how it was before the
@@ -134,6 +138,13 @@ The [setup script](#setup-script) is the easy way. To do it by hand:
   ```bash
   /usr/bin/osascript ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript rediscover-preview
   ```
+- **Flow (experimental)** — preview first, it changes nothing:
+  ```bash
+  /usr/bin/osascript ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript flowPreview
+  /usr/bin/osascript ~/Documents/SeTeRShuffle/SeTeR-shuffle.applescript flow
+  ```
+  `flow` builds or refreshes the `SeTeR Flow` playlist. Flow is also in the
+  app menu. It is not part of the daily run.
 
 The daily run does the following, in order: saves the library manifest (once per
 day), removes duplicates from the named playlist (unless `dailyRemoveDuplicates` is `false`) and shuffles it in place,
@@ -175,6 +186,34 @@ The target size scales with your library: 1% of your songs, never fewer than 30 
 | 50,000+ | 500 (maximum) |
 
 Ratings, favorites, dislikes, skips and the checked state are optional signals: if your version of Music doesn't expose one, it's ignored. A song Music refuses to add (for example one that's no longer available) is skipped and logged instead of failing the refresh. Use [`rediscover-preview`](#usage) to see what the next refresh would pick.
+
+## Flow (experimental)
+
+`SeTeR Flow` is a curated playlist, not a shuffle: songs are ordered so the
+energy flows. Source is the whole library (not the daily playlist), and
+eligible songs are checked and not disliked. Skip-heavy songs are *not*
+excluded here, unlike Rediscover.
+
+**Energy score (5..100):** BPM sets the base (under 80 = 25, 80-99 = 40,
+100-119 = 55, 120-139 = 75, 140-159 = 85, 160+ = 95, missing = 50). Genre
+nudges it (rock/pop/dance/electronic +8, hip-hop +5, jazz/soul -5,
+country/folk -3, classical/ambient -12). 20+ plays +5, 4-5 stars +5,
+1-2 stars -10, favorited +5.
+
+**Order:** a greedy walk along a wave arc (45 at the start, 90 at the
+two-thirds peak, 40 at the end), preferring small energy steps, the same or
+a related genre, and a nearby decade, while keeping artists at least
+`artistSpacing` songs apart (best effort). Settings: `flowSize` (default
+50) and `flowPoolMax` (default 400, the random pool sequenced when the
+library is big).
+
+**Safety:** Flow writes only through the same snapshot / verify / restore
+path as every other in-place change. `flowPreview` changes nothing.
+
+**Limits:** experimental and untested on a Mac at first release (see
+`CHANGELOG-EXPERIMENTAL.md`). BPM and genre tags are often incomplete, so
+flow quality depends on the library's tags. It uses no audio analysis, key
+or loudness data: AppleScript only exposes the properties above.
 
 ## Logs & backups
 

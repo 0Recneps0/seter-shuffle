@@ -15,6 +15,17 @@
 --       shows what Rediscover would pick without changing anything.
 --     * setup.sh installs everything, builds the apps and schedules the daily run.
 --
+-- EXPERIMENTAL (not a stable version bump; the script still reports v2.6):
+--   * Flow mode (2026-10-28, untested on a Mac — see CHANGELOG-EXPERIMENTAL.md).
+--     osascript SeTeR-shuffle.applescript flow builds/refreshes a "SeTeR Flow"
+--     playlist from the library, ordered so the vibe flows: mid-energy start,
+--     a rise to a peak around two-thirds through, then an ease-down ending.
+--     Energy comes only from real Music track properties (bpm, genre, year,
+--     played count, rating, favorited). flowPreview prints the would-be order
+--     without changing anything. Flow writes through the same
+--     snapshot/verify/restore path as every other in-place change.
+--     DO NOT install this over a stable build until a Mac run proves it.
+--
 -- WHAT'S NEW IN v2.5
 --     * Better "avoid the same artist" logic. The old pass only stopped an artist
 --       from playing back-to-back, and fixed clashes by pulling in the next
@@ -100,6 +111,8 @@ property defaultDailyPlaylist : "my new sandwich recipe"
 property dailyRemoveDuplicates : true -- true: the daily run removes repeated songs from the playlist; false: keeps every entry
 property artistSpacing : 2 -- "avoid same artist" keeps at least this many songs between an artist's songs (1 = just not back-to-back)
 property featuringIsSameArtist : true -- true: "Artist feat. X" counts as "Artist" when spacing artists apart
+property flowSize : 50 -- "SeTeR Flow" holds at most this many songs
+property flowPoolMax : 400 -- Flow sequences from at most this many eligible library songs (a random pool when the library is bigger), so the greedy ordering stays fast
 
 -- internal state
 property isDaily : false
@@ -131,6 +144,25 @@ on run argv
 		end try
 		-- Non-zero exit so launchd / Shuffle Sandwich can tell something failed.
 		if hadError then error "SeTeR Shuffle daily run had errors. See ~/Library/Logs/seter-shuffle.log" number 1
+	else if (count of argv) > 0 and (item 1 of argv) is "flow" then
+		-- Terminal: builds/refreshes "SeTeR Flow". Dialogs stay off (isDaily
+		-- is only a dialog/log switch here); the result text is returned.
+		set isDaily to true
+		try
+			return my doFlow()
+		on error errMsg
+			my logLine("ERROR (flow): " & errMsg)
+			return "Flow failed: " & errMsg
+		end try
+	else if (count of argv) > 0 and (item 1 of argv) is "flowPreview" then
+		-- Read-only dry run: prints the would-be Flow order, changes nothing.
+		set isDaily to true
+		try
+			return my previewFlow()
+		on error errMsg
+			my logLine("ERROR (flowPreview): " & errMsg)
+			return "Flow preview failed: " & errMsg
+		end try
 	else if (count of argv) > 0 and (item 1 of argv) is "rediscover-preview" then
 		-- Read-only dry run for the Terminal: prints what Rediscover would pick.
 		set isDaily to true
@@ -360,13 +392,15 @@ end removeTempPlaylist
 -- ---------------------------------------------------------------------------
 
 on doInteractive()
-	set modeChoice to choose from list {"🔀 Shuffle", "💡 Rediscover", "🧹 Remove duplicates", "↩️ Undo last shuffle"} with prompt "What should SeTeR do?"
+	set modeChoice to choose from list {"🔀 Shuffle", "💡 Rediscover", "🌊 Flow", "🧹 Remove duplicates", "↩️ Undo last shuffle"} with prompt "What should SeTeR do?"
 	if modeChoice is false then return
 	set m to item 1 of modeChoice
 	if m is "🔀 Shuffle" then
 		my doShuffle()
 	else if m is "💡 Rediscover" then
 		my doRediscover()
+	else if m is "🌊 Flow" then
+		my doFlowMenu()
 	else if m is "🧹 Remove duplicates" then
 		my doRemoveDuplicates()
 	else
@@ -868,6 +902,361 @@ on dedupeTrackRefs(destPl, trackRefs, artistList)
 	end repeat
 	return {uniqueTracks, uniqueArtists, dupeCount, uniqueIDs, removedLabels}
 end dedupeTrackRefs
+
+
+-- ---------------------------------------------------------------------------
+-- FLOW (EXPERIMENTAL, 2026-10-28 — untested on a Mac)
+-- ---------------------------------------------------------------------------
+--
+-- "SeTeR Flow" is a curated playlist whose order flows with the vibe of the
+-- songs instead of being shuffled. Source: the whole library (not the daily
+-- playlist), so there is enough variety to shape an arc. Every song gets an
+-- energy score from real Music properties only, then a greedy pass walks a
+-- wave arc: mid-energy start, rising to a peak around two-thirds through,
+-- easing down at the end. Each step prefers a small energy change, the same
+-- or a related genre, and a nearby year, and it never puts the same artist
+-- within artistSpacing songs of their last song (best effort, like the
+-- shuffle's spacing rule).
+--
+-- Energy model (plain words; see CHANGELOG-EXPERIMENTAL.md for the table):
+--   * BPM bands set the base (slow = calm, fast = high energy); missing BPM
+--     defaults to mid-energy (50), never to 0.
+--   * Genre nudges the base up for rock / hip-hop / dance / electronic and
+--     down for classical / ambient; everything else stays near its BPM base.
+--   * Familiarity nudges it a little: lots of plays, a 4-5 star rating, or a
+--     favorite push it up; a 1-2 star rating pulls it down.
+--   * The result is clamped to 5..100, so no song is ever silent or maxed out
+--     by a single missing field.
+-- Safety: Flow writes ONLY through rewritePlaylistSafely (snapshot before,
+-- verify after, restore from the snapshot on any failure), the same path the
+-- daily shuffle and dedupe use. There is no second safety path. The library
+-- size check inside buildPlaylist also runs. flowPreview changes nothing.
+
+-- Genre groups used for the "same or related genre" preference.
+-- 1 rock/metal/punk/alternative, 2 hip-hop/rap/R&B, 3 pop/dance/electronic,
+-- 4 jazz/soul/funk/blues, 5 country/folk/americana, 6 classical/ambient/
+-- instrumental/lo-fi, 7 anything else / unknown.
+on flowGenreGroup(genreText)
+	if genreText is missing value then return 7
+	set s to genreText as text
+	if s is "" then return 7
+	if (offset of "metal" in s) > 0 or (offset of "punk" in s) > 0 or (offset of "rock" in s) > 0 or (offset of "alternative" in s) > 0 then return 1
+	if (offset of "hip-hop" in s) > 0 or (offset of "hip hop" in s) > 0 or (offset of "rap" in s) > 0 or (offset of "r&b" in s) > 0 or (offset of "rhythm" in s) > 0 then return 2
+	if (offset of "dance" in s) > 0 or (offset of "electronic" in s) > 0 or (offset of "edm" in s) > 0 or (offset of "pop" in s) > 0 then return 3
+	if (offset of "jazz" in s) > 0 or (offset of "soul" in s) > 0 or (offset of "funk" in s) > 0 or (offset of "blues" in s) > 0 then return 4
+	if (offset of "country" in s) > 0 or (offset of "folk" in s) > 0 or (offset of "americana" in s) > 0 then return 5
+	if (offset of "classical" in s) > 0 or (offset of "ambient" in s) > 0 or (offset of "instrumental" in s) > 0 or (offset of "lo-fi" in s) > 0 or (offset of "lofi" in s) > 0 or (offset of "chill" in s) > 0 then return 6
+	return 7
+end flowGenreGroup
+
+on flowGenresRelated(g1, g2)
+	if g1 is g2 then return true
+	if (g1 is 1 and g2 is 3) or (g1 is 3 and g2 is 1) then return true
+	if (g1 is 2 and g2 is 3) or (g1 is 3 and g2 is 2) then return true
+	if (g1 is 4 and g2 is 6) or (g1 is 6 and g2 is 4) then return true
+	if (g1 is 5 and g2 is 6) or (g1 is 6 and g2 is 5) then return true
+	return false
+end flowGenresRelated
+
+-- Energy score, 5..100, from bpm / genre / plays / rating / favorite only.
+on flowEnergy(bpmVal, genreText, playCount, ratingVal, favFlag)
+	set energy to 50
+	if bpmVal is not missing value and bpmVal > 0 then
+		if bpmVal < 80 then
+			set energy to 25
+		else if bpmVal < 100 then
+			set energy to 40
+		else if bpmVal < 120 then
+			set energy to 55
+		else if bpmVal < 140 then
+			set energy to 75
+		else if bpmVal < 160 then
+			set energy to 85
+		else
+			set energy to 95
+		end if
+	end if
+	set g to my flowGenreGroup(genreText)
+	if g is 1 or g is 3 then
+		set energy to energy + 8
+	else if g is 2 then
+		set energy to energy + 5
+	else if g is 4 then
+		set energy to energy - 5
+	else if g is 5 then
+		set energy to energy - 3
+	else if g is 6 then
+		set energy to energy - 12
+	end if
+	if playCount is not missing value and playCount ≥ 20 then set energy to energy + 5
+	if ratingVal is not missing value then
+		if ratingVal ≥ 80 then
+			set energy to energy + 5
+		else if ratingVal ≥ 1 and ratingVal ≤ 40 then
+			set energy to energy - 10
+		end if
+	end if
+	if favFlag is true then set energy to energy + 5
+	if energy < 5 then set energy to 5
+	if energy > 100 then set energy to 100
+	return energy
+end flowEnergy
+
+-- Wave-arc target energy at position pos of total: 45 at the start, rising to
+-- 90 at the two-thirds peak, easing down to 40 at the end.
+on flowTargetEnergy(pos, total)
+	if total ≤ 1 then return 50
+	set riseEnd to (total * 2) div 3
+	if riseEnd < 2 then set riseEnd to 2
+	if riseEnd > total then set riseEnd to total
+	if pos ≤ riseEnd then
+		if riseEnd is 1 then return 90
+		return 45 + 45 * (pos - 1) / (riseEnd - 1)
+	else
+		if total is riseEnd then return 90
+		return 90 - 50 * (pos - riseEnd) / (total - riseEnd)
+	end if
+end flowTargetEnergy
+
+-- Greedy nearest-neighbor ordering over the pool lists (all parallel lists of
+-- the same length). Returns the pool positions in Flow order. Cost per step:
+-- |energy - arc target| + genre cost (0 same, 8 related, 20 otherwise) +
+-- year cost (0 same decade, 5 adjacent decade, 10 otherwise) + 1000 if the
+-- artist appeared within the last artistSpacing picks (so spacing wins over
+-- vibe, best effort). Ties keep the earliest pool position.
+on flowOrder(poolEnergies, poolGroups, poolYears, poolArtistKeys, total)
+	set n to count of poolEnergies
+	if total > n then set total to n
+	if total ≤ 0 then return {}
+	set usedFlags to my filledList(n, false)
+	set orderList to {}
+	set recentArtists to {}
+	set prevGroup to missing value
+	set prevYear to missing value
+	repeat with pos from 1 to total
+		set target to my flowTargetEnergy(pos, total)
+		set bestIdx to 0
+		set bestCost to 1000000
+		repeat with i from 1 to n
+			if (item i of usedFlags) is false then
+				set cost to 0
+				set eDiff to (item i of poolEnergies) - target
+				if eDiff < 0 then set eDiff to -eDiff
+				set cost to cost + eDiff
+				if prevGroup is not missing value then
+					set gi to item i of poolGroups
+					if gi is prevGroup then
+						set cost to cost + 0
+					else if my flowGenresRelated(gi, prevGroup) then
+						set cost to cost + 8
+					else
+						set cost to cost + 20
+					end if
+				end if
+				if prevYear is not missing value then
+					set yi to item i of poolYears
+					if yi is not missing value then
+						set d1 to (prevYear div 10) * 10
+						set d2 to (yi div 10) * 10
+						set decadeDiff to d1 - d2
+						if decadeDiff < 0 then set decadeDiff to -decadeDiff
+						if decadeDiff is 0 then
+							set cost to cost + 0
+						else if decadeDiff is 10 then
+							set cost to cost + 5
+						else
+							set cost to cost + 10
+						end if
+					end if
+				end if
+				set aKey to item i of poolArtistKeys
+				if aKey is not "" and (recentArtists contains aKey) then set cost to cost + 1000
+				if cost < bestCost then
+					set bestCost to cost
+					set bestIdx to i
+				end if
+			end if
+		end repeat
+		if bestIdx is 0 then exit repeat
+		set item bestIdx of usedFlags to true
+		set end of orderList to bestIdx
+		set prevGroup to item bestIdx of poolGroups
+		set prevYear to item bestIdx of poolYears
+		set aKey to item bestIdx of poolArtistKeys
+		if aKey is not "" then
+			set end of recentArtists to aKey
+			repeat while (count of recentArtists) > artistSpacing
+				if (count of recentArtists) is 1 then
+					set recentArtists to {}
+				else
+					set recentArtists to items 2 thru -1 of recentArtists
+				end if
+			end repeat
+		end if
+	end repeat
+	return orderList
+end flowOrder
+
+-- Scores the library and returns {finalTracks, finalArtists, finalIDs,
+-- finalEnergies, candidateCount, flowCount}, or missing value when nothing
+-- is eligible. Changes nothing in Music.
+on prepareFlow()
+	-- NOTE: bulk property reads must use the reference form, as elsewhere.
+	tell application "Music"
+		set libTracks to every track of library playlist 1 whose media kind is song
+		set libPIDs to persistent ID of every track of library playlist 1 whose media kind is song
+		set libArtists to artist of every track of library playlist 1 whose media kind is song
+		set libGenres to genre of every track of library playlist 1 whose media kind is song
+		set libBPMs to bpm of every track of library playlist 1 whose media kind is song
+		set libYears to year of every track of library playlist 1 whose media kind is song
+		set libPlayCounts to played count of every track of library playlist 1 whose media kind is song
+		set libRatings to rating of every track of library playlist 1 whose media kind is song
+	end tell
+	set n to count of libTracks
+	if n is 0 then return missing value
+	-- Optional signals, same pattern as Rediscover: missing = neutral default.
+	set libFavFlags to {}
+	set libDislikeFlags to {}
+	set libEnabledFlags to {}
+	try
+		tell application "Music" to set libFavFlags to favorited of every track of library playlist 1 whose media kind is song
+	on error
+		try
+			tell application "Music" to set libFavFlags to loved of every track of library playlist 1 whose media kind is song
+		end try
+	end try
+	try
+		tell application "Music" to set libDislikeFlags to disliked of every track of library playlist 1 whose media kind is song
+	end try
+	try
+		tell application "Music" to set libEnabledFlags to enabled of every track of library playlist 1 whose media kind is song
+	end try
+	if (count of libFavFlags) is not n then set libFavFlags to my filledList(n, false)
+	if (count of libDislikeFlags) is not n then set libDislikeFlags to my filledList(n, false)
+	if (count of libEnabledFlags) is not n then set libEnabledFlags to my filledList(n, true)
+	-- Eligible: checked and not disliked. (Skip-heavy songs are NOT excluded
+	-- here, unlike Rediscover: a Flow set is about vibe, and a skipped song
+	-- can still fit the arc. This is a deliberate, documented difference.)
+	set eligIdx to {}
+	set eligEnergies to {}
+	set eligGroups to {}
+	set eligYears to {}
+	set eligArtistKeys to {}
+	repeat with i from 1 to n
+		if (item i of libEnabledFlags) is not false and (item i of libDislikeFlags) is not true then
+			set pc to item i of libPlayCounts
+			if pc is missing value then set pc to 0
+			set rt to item i of libRatings
+			if rt is missing value then set rt to 0
+			set end of eligIdx to i
+			set end of eligEnergies to my flowEnergy(item i of libBPMs, item i of libGenres, pc, rt, item i of libFavFlags)
+			set end of eligGroups to my flowGenreGroup(item i of libGenres)
+			set end of eligYears to item i of libYears
+			set end of eligArtistKeys to my artistKey(item i of libArtists)
+		end if
+	end repeat
+	set m to count of eligIdx
+	if m is 0 then return missing value
+	-- Bound the greedy pass: a random pool when the library is big.
+	set poolPos to {}
+	if m > flowPoolMax and flowPoolMax > 0 then
+		set poolPos to my randomIndexes(m, flowPoolMax)
+	else
+		repeat with i from 1 to m
+			set end of poolPos to i
+		end repeat
+	end if
+	set poolEnergies to {}
+	set poolGroups to {}
+	set poolYears to {}
+	set poolArtistKeys to {}
+	repeat with pp in poolPos
+		set k to contents of pp
+		set end of poolEnergies to item k of eligEnergies
+		set end of poolGroups to item k of eligGroups
+		set end of poolYears to item k of eligYears
+		set end of poolArtistKeys to item k of eligArtistKeys
+	end repeat
+	set want to flowSize
+	if want < 1 then set want to 1
+	set orderList to my flowOrder(poolEnergies, poolGroups, poolYears, poolArtistKeys, want)
+	set finalTracks to {}
+	set finalArtists to {}
+	set finalIDs to {}
+	set finalEnergies to {}
+	repeat with pp in orderList
+		set poolI to contents of pp
+		set eligI to item poolI of poolPos
+		set libI to item eligI of eligIdx
+		set end of finalTracks to item libI of libTracks
+		set end of finalArtists to item libI of libArtists
+		set end of finalIDs to item libI of libPIDs
+		set end of finalEnergies to item poolI of poolEnergies
+	end repeat
+	return {finalTracks, finalArtists, finalIDs, finalEnergies, m, count of finalTracks}
+end prepareFlow
+
+-- Terminal / menu write path: builds or refreshes "SeTeR Flow" through the
+-- shared snapshot/verify/restore path. Returns a one-line summary.
+on doFlow()
+	set prepared to my prepareFlow()
+	if prepared is missing value then return "Flow: nothing eligible in the library (no checked, non-disliked songs found)."
+	set finalTracks to item 1 of prepared
+	set finalIDs to item 3 of prepared
+	set flowCount to item 6 of prepared
+	tell application "Music"
+		if exists playlist "SeTeR Flow" then
+			set destPl to playlist "SeTeR Flow"
+		else
+			set destPl to make new user playlist with properties {name:"SeTeR Flow"}
+		end if
+	end tell
+	my assertUserPlaylist(destPl)
+	set snapshot to my snapshotPlaylist(destPl, "SeTeR Flow")
+	set snapIDs to item 2 of snapshot
+	if not (my rewritePlaylistSafely(destPl, "SeTeR Flow", finalTracks, flowCount, finalIDs, snapIDs)) then
+		error "Flow build failed, playlist restored from backup. See ~/Library/Logs/seter-shuffle.log"
+	end if
+	my stampDescription(destPl, "Last refreshed: ")
+	my logLine("flow: updated \"SeTeR Flow\" (" & flowCount & " songs from " & (item 5 of prepared) & " eligible)")
+	return "SeTeR Flow ready: " & flowCount & " songs from " & (item 5 of prepared) & " eligible library songs."
+end doFlow
+
+-- Menu wrapper for doFlow (dialogs allowed here, unlike the terminal path).
+on doFlowMenu()
+	try
+		set msg to my doFlow()
+		display notification msg with title "SeTeR Shuffle"
+	on error errMsg number errNum
+		my reportError(errMsg, errNum)
+	end try
+end doFlowMenu
+
+-- Terminal-only dry run: prints the would-be Flow order (first 25, with
+-- energy scores) without changing anything in Music.
+on previewFlow()
+	set prepared to my prepareFlow()
+	if prepared is missing value then return "Flow preview: nothing eligible in the library."
+	set finalTracks to item 1 of prepared
+	set finalArtists to item 2 of prepared
+	set finalEnergies to item 4 of prepared
+	set total to count of finalTracks
+	set outLines to {"Flow preview: " & total & " songs from " & (item 5 of prepared) & " eligible library songs. Nothing was changed.", ""}
+	set shown to total
+	if shown > 25 then set shown to 25
+	repeat with i from 1 to shown
+		set t to item i of finalTracks
+		tell application "Music"
+			set trackName to name of t
+		end tell
+		set end of outLines to (i as text) & ". " & my safeText(item i of finalArtists) & " - " & my safeText(trackName) & " (energy " & (item i of finalEnergies) & ")"
+	end repeat
+	if total > shown then set end of outLines to "... and " & (total - shown) & " more"
+	set AppleScript's text item delimiters to linefeed
+	set outText to outLines as text
+	set AppleScript's text item delimiters to ""
+	return outText
+end previewFlow
 
 -- ---------------------------------------------------------------------------
 -- REDISCOVER
