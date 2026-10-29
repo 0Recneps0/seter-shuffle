@@ -167,7 +167,7 @@ a partial build, or behaviour the bridge cannot predict). It then
 restores the throwaway under the measured mapping and verifies
 that restore; a failed restore is a hard error. run.sh records
 the mapping with the throwaway name and a timestamp; builds
-refuse without a mapping fresher than 24 hours, and pass it to
+refuse without a mapping fresher than 48 hours, and pass it to
 apply/undo/restore-original as a required argument.
 
 Build/verify formulas, per mapping (desired list-read order D):
@@ -308,7 +308,7 @@ Three smaller runner gaps, all fail-closed now:
     but forward/reversed, so a direct call cannot build
     unmapped, only stale-mapped.
   * Undo, apply, and restore now share the exact same gate
-    sequence in run.sh: recorded mapping, fresh (<24h),
+    sequence in run.sh: recorded mapping, fresh (<48h),
     forward/reversed only, passed identically to the bridge
     script, and the bridge script's own parseMapping refusal as
     the second check. No run.sh path builds without a mapping,
@@ -401,7 +401,7 @@ so the enforcement is structural, not observational:
     build for target X reads ONLY X's file.
   * `mapping_for_build` takes the target, validates the
     file's TARGET field matches, and requires a non-empty
-    SORT field and a fresh (<24h) timestamp.
+    SORT field and a fresh (<48h) timestamp.
   * The pre-.5 shared `sort-mapping.txt` is IGNORED, never
     read as a mapping source; a build with only that file
     refuses with a message saying so.
@@ -481,11 +481,11 @@ restore on a fresh empty throwaway) before it is trusted.
 ## Failure mode 37: a scheduled daily run with no fresh mapping (stable-prep gap, not a bridge bug)
 
 The Python daily run (`daily.sh`, plist `com.seter.python.daily`,
-proposed 8:00 AM) needs fresh (<24h) per-target mappings for both
+proposed 8:00 AM) needs fresh (<48h) per-target mappings for both
 its targets (the daily playlist and "SeTeR Rediscover"). Stable
 v2.6's daily run needed no such step: it ran unattended every
 morning. If the Python daily job runs on a day without a manual
-sortprobe in the previous 24 hours, it refuses before touching
+sortprobe in the previous 48 hours, it refuses before touching
 Music and logs which sortprobe to run by hand. That refusal is
 correct under the current rules, but it means the Python daily
 job is NOT yet a drop-in replacement for v2.6's daily job.
@@ -496,6 +496,40 @@ Do not "fix" this gap by auto-probing or by borrowing another
 target's mapping; settling the mapping rule is a decision for
 Spencer before any stable publish, and the daily job must keep
 failing closed until then.
+
+## Failure mode 38: drop-in gaps closed, and the one left open (2026-10-29)
+
+The stable-prep audit listed five gaps against v2.6 parity; the
+drop-in package closes them, with the guards intact:
+
+- Mapping validity is 48h, not 24h, in `run.sh`
+  `mapping_for_build` and `daily.sh` `check_mapping`. An evening
+  probe covers two mornings. Verify-after still fails closed if
+  the sort changed in the window, so a stale mapping costs a
+  refused run, never a corrupted playlist. No other guard moved.
+- `./run.sh menu` re-invokes run.sh per choice, so menu builds
+  keep every gate; the menu prints mapping status before a
+  build and never probes or overrides a refusal.
+- The "Last reshuffled" stamp runs only in apply-order, only
+  after verification and the library-shrink check, only for
+  shuffle/flow (run.sh stamp flag), and best-effort: an
+  unsettable description logs skipped and never fails the
+  apply. Undo/restore/dedupe/rediscover never stamp.
+- Notifications are best-effort in run.sh and daily.sh and
+  never fail a run.
+- Shuffle size (100/250/500/1000/all) applies only to a
+  whole-library shuffle into "SeTeR Shuffle"; a sized in-place
+  shuffle refuses before any dump, because it would drop songs.
+  Size-capped orders validate under "shuffle-size"
+  (presence/multiplicity only).
+- Dedupe logs every removed duplicate by artist and name.
+
+Left open, deliberately: Flow energy flatness for gospel-heavy
+libraries. No dump field (year, date added, album) is a tempo
+or vibe signal, so widening the spread on one would invent a
+tempo. The weakness stays documented; the formula is unchanged
+on both the BPM-present path (byte-for-byte AppleScript parity)
+and the missing-BPM fallback.
 
 ## What the bridge is allowed to do
 
@@ -587,8 +621,9 @@ that proves the guard on a real Mac.
 | 31 | Failed run overwrote the only good backup (narrative mode 32) | The 00:41 run wrote a doubled-state snapshot to the main backup path; only `.prev` saved the original, and one more failed run would have overwritten `.prev` too. | Per-run snapshot files, installed as the main backup only after a verified successful apply; previous main backup kept as `.prev`; newest 10 per-run snapshots kept as a chain; failure restores use the per-run snapshot and leave the main backup untouched. | Run a failing apply on a throwaway (e.g. a bad order that passes Python validation but fails in the bridge, or a forced failure), then confirm the main backup file is byte-identical to before the run and a per-run snapshot exists. |
 | 32 | Stale mapping survived a failed re-probe; restore had no gated path; undo could discover a missing backup after deleting (narrative mode 33) | A failed sort-probe left the old mapping in place; restore-original could only be called directly (no freshness check); undo resolved the playlist before checking the backup file existed (the script itself validates first, so this was a clarity gap, not a data-loss path). | Sort-probe failure deletes the recorded mapping; `./run.sh restore` gates backup existence and mapping freshness like undo; `run.sh undo` refuses with a list of recent backups when the main backup file is missing. | Fail a sort-probe (e.g. on a title-sorted throwaway returning "other"), then attempt a build: it must refuse for lack of a mapping, not proceed under the old one. Run `./run.sh restore` on a throwaway with a missing backup file: it must refuse untouched. |
 | 33 | Flow into a missing playlist fails at the first bulk read, -1728 (narrative mode 34) | `resolvePlaylist(allowCreate=true)` created "SeTeR Flow" via `make new user playlist`, and the next bulk filtered ID read on the fresh empty playlist failed with -1728 before any snapshot existed; safety held (nothing changed), but a flow into a missing playlist could never succeed. | Apply-order re-resolves a created playlist by id with a fresh lookup and builds only from that reference; `playlistIDs` falls back on a bulk-read error to an unfiltered count (0 returns {}, anything else rethrows); `deletePlaylistSongs` applies the same fallback to its empty re-read. | Delete "SeTeR Flow" in Music if it exists, then run `./run.sh flow` (under a fresh sortprobe mapping): it must create the playlist and apply exactly with APPLY OK. Then run flow again on the now-existing playlist: it must refresh it exactly. A -1728 at the snapshot step on either run is a fail. |
-| 34 | Mapping measured on one sort used for a playlist with a different sort (narrative mode 35) | The .4 Flow runs used the main playlist's reversed mapping (Playlist Order descending) for the new, default-sorted SeTeR Flow playlist; a reversed build on a forward-sorted playlist lands backwards, so verify correctly refused. Under .4 one shared mapping file let any build silently reuse any other build's mapping. | Mappings are per-target files (name plus hash); a build reads only its own target's file, validates its TARGET field, requires a SORT field and a fresh (<24h) timestamp; the pre-.5 shared sort-mapping.txt is ignored; sortprobe requires throwaway, target, and sort label; GATE lines print the recorded throwaway and sort label before building. | Attempt `./run.sh flow` with only a main-playlist mapping present: it must refuse for lack of a SeTeR Flow mapping. Then run `./run.sh sortprobe` on a throwaway set to SeTeR Flow's sort for target "SeTeR Flow", and run flow: it must apply exactly with APPLY OK. |
+| 34 | Mapping measured on one sort used for a playlist with a different sort (narrative mode 35) | The .4 Flow runs used the main playlist's reversed mapping (Playlist Order descending) for the new, default-sorted SeTeR Flow playlist; a reversed build on a forward-sorted playlist lands backwards, so verify correctly refused. Under .4 one shared mapping file let any build silently reuse any other build's mapping. | Mappings are per-target files (name plus hash); a build reads only its own target's file, validates its TARGET field, requires a SORT field and a fresh (<48h) timestamp; the pre-.5 shared sort-mapping.txt is ignored; sortprobe requires throwaway, target, and sort label; GATE lines print the recorded throwaway and sort label before building. | Attempt `./run.sh flow` with only a main-playlist mapping present: it must refuse for lack of a SeTeR Flow mapping. Then run `./run.sh sortprobe` on a throwaway set to SeTeR Flow's sort for target "SeTeR Flow", and run flow: it must apply exactly with APPLY OK. |
 | 35 | Undo fails with -1728 on an empty playlist and is reported as "may be partial" (narrative mode 36) | The .4 empty fallback went into apply-order and the retired probe script but not into undo or restore-original; undo's first bulk playlistIDs read fails with -1728 on the empty SeTeR Flow playlist, so undo died before changing anything, and run.sh reported "may be partial" when nothing had changed. | Undo, restore-original, and sort-probe carry the same playlistIDs and delete empty fallbacks as apply-order; pre-change snapshot failures in undo/restore rethrow with a PLAYLIST_UNTOUCHED marker; run.sh's post-apply restore branch logs "untouched, NOT partial" for that marker and keeps "may be partial" for all other restore failures. | Run undo (or restore) on a fresh empty throwaway: it must not fail with -1728, and a failed restore that died at the snapshot read must be logged as untouched, not partial. |
+| 38 | Drop-in gaps vs v2.6 (narrative mode 38) | Stable-prep had no menu, no description stamp, no notifications, CLI-only size, counts-only dedupe, and a 24h mapping window that made a daily run need a probe every day. | 48h mappings (evening probe covers two mornings, verify-after still fails closed); Terminal menu that re-invokes run.sh per choice; best-effort "Last reshuffled" stamp only after verified shuffle/flow; best-effort notifications; size only for whole-library shuffles (sized in-place refuses, "shuffle-size" validation); dedupe names every removed duplicate. Flow energy deliberately unchanged. | Menu: run `./run.sh menu`, shuffle a throwaway, confirm the mapping-status line appears and the build applies. Stamp: after a throwaway shuffle, check the playlist description in Music reads "Last reshuffled: ..."; if Music has no settable description, the log must say the stamp was skipped and the apply still succeeded. Size: `./run.sh shuffle 100` must fill "SeTeR Shuffle" with 100 songs; `./run.sh shuffle <throwaway> 100` must refuse. Dedupe: dedupe a doubled throwaway and confirm the log names each removed duplicate. 48h: a mapping 47h old must pass, 49h old must refuse. |
 
 ## Further audit (2026-10-28): other potential bugs, beyond the reversal
 
@@ -693,7 +728,7 @@ read-only; the sort-probe touches only its own throwaway.
    `./run.sh sortprobe "<throwaway name>" "<target>" "<sort-label>"`.
    It must print `MAPPING: forward` or `MAPPING: reversed` plus
    SORTPROBE_OK, record the mapping FOR THAT TARGET ONLY
-   (valid 24 hours), and restore the throwaway to its snapshot.
+   (valid 48 hours), and restore the throwaway to its snapshot.
    An "other" mapping, a failed restore, or a missing mapping
    file means STOP: no build will run, by design. If the
    throwaway's sort is not the target's sort, the mapping is

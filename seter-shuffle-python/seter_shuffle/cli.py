@@ -212,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--mode",
         default=None,
-        choices=["shuffle", "flow", "rediscover", "dedupe"],
+        choices=["shuffle", "shuffle-size", "flow", "rediscover", "dedupe"],
     )
     p.add_argument("--expected-count", type=int, default=None)
 
@@ -320,13 +320,20 @@ def _run(args: argparse.Namespace) -> int:
         # NOT restore a backup order: on a reversed doubled playlist
         # the result is unique songs in reversed order, and a
         # backup-order restore is a separate step afterwards.
+        # Every removed duplicate entry is logged by name/artist
+        # (v2.6 parity), not counts only: the names come from the
+        # dump itself, so a removed entry is always identifiable
+        # in the run log.
         seen: set[str] = set()
         ordered = []
+        removed_tracks: list[Track] = []
         for track in tracks:
             if track.persistent_id not in seen:
                 seen.add(track.persistent_id)
                 ordered.append(track)
-        removed = len(tracks) - len(ordered)
+            else:
+                removed_tracks.append(track)
+        removed = len(removed_tracks)
         energies = None
         eligible = len(tracks)
         header = (
@@ -387,6 +394,9 @@ def _run(args: argparse.Namespace) -> int:
     _write_order_files(args.out, args.order_txt, payload)
     if not args.quiet:
         print(header)
+        if command == "dedupe":
+            for track in removed_tracks:
+                print(f"Removed duplicate: {track.artist} - {track.name}")
         for line in _preview_lines(ordered, energies, settings.preview_show):
             print(line)
     return 0

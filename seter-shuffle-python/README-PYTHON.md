@@ -31,12 +31,18 @@ dir `~/Documents/SeTeRShufflePython`; new plist label
 (`DAILY_HOUR`/`DAILY_MINUTE` at the top of `setup-python.sh`).
 Daily facts: `daily.sh` writes a daily library manifest (kept 14
 days), dedupes, shuffles, then refreshes "SeTeR Rediscover"; it
-REFUSES without fresh (<24h) per-target mappings for both targets
-and never auto-probes, so a scheduled daily run fails closed on
-any day without a manual sortprobe. That is the main remaining
-stable gap, stated plainly in the changelog audit table, which
-also lists the other gaps (no menu app, no description stamp,
-logs instead of notifications, CLI-only library size choice).
+REFUSES without fresh (<48h) per-target mappings for both targets
+and never auto-probes, so an evening sortprobe covers the next
+two mornings' 8am runs, and a run without a probe in the previous
+48 hours fails closed. The former stable-prep gaps are closed in
+the drop-in package: `./run.sh menu` (Terminal menu), a
+"Last reshuffled" playlist description stamp after verified
+shuffle/flow applies (best-effort, never fails the apply),
+macOS notifications on success and failure, `./run.sh shuffle
+[size]` (100/250/500/1000/all, whole-library only), and dedupe
+lines naming every removed duplicate. The remaining documented
+weakness is Flow energy flatness for gospel-heavy libraries
+(see the changelog drop-in entry); it is not claimed fixed.
 Migration facts: v2.6 script, backups, apps, and history are never
 deleted or edited; only the v2.6 plist is renamed to
 `.disabled-<timestamp>` on `--confirm`, and `--rollback`
@@ -69,7 +75,7 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   2026-10-28 failure), reporting forward, reversed, or other
   (which aborts everything); run.sh records that mapping
   PER-TARGET, with the throwaway name and a user-declared sort
-  label, and requires a fresh one (24 hours) before every apply
+  label, and requires a fresh one (48 hours) before every apply
   and undo. A mapping measured on one playlist's sort NEVER
   transfers to a playlist with a different sort: the 2026-10-29
   15:38 PT Flow runs proved it, using the main playlist's

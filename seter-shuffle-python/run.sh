@@ -6,11 +6,25 @@
 # order. Previews never call the apply script at all.
 #
 # Usage (from this directory):
+#   ./run.sh menu                   interactive Terminal menu (v2.6
+#                                   options: shuffle, rediscover,
+#                                   dedupe, undo, flow, flowPreview,
+#                                   audit); every choice re-invokes
+#                                   run.sh, so all gates apply
 #   ./run.sh audit                  tag-coverage audit, change nothing
 #   ./run.sh flowPreview            print the would-be Flow order, change nothing
 #   ./run.sh flow                   build/refresh "SeTeR Flow"
-#   ./run.sh shuffle [playlist]     shuffle a playlist in place, or the
-#                                   whole library into "SeTeR Shuffle"
+#   ./run.sh shuffle [playlist] [size]
+#                                   shuffle a playlist in place, or the
+#                                   whole library into "SeTeR Shuffle";
+#                                   size is 100/250/500/1000/all and
+#                                   applies only to the whole-library
+#                                   shuffle (a sized in-place shuffle
+#                                   would drop songs, so it refuses);
+#                                   a successful shuffle/flow apply
+#                                   stamps the playlist description
+#                                   "Last reshuffled: <date/time>"
+#                                   best-effort (never fails the apply)
 #   ./run.sh rediscover-preview     print Rediscover picks, change nothing
 #   ./run.sh rediscover             refresh "SeTeR Rediscover" and record
 #                                   history ONLY after a successful apply
@@ -59,7 +73,7 @@
 # builds a rotation on it, reads it back, restores it, and records
 # the end-to-end mapping (forward: building X lands list read X;
 # reversed: building X lands list read reverse(X)). Apply and undo
-# read that recorded mapping (fresh for 24 hours, else they refuse)
+# read that recorded mapping (fresh for 48 hours, else they refuse)
 # and pass it to the bridge scripts, which build and verify with it
 # (see bridge/sort-probe.applescript and
 # seter_shuffle/order_direction.py's mapping section). A sort-probe
@@ -191,9 +205,9 @@ log "python: $CHECK_OUT"
 
 CMD="${1:-}"
 case "$CMD" in
-  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe) ;;
+  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|menu) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|menu}" >&2
     exit 2
     ;;
 esac
@@ -219,6 +233,21 @@ logfile() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
 # mapping-gate failure: a shuffle used to stop after "compute
 # shuffle order" with no visible error when no mapping was recorded.
 logerr() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG" >&2; }
+
+# macOS notification, best-effort only: a missing Notification
+# Center, a missing osascript, or a denied permission must never
+# fail a run that otherwise succeeded or failed on its own terms.
+# Double quotes are stripped from the message so a playlist name
+# cannot break the osascript argument. Not used inside $(...).
+notify() {
+  local msg
+  msg="$(printf '%s' "$*" | tr -d '"')"
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$msg\" with title \"SeTeR Shuffle\"" >/dev/null 2>&1 || log "notification unavailable: $msg"
+  else
+    log "notification unavailable (no osascript): $msg"
+  fi
+}
 
 # Measure this Mac's playlist order direction on a fresh timestamped
 # probe playlist, and print exactly one mode word to stdout. The
@@ -280,7 +309,7 @@ fi
 #   SORT: <sort label the user declared for the throwaway>
 #   TIMESTAMP: <epoch seconds>
 # Builds refuse without a mapping for THEIR target, refuse a stale
-# one (older than 24h), and refuse a file whose TARGET field does
+# one (older than 48h), and refuse a file whose TARGET field does
 # not match, so a build never silently uses a mapping measured for
 # a different playlist's sort or a different day. If the target's
 # sort may have changed since the probe, re-run sortprobe first:
@@ -332,8 +361,8 @@ mapping_for_build() {
     return 1
   fi
   case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1;; esac
-  if [ $((now - ts)) -gt 86400 ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is older than 24 hours (throwaway '$throwaway', sort '$sort_label'); re-run sortprobe so the mapping matches the target's current sort"
+  if [ $((now - ts)) -gt 172800 ]; then
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours (throwaway '$throwaway', sort '$sort_label'); re-run sortprobe so the mapping matches the target's current sort"
     return 1
   fi
   logfile "sort mapping for builds: $mapping (target '$target', throwaway '$throwaway', sort '$sort_label', at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
@@ -358,6 +387,96 @@ mapping_info_for() {
   sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
   log "build mapping for '$target': $mapping (throwaway '$throwaway', sort '$sort_label'); if this sort does not match '$target''s sort in Music, stop and re-run sortprobe"
 }
+
+# Print one target's recorded mapping status for the menu (and
+# for a human checking before a build). This never authorizes
+# anything: the build itself still calls mapping_for_build and
+# refuses without a fresh per-target mapping.
+mapping_status_for() {
+  local target="$1" map_file mapping throwaway sort_label ts now age
+  map_file="$(mapping_file_for "$target")"
+  if [ ! -f "$map_file" ]; then
+    log "mapping status for '$target': none recorded; a build will refuse until you run ./run.sh sortprobe <throwaway> '$target' '<sort-label>'"
+    return 0
+  fi
+  mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+  throwaway="$(grep '^THROWAWAY: ' "$map_file" | head -n 1 | sed 's/^THROWAWAY: //')"
+  sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
+  ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+  now="$(date +%s)"
+  case "$ts" in ''|*[!0-9]*) log "mapping status for '$target': invalid timestamp; a build will refuse"; return 0;; esac
+  age=$((now - ts))
+  if [ "$age" -gt 172800 ]; then
+    log "mapping status for '$target': STALE ($mapping, throwaway '$throwaway', sort '$sort_label', ${age}s old); a build will refuse until you re-run sortprobe"
+  else
+    log "mapping status for '$target': $mapping (throwaway '$throwaway', sort '$sort_label', ${age}s old, valid 48 hours)"
+  fi
+}
+
+# Interactive menu (Terminal only, matching v2.6's interactive
+# options; there is no .app bundle in this build). Every choice
+# re-invokes run.sh as a fresh process, so every gate in the
+# non-interactive paths applies unchanged: a build still refuses
+# without a fresh per-target mapping, still validates its order,
+# still snapshots and verifies. The menu only adds prompts and a
+# mapping-status line before the build it is about to run; it
+# never probes, never picks a mapping, and never overrides a
+# refusal. Playlist names may contain spaces; size is the
+# documented 100/250/500/1000/all choice, blank for all.
+if [ "$CMD" = "menu" ]; then
+  while true; do
+    printf '\nSeTeR Shuffle\n  1) Shuffle a playlist\n  2) Rediscover\n  3) Remove duplicates (dedupe)\n  4) Undo last shuffle\n  5) Flow\n  6) Flow preview\n  7) Audit\n  0) Quit\n'
+    printf 'Choice: '
+    read -r choice || exit 0
+    case "$choice" in
+      1)
+        printf 'Playlist (blank for SeTeR Shuffle): '
+        read -r pl || exit 0
+        if [ -n "$pl" ]; then mapping_status_for "$pl"; else mapping_status_for "SeTeR Shuffle"; fi
+        printf 'Size (100/250/500/1000/all, blank for all): '
+        read -r sz || exit 0
+        menu_args=()
+        [ -n "$pl" ] && menu_args+=("$pl")
+        [ -n "$sz" ] && menu_args+=("$sz")
+        bash "$ROOT/run.sh" shuffle "${menu_args[@]}" || notify "SeTeR Shuffle: shuffle failed"
+        ;;
+      2)
+        mapping_status_for "SeTeR Rediscover"
+        bash "$ROOT/run.sh" rediscover || notify "SeTeR Shuffle: rediscover failed"
+        ;;
+      3)
+        printf 'Playlist: '
+        read -r pl || exit 0
+        [ -n "$pl" ] || { echo "dedupe needs a playlist name."; continue; }
+        mapping_status_for "$pl"
+        bash "$ROOT/run.sh" dedupe "$pl" || notify "SeTeR Shuffle: dedupe failed"
+        ;;
+      4)
+        printf 'Playlist: '
+        read -r pl || exit 0
+        [ -n "$pl" ] || { echo "undo needs a playlist name."; continue; }
+        mapping_status_for "$pl"
+        bash "$ROOT/run.sh" undo "$pl" || notify "SeTeR Shuffle: undo failed"
+        ;;
+      5)
+        mapping_status_for "SeTeR Flow"
+        bash "$ROOT/run.sh" flow || notify "SeTeR Shuffle: flow failed"
+        ;;
+      6)
+        bash "$ROOT/run.sh" flowPreview || notify "SeTeR Shuffle: flow preview failed"
+        ;;
+      7)
+        bash "$ROOT/run.sh" audit || notify "SeTeR Shuffle: audit failed"
+        ;;
+      0|q|quit)
+        exit 0
+        ;;
+      *)
+        echo "unknown choice: $choice"
+        ;;
+    esac
+  done
+fi
 
 # Sort-probe command: measure the mapping on a user-sorted throwaway
 # FOR ONE TARGET. Since .5 the target and the sort label are
@@ -399,7 +518,7 @@ if [ "$CMD" = "sortprobe" ]; then
         printf 'TIMESTAMP: %s\n' "$(date +%s)"
       } > "$MAP_FILE.tmp"
       mv -f "$MAP_FILE.tmp" "$MAP_FILE"
-      log "GATE OK: sort-probe mapping $mapping recorded for target '$PROBE_TARGET' (valid 24 hours; throwaway '$THROWAWAY', sort '$PROBE_SORT')"
+      log "GATE OK: sort-probe mapping $mapping recorded for target '$PROBE_TARGET' (valid 48 hours; throwaway '$THROWAWAY', sort '$PROBE_SORT')"
       log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build for '$PROBE_TARGET'"
       exit 0
     fi
@@ -413,6 +532,7 @@ if [ "$CMD" = "sortprobe" ]; then
   rm -f "$MAP_FILE"
   log "GATE FAILED: sort-probe did not return a usable mapping; any previously recorded mapping for target '$PROBE_TARGET' was deleted, no build for that target will run until a clean sort-probe passes"
   log "check the throwaway '$THROWAWAY' in Music: if the probe could not restore it, its snapshot is at $SNAPSHOT"
+  notify "SeTeR Shuffle: sortprobe failed for $PROBE_TARGET"
   exit 1
 fi
 
@@ -435,8 +555,9 @@ if [ "$CMD" = "undo" ]; then
   MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
   mapping_info_for "$PLAYLIST"
   log "undo $PLAYLIST from $BACKUP (mapping $MAPPING; pre-undo snapshot will be saved at $BACKUP.pre-undo)"
-  step "undo $PLAYLIST" osascript "$BRIDGE/undo.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || exit 1
+  step "undo $PLAYLIST" osascript "$BRIDGE/undo.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || { notify "SeTeR Shuffle: undo failed for $PLAYLIST"; exit 1; }
   log "undo done"
+  notify "SeTeR Shuffle: undo done for $PLAYLIST"
   exit 0
 fi
 
@@ -446,7 +567,7 @@ fi
 # only supported way to call restore-original.applescript: a direct
 # osascript call to it bypasses the freshness check (the script
 # cannot know when the mapping was measured), so direct calls are
-# expert-only and must be given a mapping measured within 24 hours
+# expert-only and must be given a mapping measured within 48 hours
 # on a throwaway carrying the target's sort.
 if [ "$CMD" = "restore" ]; then
   PLAYLIST="${2:-}"
@@ -459,9 +580,48 @@ if [ "$CMD" = "restore" ]; then
   MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
   mapping_info_for "$PLAYLIST"
   log "restore $PLAYLIST from $BACKUP (mapping $MAPPING; pre-fix snapshot will be saved at $BACKUP.fix-snapshot)"
-  step "restore $PLAYLIST" osascript "$BRIDGE/restore-original.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || exit 1
+  step "restore $PLAYLIST" osascript "$BRIDGE/restore-original.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || { notify "SeTeR Shuffle: restore failed for $PLAYLIST"; exit 1; }
   log "restore done"
+  notify "SeTeR Shuffle: restore done for $PLAYLIST"
   exit 0
+fi
+
+# Shuffle size (v2.6 library-shuffle size choice, wired into
+# run.sh): ./run.sh shuffle [playlist] [size], or
+# ./run.sh shuffle [size] for a whole-library shuffle into
+# "SeTeR Shuffle", or SETER_SHUFFLE_SIZE. Size is one of
+# 100/250/500/1000/all; "all" and blank both mean the whole
+# library/playlist, which is also the daily default. An invalid
+# size refuses before any dump, so a typo cannot shuffle the
+# wrong slice. The CLI --size caps the shuffled output (first N
+# of the Fisher-Yates order, then artist-spaced), matching v2.6.
+SHUFFLE_PLAYLIST=""
+SHUFFLE_SIZE="${SETER_SHUFFLE_SIZE:-}"
+if [ "$CMD" = "shuffle" ]; then
+  if [ -n "${2:-}" ]; then
+    case "$2" in
+      100|250|500|1000|all) SHUFFLE_SIZE="$2" ;;
+      *) SHUFFLE_PLAYLIST="$2" ;;
+    esac
+  fi
+  if [ -n "${3:-}" ]; then
+    case "$3" in
+      100|250|500|1000|all) SHUFFLE_SIZE="$3" ;;
+      *) echo "usage: $0 shuffle [playlist] [size: 100|250|500|1000|all]" >&2; exit 2 ;;
+    esac
+  fi
+  case "$SHUFFLE_SIZE" in
+    ""|all|100|250|500|1000) ;;
+    *) echo "invalid shuffle size '$SHUFFLE_SIZE' (use 100, 250, 500, 1000, or all)" >&2; exit 2 ;;
+  esac
+  # Size applies ONLY to a whole-library shuffle into "SeTeR
+  # Shuffle" (a generated playlist). An in-place shuffle must
+  # reorder the whole playlist, never drop songs from it, so a
+  # sized in-place shuffle refuses here, before any dump.
+  if [ -n "$SHUFFLE_PLAYLIST" ] && [ -n "$SHUFFLE_SIZE" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
+    echo "shuffle size applies only to a whole-library shuffle (./run.sh shuffle [size]); an in-place playlist shuffle always reorders the whole playlist" >&2
+    exit 2
+  fi
 fi
 
 # Dump: whole library, or one playlist for shuffle/dedupe. The dump
@@ -475,9 +635,9 @@ if [ "$CMD" = "dedupe" ]; then
   SOURCE_PLAYLIST="$2"
   TARGET_PLAYLIST="$2"
   step "dump playlist $SOURCE_PLAYLIST" osascript "$BRIDGE/dump-library.applescript" "$DUMP" "$SOURCE_PLAYLIST" || exit 1
-elif [ "$CMD" = "shuffle" ] && [ -n "${2:-}" ]; then
-  SOURCE_PLAYLIST="$2"
-  TARGET_PLAYLIST="$2"
+elif [ "$CMD" = "shuffle" ] && [ -n "$SHUFFLE_PLAYLIST" ]; then
+  SOURCE_PLAYLIST="$SHUFFLE_PLAYLIST"
+  TARGET_PLAYLIST="$SHUFFLE_PLAYLIST"
   step "dump playlist $SOURCE_PLAYLIST" osascript "$BRIDGE/dump-library.applescript" "$DUMP" "$SOURCE_PLAYLIST" || exit 1
 else
   step "dump library" osascript "$BRIDGE/dump-library.applescript" "$DUMP" || exit 1
@@ -511,7 +671,16 @@ apply_order() {
   run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$.txt"
   build_mapping="$(mapping_for_build "$target")" || exit 1
   mapping_info_for "$target"
-  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$mode" || exit 1
+  # A size-capped whole-library shuffle is a subset by design
+  # (N songs into the generated "SeTeR Shuffle" playlist), so it
+  # validates under "shuffle-size" (presence/multiplicity only),
+  # not "shuffle" (exact multiset equality, which a subset would
+  # rightly fail). Every other mode keeps its exact rule.
+  validate_mode="$mode"
+  if [ "$mode" = "shuffle" ] && [ -z "${SOURCE_PLAYLIST:-}" ] && [ -n "${SHUFFLE_SIZE:-}" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
+    validate_mode="shuffle-size"
+  fi
+  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" || exit 1
   log "GATE: order validated for $target"
   # Duplicate allowance: "1" only for a one-playlist shuffle whose
   # dump itself repeats an ID (duplicate playlist entries, preserved
@@ -536,10 +705,23 @@ apply_order() {
   if [ "$mode" = "dedupe" ]; then
     allow_dupes="0"
   fi
+  # Description stamp (v2.6 "Last reshuffled" parity): only for
+  # shuffle and flow, only as the 7th bridge argument, and only
+  # after verification passes inside apply-order. The bridge
+  # stamps best-effort: if Music's scripting does not expose a
+  # settable playlist description, the stamp step logs skipped
+  # and the already-verified apply still succeeds. Undo and
+  # restore never stamp (they do not call this function), and
+  # dedupe/rediscover do not stamp either, because neither is a
+  # reshuffle.
+  stamp_flag="0"
+  if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ]; then
+    stamp_flag="1"
+  fi
   if [ -n "$lib_songs" ]; then
-    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "$lib_songs")
+    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag")
   else
-    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes")
+    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "" "$stamp_flag")
   fi
   if step "apply order to $target" osascript "$BRIDGE/apply-order.applescript" "${apply_args[@]}"; then
     # Install the per-run snapshot as the main backup ONLY now,
@@ -555,8 +737,10 @@ apply_order() {
     # Prune old per-run snapshots, best-effort: a pruning failure
     # must never fail an already-successful apply.
     ls -t "$STATE"/backup-*.run-*.txt 2>/dev/null | tail -n +11 | while read -r f; do rm -f "$f"; done || true
+    notify "SeTeR Shuffle: $target applied ($mode)"
   else
     log "GATE FAILED: apply failed for $target"
+    notify "SeTeR Shuffle: apply failed for $target ($mode)"
     if [ -f "$run_backup" ]; then
       log "per-run snapshot exists at $run_backup; attempting restore via undo (same recorded mapping); main backup at $backup was NOT overwritten by this failed run"
       if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "$build_mapping"; then
@@ -607,10 +791,14 @@ case "$CMD" in
     # playlist entry, and those entries must be preserved. A
     # whole-library shuffle never passes it, so a repeated ID in a
     # library dump still fails closed.
+    shuffle_size_args=()
+    if [ -n "$SHUFFLE_SIZE" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
+      shuffle_size_args=(--size "$SHUFFLE_SIZE")
+    fi
     if [ -n "${SOURCE_PLAYLIST:-}" ]; then
-      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --allow-duplicates || exit 1
+      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --allow-duplicates "${shuffle_size_args[@]}" || exit 1
     else
-      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" || exit 1
+      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" "${shuffle_size_args[@]}" || exit 1
     fi
     apply_order "$TARGET_PLAYLIST" "shuffle"
     log "shuffle done"
@@ -641,6 +829,7 @@ case "$CMD" in
     order_count="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["count"])' "$ORDER")"
     if [ "$order_count" = "$dump_count" ]; then
       log "dedupe done: no duplicate entries in \"$TARGET_PLAYLIST\" ($dump_count songs); nothing was applied"
+      notify "SeTeR Shuffle: $TARGET_PLAYLIST already clean, nothing applied"
     else
       log "dedupe: $dump_count entries, $order_count unique songs; applying unique order (first-occurrence order, NOT backup order)"
       apply_order "$TARGET_PLAYLIST" "dedupe"

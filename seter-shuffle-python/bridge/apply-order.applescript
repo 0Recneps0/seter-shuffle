@@ -109,7 +109,7 @@
 -- fail verification and restore, not silently land a wrong order.
 --
 -- Usage (always via run.sh, which sort-probes first):
---   osascript apply-order.applescript <playlist-name> <order-txt> <backup-txt> <mapping> [allow-duplicates] [expected-library-song-count]
+--   osascript apply-order.applescript <playlist-name> <order-txt> <backup-txt> <mapping> [allow-duplicates] [expected-library-song-count] [stamp-1-or-0]
 -- mapping: "forward" or "reversed" (from bridge/sort-probe on a
 --   throwaway carrying the target's sort; required, never
 --   defaulted). An old call passing a probe mode (forward /
@@ -152,13 +152,22 @@ on run argv
 	set allowDuplicates to false
 	if (count of argv) > 4 and (item 5 of argv) is "1" then set allowDuplicates to true
 	set expectedLibSongs to missing value
-	if (count of argv) > 5 then
+	if (count of argv) > 5 and (item 6 of argv) is not "" then
 		try
 			set expectedLibSongs to (item 6 of argv) as integer
 		on error
 			error "apply-order: expected library song count must be a number." number 1
 		end try
 	end if
+	-- Description stamp flag (7th argument, run.sh only): "1"
+	-- stamps the playlist description after a verified apply,
+	-- "0" or absent does not. The stamp is best-effort and never
+	-- fails an already-verified apply (see the stamp step after
+	-- verification, below). Undo/restore never call this script,
+	-- and run.sh passes "0" for dedupe/rediscover, so a stamp can
+	-- only ever follow a verified shuffle or flow apply.
+	set stampDescription to false
+	if (count of argv) > 6 and (item 7 of argv) is "1" then set stampDescription to true
 
 	-- Validate the order BEFORE resolving or changing anything.
 	set orderIDs to my readOrderFile(orderPath, allowDuplicates)
@@ -245,7 +254,27 @@ on run argv
 		end if
 	end if
 
-	return "APPLY OK: applied " & wanted & " songs to \"" & playlistName & "\" in exact order (mapping " & buildMapping & "; backup verified: " & (count of backupIDs) & " songs at " & backupPath & ")"
+	-- Last-reshuffled stamp: ONLY here, after verification and
+	-- the library-shrink check have both passed. If Music does
+	-- not expose a settable description for this playlist, the
+	-- stamp is skipped with a note in the return string and the
+	-- apply still succeeds: a cosmetic stamp must never turn a
+	-- verified apply into a failure, and it must never run on a
+	-- failed or restored playlist (those paths error above,
+	-- before this line).
+	set stampNote to ""
+	if stampDescription then
+		try
+			tell application "Music"
+				set description of destPl to "Last reshuffled: " & (current date as string)
+			end tell
+			set stampNote to "; playlist description stamped"
+		on error errMsg
+			set stampNote to "; description stamp skipped (" & errMsg & ")"
+		end try
+	end if
+
+	return "APPLY OK: applied " & wanted & " songs to \"" & playlistName & "\" in exact order (mapping " & buildMapping & "; backup verified: " & (count of backupIDs) & " songs at " & backupPath & ")" & stampNote
 end run
 
 -- The build mapping, validated, never defaulted. It comes from

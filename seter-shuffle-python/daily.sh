@@ -15,7 +15,7 @@
 #   ./daily.sh                      # default playlist, same name
 #
 # HARD RULES (do not weaken these for convenience):
-# - This script NEVER probes. A daily run needs a fresh (<24h)
+# - This script NEVER probes. A daily run needs a fresh (<48h)
 #   per-target mapping for EACH target it touches (the daily
 #   playlist AND "SeTeR Rediscover"), recorded by a manual
 #   ./run.sh sortprobe on a throwaway set to that target's sort.
@@ -25,10 +25,12 @@
 #   mapping, and it never auto-probes: an automated probe would
 #   measure a throwaway whose sort nobody just verified, which is
 #   exactly how the 2026-10-29 mapping-transfer failure happened.
-#   Practical consequence, stated plainly: until the mapping
-#   freshness rule changes, a launchd daily run will fail closed
-#   on any day without a manual sortprobe in the previous 24 hours.
-#   That is a known stable gap, not a bug to work around silently.
+#   Practical consequence, stated plainly: an evening sortprobe
+#   now covers the next TWO mornings' 8am runs (48h window), but
+#   a run still fails closed on any morning without a probe in
+#   the previous 48 hours. Verify-after still fails closed if
+#   the sort actually changed in the window, so a stale mapping
+#   costs a refused run, never a corrupted playlist.
 # - This script NEVER touches the v2.6 install
 #   (~/Documents/SeTeRShuffle) or its launchd job (com.seter.daily).
 #   Migration disables that job only when migrate-to-python.sh is
@@ -56,7 +58,21 @@ REDISCOVER_PLAYLIST="SeTeR Rediscover"
 mkdir -p "$STATE" "$BACKUP_DIR" 2>/dev/null || true
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
-die() { log "DAILY FAILED: $*"; exit 1; }
+
+# Best-effort macOS notification (same rule as run.sh notify):
+# never blocks or fails the run if Notification Center or
+# osascript is unavailable.
+notify() {
+  local msg
+  msg="$(printf '%s' "$*" | tr -d '"')"
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$msg\" with title \"SeTeR Shuffle\"" >/dev/null 2>&1 || log "notification unavailable: $msg"
+  else
+    log "notification unavailable (no osascript): $msg"
+  fi
+}
+
+die() { log "DAILY FAILED: $*"; notify "SeTeR Shuffle daily run failed: $*"; exit 1; }
 
 # Mapping filename for one target: sanitized name plus a hash of the
 # full name, exactly the scheme run.sh mapping_file_for uses, so
@@ -108,8 +124,8 @@ check_mapping() {
       return 1
       ;;
   esac
-  if [ $((now - ts)) -gt 86400 ]; then
-    log "DAILY FAILED: recorded mapping for '$target' is older than 24 hours; re-run sortprobe so the mapping matches the target's current sort."
+  if [ $((now - ts)) -gt 172800 ]; then
+    log "DAILY FAILED: recorded mapping for '$target' is older than 48 hours; re-run sortprobe so the mapping matches the target's current sort."
     return 1
   fi
   log "daily mapping OK for '$target': $mapping (sort '$sort_label')"
@@ -167,4 +183,5 @@ log "daily shuffle done for '$PLAYLIST'"
 log "daily rediscover done"
 
 log "daily run done for '$PLAYLIST'"
+notify "SeTeR Shuffle daily run done for $PLAYLIST"
 exit 0

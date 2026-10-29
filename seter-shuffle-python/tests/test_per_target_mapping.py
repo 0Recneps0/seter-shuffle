@@ -190,13 +190,13 @@ class TestPerTargetMappingBehavior(unittest.TestCase):
         self.assertIn("sort label", err)
 
     def test_stale_per_target_mapping_refuses(self):
-        old = int(time.time()) - 90000
+        old = int(time.time()) - 180000
         rc, out, err = _run_mapping(
             "SeTeR Flow", {"__TARGET__": _valid_mapping(ts=old)}
         )
         self.assertNotEqual(rc, 0)
         self.assertEqual(out, "")
-        self.assertIn("older than 24 hours", err)
+        self.assertIn("older than 48 hours", err)
 
     def test_different_targets_get_different_files(self):
         harness = textwrap.dedent(

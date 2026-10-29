@@ -128,12 +128,12 @@ class MappingStderrTests(unittest.TestCase):
     def test_stale_mapping_fails_on_stderr_not_stdout(self):
         rc, out, err = _run_mapping(
             "MAPPING: forward\nTHROWAWAY: T\nTARGET: Test Target\nSORT: Playlist Order descending\nTIMESTAMP: %d\n"
-            % (int(time.time()) - 90000)
+            % (int(time.time()) - 180000)
         )
         self.assertNotEqual(rc, 0)
         self.assertEqual(out, "")
         self.assertIn("GATE FAILED", err)
-        self.assertIn("24 hours", err)
+        self.assertIn("48 hours", err)
 
     def test_valid_mapping_captures_exactly_with_quiet_stderr(self):
         rc, out, err = _run_mapping(

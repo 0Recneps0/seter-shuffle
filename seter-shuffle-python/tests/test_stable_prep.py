@@ -205,11 +205,11 @@ class DailyTests(unittest.TestCase):
         self.assertNotIn("run.sh\" sortprobe", text)
 
     def test_daily_refuses_stale_mapping(self) -> None:
-        write_mapping(self.state, "My New Sandwich Recipe", age_seconds=90000)
+        write_mapping(self.state, "My New Sandwich Recipe", age_seconds=180000)
         write_mapping(self.state, "SeTeR Rediscover")
         result = run_script("daily.sh", ["My New Sandwich Recipe"], self.env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("older than 24 hours", result.stdout + result.stderr)
+        self.assertIn("older than 48 hours", result.stdout + result.stderr)
 
     def test_daily_dry_run_passes_with_fresh_mappings(self) -> None:
         write_mapping(self.state, "My New Sandwich Recipe")

@@ -8,6 +8,88 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — Drop-in replacement package (48h mappings, menu, stamp, notifications, size, dedupe names)
+
+Spencer ordered the stable-prep gaps closed, on branch experimental
+only: no merge to main, no stable release, no tag created for this
+work, nothing ran on his Mac. Each gap from the stable-prep audit
+is closed below, except Flow energy tuning, which is left open
+deliberately (see below).
+
+**1. Mapping validity 24h -> 48h, everywhere.** `run.sh`
+`mapping_for_build`, `daily.sh` `check_mapping`, sortprobe's
+recorded validity, and every doc error message now use 172800
+seconds. Rationale, documented in `daily.sh`: an evening
+sortprobe now covers the next TWO mornings' 8am daily runs, and
+verify-after still fails closed if the sort actually changed in
+the window, so a stale mapping costs a refused run, never a
+corrupted playlist. Nothing else weakened: per-target files,
+TARGET field, sort label, forward/reversed only, no auto-probe,
+no cross-target fallback.
+
+**2. Interactive menu.** `./run.sh menu` is a Terminal menu
+matching v2.6's interactive options: shuffle a playlist,
+rediscover, dedupe, undo, flow, flowPreview, audit. It prompts
+for the playlist name (and size for shuffle), prints the
+recorded mapping status for the chosen target before building,
+and re-invokes run.sh as a fresh process for every choice, so
+every gate applies unchanged. It never probes and never
+overrides a refusal. No .app bundle is required or built; the
+menu is Terminal-based, and that is stated, not hidden.
+
+**3. Last-reshuffled stamp.** After a verified successful
+shuffle or flow apply, `apply-order.applescript` sets the
+target playlist's description to "Last reshuffled: <local
+date/time>". The stamp runs only after verification and the
+library-shrink check pass, only when run.sh passes the stamp
+flag (shuffle/flow only), and never for undo, restore, dedupe,
+or rediscover. It is best-effort: if Music's scripting does
+not expose a settable playlist description, the stamp step
+logs skipped and the already-verified apply still succeeds.
+Whether Music exposes a settable description is unproven on a
+Mac (like every bridge change here).
+
+**4. Notifications.** `run.sh` and `daily.sh` send a macOS
+`display notification` on success and on failure (playlist
+name, or the gate reason), in addition to logs. Notifications
+are best-effort: a missing osascript or denied Notification
+Center permission logs "notification unavailable" and never
+fails the run.
+
+**5. Library size wiring.** `./run.sh shuffle [playlist]
+[size]` and `SETER_SHUFFLE_SIZE` now pass `--size` to the CLI
+(100/250/500/1000/all; blank/all = whole library, the daily
+default). Size applies ONLY to a whole-library shuffle into
+the generated "SeTeR Shuffle" playlist: a sized in-place
+shuffle would drop songs, so run.sh refuses it before any
+dump, and a size-capped order validates under a new
+"shuffle-size" mode (presence/multiplicity only) instead of
+the exact-multiset "shuffle" mode it would rightly fail.
+
+**6. Dedupe name logging.** The CLI `dedupe` command now
+prints one "Removed duplicate: <artist> - <name>" line per
+removed entry (names from the dump itself), so the run log
+identifies every removed entry. Dedupe still applies nothing
+when clean and still preserves first-occurrence order.
+
+**7. Flow energy: NOT changed, deliberately.** A gospel-heavy
+synthetic library (BPM missing, varied plays/ratings) already
+spreads 47-67 across 9 distinct values in the current model;
+Spencer's real first-25 flatness (47-50) comes from most of
+those tracks sharing the same signals (same genre group, low
+plays, unrated, not favorited). No discriminator already in
+the dump (year, date added, album) is a tempo or a vibe
+signal, so widening the spread on one of those would be
+inventing a tempo, not measuring one. The tuning weakness
+stays documented as-is; do not claim a fix here.
+
+**Still unproven on a Mac:** the stamp (including whether
+`description` is settable on a user playlist), menu runs,
+notifications, size-capped shuffle applies, dedupe name lines
+in a real run log, and the 48h daily precondition (an evening
+probe covering two mornings). The remaining throwaway
+checklist items from the stable-prep package are unchanged.
+
 ## 2026-10-29 — Stable-preparation package (installer, daily run, migration, functionality audit)
 
 **What this build adds, on branch experimental only:** a macOS
@@ -88,6 +170,12 @@ change list.
 | macOS notifications/dialogs on success/failure | Logs only (`run.log`, `daily.log`) | GAP by design: logs replace dialogs; no notification is sent |
 | Library shuffle with size choice (100/250/500/1000/all into "SeTeR Shuffle") | CLI `--size` exists, but `run.sh shuffle` (no playlist) always uses the whole library | PARTIAL GAP: size choice is CLI-only, not wired into run.sh |
 | Daily run with no manual step | None | GAP, the important one: v2.6 daily needed no probe; the Python daily run refuses without fresh (<24h) per-target mappings for both targets, and `daily.sh` never auto-probes. Until that rule changes, a scheduled daily run is not a drop-in replacement for v2.6's daily run |
+
+NOTE: this table is the stable-prep snapshot. The drop-in
+entry above it supersedes it: mappings are now 48h, the menu,
+stamp, notifications, size wiring, and dedupe name logging are
+all built, and only Flow energy tuning (and the no-.app-bundle
+fact) remain open.
 
 **Tests here:** full suite re-run after the final code state
 (175 tests passed, 0 failed); shell syntax checked

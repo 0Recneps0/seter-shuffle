@@ -264,7 +264,7 @@ else
   else
     warn "Couldn't load the schedule. Try: launchctl load \"$PLIST_PATH\""
   fi
-  say "   NOTE: the daily run refuses without a fresh (<24h) per-target mapping for both"
+  say "   NOTE: the daily run refuses without a fresh (<48h) per-target mapping for both"
   say "   \"$PLAYLIST\" and \"SeTeR Rediscover\". Run sortprobe by hand for each target"
   say "   before the first scheduled run, and again whenever a mapping goes stale."
   say "   The daily run never auto-probes and never borrows another target's mapping."

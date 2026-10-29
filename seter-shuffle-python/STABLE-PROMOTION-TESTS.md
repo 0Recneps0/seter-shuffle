@@ -230,7 +230,7 @@ record below.
    shuffle: confirm what undo/restore would return to, and
    that the backup on disk matches the playlist you expect.
 3. Only after that check, a real shuffle may be considered,
-   under a fresh (<24h) sortprobe mapping.
+   under a fresh (<48h) sortprobe mapping.
 
 ## Record (fill in as you go)
 
@@ -276,7 +276,7 @@ until Spencer approves the exact change list.
   `com.seter.python.daily`, proposed 8:00 AM matching v2.6,
   time in one place as `DAILY_HOUR`/`DAILY_MINUTE` in
   `setup-python.sh`). UNPROVEN: no launchd daily run on a Mac
-  yet, and the daily run refuses without fresh (<24h)
+  yet, and the daily run refuses without fresh (<48h)
   per-target mappings for both the daily playlist and "SeTeR
   Rediscover" (it never auto-probes). That mapping-freshness
   requirement is a real stable gap: v2.6 daily needed no probe.
@@ -328,18 +328,41 @@ until Spencer approves the exact change list.
    above). A successful installer/daily/migration test does
    NOT replace those.
 
+## Drop-in Mac steps (run after the stable-prep Mac steps, before any stable publish)
+
+1. Menu: `./run.sh menu`, choose shuffle on a throwaway.
+   Pass: the mapping-status line prints before the build, and
+   the build applies (or refuses cleanly without a mapping).
+2. Stamp: after a throwaway shuffle or flow, check the
+   playlist description in Music. Pass: it reads
+   "Last reshuffled: <date/time>"; if Music exposes no
+   settable description, the log must say the stamp was
+   skipped and the apply still succeeded. Undo must not
+   change the description.
+3. Notifications: run a throwaway shuffle and a failing
+   build (e.g. without a mapping). Pass: a macOS notification
+   appears for each, and a denied/unavailable Notification
+   Center logs "notification unavailable" without failing
+   the run.
+4. Size: `./run.sh shuffle 100` must fill "SeTeR Shuffle"
+   with exactly 100 songs; `./run.sh shuffle <throwaway> 100`
+   must refuse before any dump.
+5. Dedupe names: dedupe a doubled throwaway. Pass: the log
+   names every removed duplicate by artist and title.
+6. 48h daily precondition: sortprobe both daily targets one
+   evening, then confirm the next two mornings' 8am runs
+   would pass the mapping check (a 47h-old mapping passes,
+   a 49h-old one refuses; test by hand with the recorded
+   timestamps, do not wait two days if a faster check works).
+
 ## Stable-promotion gaps STILL open (not fixed by this prep package)
 
-- Daily mapping freshness: the Python daily run is not a
-  drop-in replacement for v2.6's daily run until the mapping
-  rule is settled (manual sortprobe within 24 hours, or a
-  deliberately designed alternative). Do not ship a daily job
-  that silently fails every morning and call it stable.
-- No interactive menu app or one-click app (Terminal only),
-  no playlist description stamp, no notifications (logs only),
-  and no run.sh size choice for library shuffles (CLI
-  `--size` only). See the changelog audit table for the full
-  list; do not claim parity where it does not exist.
+- Flow energy flatness for gospel-heavy libraries: left
+  open deliberately (see the changelog drop-in entry). No
+  dump field justifies a wider spread without inventing a
+  tempo.
+- No one-click .app bundle: the menu is Terminal-based,
+  stated plainly, not hidden.
 - Main-playlist state on the Mac (dedupe method/count)
   was still unconfirmed when this package was built; a daily
   auto run needs a clean per-target mapping for the main

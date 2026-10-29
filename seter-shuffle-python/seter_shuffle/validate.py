@@ -243,6 +243,15 @@ def validate_order_file(
                 f"(each once): order has {len(ids)} IDs, dump has "
                 f"{len(tracks)} entries and {len(library_ids)} unique songs"
             )
+    elif mode == "shuffle-size":
+        # A size-capped whole-library shuffle into a generated
+        # playlist (e.g. "SeTeR Shuffle"): a subset by design, so
+        # the exact-multiset rule for "shuffle" must not apply.
+        # Presence and multiplicity are still checked above, and
+        # an in-place sized shuffle is refused by run.sh before
+        # any dump, so this mode can never drop songs from a
+        # real playlist.
+        pass
     elif mode in ("flow", "rediscover"):
         ineligible = [
             pid
