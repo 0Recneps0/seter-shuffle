@@ -197,6 +197,16 @@ after its own sortprobe applies exactly with `APPLY OK`.
 A build for any other target must likewise refuse without
 its own per-target mapping.
 
+Flow arc on the real library (flow fix): run
+`./run.sh flowPreview` on the real library and read the
+first 25 energies. Pass: a rising arc, not a flat 47-50
+block, with several distinct values in the first 25 and no
+long run of one identical energy. Fail: the first 25 still
+sit at 47-50, or the list jumps straight from the 40s to
+the 70s with nothing in between. This step is what proves
+the synthetic fix against Spencer's real library; do not
+claim Flow fixed until it passes here.
+
 ### Step 11: rediscover-preview
 ```bash
 ./run.sh rediscover-preview
@@ -249,6 +259,7 @@ record below.
 | 10 flowPreview / flow / undo | | | |
 | 10b flow into missing playlist (.4) | | | |
 | 10c flow's own sortprobe (.5) | | | mapping for SeTeR Flow only, never the main playlist's: |
+| 10d flow arc on the real library (flow fix) | | | first 25 must rise, not sit at 47-50: |
 | 11 rediscover-preview | | | |
 | 12 restore from backup file | | | |
 | Stage 3 approval | | | approved by: |

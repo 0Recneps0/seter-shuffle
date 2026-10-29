@@ -8,6 +8,76 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — Flow energy fix (arc-first walk, finer vibe score)
+
+Spencer authorized fixing Flow flatness by any offline means, on
+branch experimental only: no merge to main, no stable release, no
+tag created for this work, nothing ran on his Mac, no API key, no
+network code, no invented tempo.
+
+**Root cause, proven from his runs, not guessed.** Two causes
+stacked. (1) The fallback score gave nearly every low-play gospel
+track the same inputs: same genre group (-2), same coarse play
+tier, unrated, not favorited, BPM missing, so they all scored
+47-50. (2) The walk's genre cost (0 same / 8 related / 20
+otherwise) outweighed the whole energy distance, so the walk
+stayed inside the gospel cluster at one energy for the first
+half and then jumped to a different cluster at the peak: a
+16-long run of exactly 50 on a gospel-heavy synthetic profile
+mirroring his library, then a cliff to 72-77. A flat block plus
+a jump is not a wave.
+
+**What changed, in plain words.** The score is now explicitly a
+vibe/arc score, never a tempo, when BPM is missing. The
+BPM-present path is untouched (same bands, same legacy nudges,
+same plays step, same rating/favorited terms, and no new term
+touches it, so BPM scores are byte-for-byte unchanged). The
+fallback now uses only fields already in the library dump:
+finer play tiers (0/1/2/3/4/6/8/10/12 instead of 0/2/4/6/9);
+genre raw-string subgroups inside group 8 (choir/choral -4,
+worship/praise -2, contemporary +3, on top of the -2 group
+nudge; "Choir"/"Choral" are now also mapped to group 8, where
+before they fell through to "anything else"); finer skip bands
+(>90% skips -8, >50% -5, 25-50% -2, never-skipped well-played
++2); a release-year era band (2020+ +2, 2010s +1, 2000s 0,
+1990s -1, older -2); and, when the caller supplies a clock
+(prepare_flow uses the real clock, tests use a fixed clock),
+played-date recency (last 30 days +3, 31-180 days +1, over
+730 days -2) and date-added newness (last 90 days +2). No new
+dump field was added: duration is not in the dump and was not
+invented. The walk is now arc-first: genre cost 0/3/8, year
+cost 0/2/4, plus +4 for repeating the exact previous energy,
+so the arc target drives the walk and genre continuity only
+breaks near-ties. Artist spacing still wins over vibe.
+
+**Synthetic gospel-heavy before/after (same 260-track profile,
+200 low-play gospel/Christian + 60 higher-play hip-hop/pop,
+all BPM missing, flow_size 50, seed 42).** Before: first 25
+energies 45-50 for the first 19 positions, 6 distinct values,
+a 16-long run of exactly 50, then a cliff to 72-77. After:
+first 25 energies rise 45, 46, 48, 49, 51, 52, 53 ... 78, 16
+distinct values, longest run of any one energy 1, peak band
+(positions 20-33) mean 76.8 vs first-10 mean 50.1, tail
+falling to 42. The step from the gospel cluster to the
+higher-energy cluster is still visible (gospel tracks top
+out around the mid-50s, so the arc must leave the cluster to
+reach the peak); it is now a climb through the 60s and 70s,
+not a single jump.
+
+**Pinned fallback values changed by design.** The year band
+moves four old pinned values: blank song 50 -> 52, gospel-never
+48 -> 50, ambient-never 38 -> 40, mostly-skipped rock 55 -> 57.
+BPM pinned values are unchanged. Four old tests were updated
+to the new arithmetic; nothing else in the suite was weakened.
+
+**Still unproven on a Mac:** this fix is proven only on a
+synthetic gospel-heavy library here. It is NOT proven against
+Spencer's real library until he runs flowPreview on a Mac and
+the first 25 show a rising arc instead of a flat 47-50 block.
+That Mac step is now Step 10d in STABLE-PROMOTION-TESTS.md.
+Flow energy tuning is no longer an open gap in the drop-in
+list, but it stays open until that Mac run.
+
 ## 2026-10-29 — Drop-in replacement package (48h mappings, menu, stamp, notifications, size, dedupe names)
 
 Spencer ordered the stable-prep gaps closed, on branch experimental

@@ -153,7 +153,9 @@ class ShuffleTests(unittest.TestCase):
 class FlowTests(unittest.TestCase):
     def test_energy_missing_bpm_and_genre_defaults_to_mid(self):
         track = make_track("X", bpm=None, genre="", played_count=0, rating=0, favorited=False)
-        self.assertEqual(flow_energy(track), 50)
+        # 50 base + 0 group + 0 plays + year band for 2020 (+2, the
+        # 2026-10-29 flow fix). Recency is 0 without an explicit now.
+        self.assertEqual(flow_energy(track), 52)
 
     def test_energy_bpm_bands_and_genre_nudges(self):
         self.assertEqual(flow_energy(make_track("a", bpm=70, genre="Rock", played_count=0)), 33)
@@ -430,17 +432,17 @@ class MissingBpmFallbackTests(unittest.TestCase):
         self.assertEqual(
             flow_energy(make_track("gospel-never", bpm=None, genre="Gospel",
                                   played_count=0, rating=0, favorited=False, skipped_count=0)),
-            48,  # 50 base - 2 gospel nudge, no familiarity
+            50,  # 50 base - 2 gospel nudge + 2 year band (2020), no familiarity
         )
         self.assertEqual(
             flow_energy(make_track("unknown-never", bpm=None, genre="",
                                   played_count=0, rating=0, favorited=False, skipped_count=0)),
-            50,  # the truly blank song still sits at mid-energy
+            52,  # 50 base + 2 year band (2020); the truly blank song sits near mid
         )
         self.assertEqual(
             flow_energy(make_track("ambient-never", bpm=None, genre="Ambient",
                                   played_count=0, rating=0, favorited=False, skipped_count=0)),
-            38,  # 50 - 12, unchanged from the old ambient nudge
+            40,  # 50 - 12 ambient nudge + 2 year band (2020)
         )
 
     def test_new_genre_groups_map(self):
@@ -473,11 +475,12 @@ class MissingBpmFallbackTests(unittest.TestCase):
         self.assertEqual(flow_energy(make_track("b", bpm=130, genre="Classical", played_count=0)), 63)
 
     def test_skip_penalty_applies_only_without_bpm_and_only_when_mostly_skipped(self):
-        # 2 plays, 8 skips: fallback 50 + 8 rock + 2 tier - 5 penalty = 55.
+        # 2 plays, 8 skips: fallback 50 + 8 rock + 2 tier - 5 penalty
+        # + 2 year band (2020) = 57.
         self.assertEqual(
             flow_energy(make_track("s", bpm=None, genre="Rock",
                                   played_count=2, rating=0, favorited=False, skipped_count=8)),
-            55,
+            57,
         )
         # Same song WITH bpm: old formula, no skip penalty at all.
         self.assertEqual(

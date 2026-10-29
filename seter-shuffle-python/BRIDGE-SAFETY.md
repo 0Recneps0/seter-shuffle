@@ -524,12 +524,18 @@ drop-in package closes them, with the guards intact:
   (presence/multiplicity only).
 - Dedupe logs every removed duplicate by artist and name.
 
-Left open, deliberately: Flow energy flatness for gospel-heavy
-libraries. No dump field (year, date added, album) is a tempo
-or vibe signal, so widening the spread on one would invent a
-tempo. The weakness stays documented; the formula is unchanged
-on both the BPM-present path (byte-for-byte AppleScript parity)
-and the missing-BPM fallback.
+Superseded 2026-10-29 by the Flow energy fix (see the changelog
+flow-fix entry): Spencer authorized fixing flatness by any
+offline means, and the fallback is now a vibe score using only
+fields already in the dump (finer play tiers, group-8 genre
+subgroups, finer skip bands, year era band, played-date
+recency and date-added newness with a supplied clock), with an
+arc-first walk (genre cost 0/3/8, year cost 0/2/4, +4 for
+repeating the previous energy). The BPM-present path is still
+byte-for-byte unchanged, and no tempo is invented. The fix is
+proven only on a synthetic gospel-heavy library; the Mac Step
+10d flowPreview run must show a rising arc before it is
+claimed fixed against Spencer's real library.
 
 ## What the bridge is allowed to do
 

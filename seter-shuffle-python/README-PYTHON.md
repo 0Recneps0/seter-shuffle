@@ -40,9 +40,12 @@ the drop-in package: `./run.sh menu` (Terminal menu), a
 shuffle/flow applies (best-effort, never fails the apply),
 macOS notifications on success and failure, `./run.sh shuffle
 [size]` (100/250/500/1000/all, whole-library only), and dedupe
-lines naming every removed duplicate. The remaining documented
-weakness is Flow energy flatness for gospel-heavy libraries
-(see the changelog drop-in entry); it is not claimed fixed.
+lines naming every removed duplicate. Flow energy flatness for
+gospel-heavy libraries was fixed on the synthetic profile in
+the 2026-10-29 flow-fix entry (arc-first walk, finer vibe
+score); it is not claimed fixed against Spencer's real library
+until the Step 10d flowPreview run on a Mac shows a rising
+arc.
 Migration facts: v2.6 script, backups, apps, and history are never
 deleted or edited; only the v2.6 plist is renamed to
 `.disabled-<timestamp>` on `--confirm`, and `--rollback`
@@ -209,19 +212,33 @@ truly lack BPM metadata. If BPM is present for *zero* songs, suspect
 the dump script first.
 
 The missing-BPM fallback model (songs WITH BPM score exactly as
-before) is: base 50, an expanded genre map (gospel/christian/worship
--2, latin/reggaeton +6, afrobeats/reggae +4, soundtrack -3, old
-groups unchanged), tiered plays (1-4 plays +2, 5-19 +4, 20-49 +6,
-50+ +9), rating (3 stars +2, 4-5 stars +5, 1-2 stars -10), favorited
-+5, and a -5 penalty only when at least 3 plays+skips exist and more
-than half were skips (skip-heavy songs stay eligible; they just do
-not score like never-skipped ones). The fallback spread is
-deliberately narrower than the BPM range: without a tempo, plays and
-genre are weak signals, and a wide spread would be guessing a tempo,
-not measuring one. On a varied missing-BPM fixture the old model gave
-6 distinct energies with three songs stuck at 50; the fallback gives
-9 distinct energies over 38-69, with only the truly blank song
-(unknown genre, no plays, no rating, not favorited) still at 50.
+before) is a vibe score, not a tempo: base 50, an expanded genre
+map (gospel/christian/worship -2, latin/reggaeton +6,
+afrobeats/reggae +4, soundtrack -3, old groups unchanged), plus
+group-8 genre subgroups (choir/choral -4, worship/praise -2,
+contemporary +3), finer tiered plays (0/1/2/3/4/6/8/10/12 across
+0/1/2-3/4-7/8-14/15-24/25-39/40-69/70+ plays), rating (3 stars +2,
+4-5 stars +5, 1-2 stars -10), favorited +5, finer skip bands
+(>90% skips -8, >50% -5, 25-50% -2, never-skipped well-played
++2), a release-year era band (2020+ +2, 2010s +1, 2000s 0,
+1990s -1, older -2), and played-date recency plus date-added
+newness when a clock is supplied. Skip-heavy songs stay eligible;
+they just do not score like never-skipped ones. The fallback
+spread is deliberately narrower than the BPM range: without a
+tempo, these are weak signals, and a wide spread would be
+guessing a tempo, not measuring one. The walk is arc-first:
+genre cost 0/3/8 and year cost 0/2/4, plus +4 for repeating the
+exact previous energy, so the arc target drives the walk and
+genre continuity only breaks near-ties (the old 0/8/20 genre
+cost outweighed the whole energy distance and flattened the
+first half into one cluster). On a gospel-heavy synthetic
+profile mirroring Spencer's library, the old walk gave a
+16-long run of exactly 50 then a cliff to 72-77; the fixed
+walk rises gradually and falls, with 16 distinct energies in
+the first 25. That synthetic result is not proof against his
+real library: the Mac flowPreview step in
+STABLE-PROMOTION-TESTS.md must show a rising arc before this
+is claimed fixed.
 
 Tie-breaking also changed: on an exact cost tie the walk now prefers
 a genre group different from the previous pick, then higher
