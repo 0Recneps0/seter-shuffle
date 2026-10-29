@@ -175,6 +175,15 @@ energies are still almost all exactly 50, that is a data
 problem (missing BPM / unmapped genres), not a bridge bug,
 and it goes back as Flow feedback, not a bridge failure.
 
+Missing-playlist flow (.4, failure mode 34): delete
+`SeTeR Flow` in Music first, then run `./run.sh flow`
+under a fresh sortprobe mapping. Pass: it creates the
+playlist and applies exactly with `APPLY OK`, no -1728 at
+the snapshot step. Then run `./run.sh flow` again on the
+now-existing playlist: pass is a clean refresh with
+`APPLY OK`. A -1728 on either run is a fail; undo
+afterwards to restore the pre-flow state.
+
 ### Step 11: rediscover-preview
 ```bash
 ./run.sh rediscover-preview
@@ -225,6 +234,7 @@ record below.
 | 8 failed apply backup intact | | | |
 | 9 negatives | | | |
 | 10 flowPreview / flow / undo | | | |
+| 10b flow into missing playlist (.4) | | | |
 | 11 rediscover-preview | | | |
 | 12 restore from backup file | | | |
 | Stage 3 approval | | | approved by: |

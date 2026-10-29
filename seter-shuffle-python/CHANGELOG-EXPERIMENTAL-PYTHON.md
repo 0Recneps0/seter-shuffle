@@ -6,6 +6,73 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-29 — Create-then-read fix for flow into a missing playlist (.4, small focused release on the road to stable)
+
+**Why:** after .3 was published, Spencer ran `./run.sh flow
+"SeTeR Flow"` and the apply failed with AppleScript error
+-1728 at the first bulk ID read, before any snapshot existed.
+Safety held (nothing changed, no snapshot written), but the
+cause is now diagnosed, not guessed: Spencer confirmed the
+target playlist did not exist yet in Music. So the failing
+path is `resolvePlaylist(allowCreate=true)` creating the
+playlist via `make new user playlist`, followed by a bulk
+filtered read on the freshly created empty playlist. Whether
+the make-new reference went stale under Music / iCloud sync
+or the filtered bulk read itself fails on a brand-new empty
+playlist cannot be distinguished from the Mac evidence, and
+the fix covers both rather than depending on either one.
+
+**What changed:**
+
+- `bridge/apply-order.applescript`: after creating a
+  playlist, the script re-resolves it by id with a fresh
+  lookup (`first user playlist whose id is newID`) and
+  builds only from that reference; a failed fresh lookup
+  aborts before anything changes. `playlistIDs` falls back
+  on a bulk-read error to an unfiltered track count: count
+  0 proves the snapshot is empty and returns {}, anything
+  else rethrows, because a snapshot for a non-empty
+  playlist must never be guessed. `deletePlaylistSongs`
+  applies the same fallback to its empty re-read, so a
+  fresh empty playlist passes the delete-empty gate it
+  already satisfies; a filtered error with tracks present
+  still fails, since song vs non-song entries cannot be
+  told apart in that case. The snapshot comment in `run`
+  now states that a created playlist's snapshot is
+  legitimately empty, and nothing is duplicated until the
+  delete-empty verification passes.
+- `bridge/probe-order.applescript` (retired from builds,
+  standalone sanity check only): its `playlistIDs` carries
+  the same empty fallback for consistency. Audit result:
+  no build-path script besides apply-order creates a
+  playlist; undo, restore-original, and sort-probe resolve
+  existing playlists and refuse when missing.
+- `tests/test_create_then_read.py` (new, 7 tests):
+  structural tests on the AppleScript text: only
+  apply-order (build path) and the retired probe-order
+  create playlists; the create branch re-resolves by id
+  after the make-new; the empty fallback and the
+  delete-empty fallback are present; snapshot precedes any
+  build in `run`; nothing duplicates before the
+  delete-empty gate.
+- `BRIDGE-SAFETY.md`: new failure mode 34 with the
+  diagnosis, the fix, and the Mac test (flow into a
+  missing playlist must create and apply exactly, then
+  flow again on the existing playlist must refresh it);
+  failure-mode table row 33 added; test count updated to
+  141.
+- `STABLE-PROMOTION-TESTS.md`: Step 10 gains the
+  missing-playlist flow test (delete "SeTeR Flow", flow
+  must create + APPLY OK with no -1728, flow again must
+  refresh), plus record row 10b.
+- `README-PYTHON.md`: test count updated to 141.
+
+NOT PUBLISHED YET: this tree is unreviewed by the parent
+and unproven on a Mac; the -1728 fix itself has never run
+against Music, and the Mac test in mode 34 is still owed.
+Nothing here has been pushed by this build (the parent
+creates the release).
+
 ## 2026-10-29 — Visible mapping-gate errors, plus the stable-promotion test checklist (.3, small focused release on the road to stable)
 
 **Why:** after .2 was published, Spencer ran a shuffle that stopped

@@ -189,6 +189,12 @@ on run argv
 
 	-- Snapshot BEFORE any change, and verify the snapshot itself.
 	-- This snapshot is a list-read snapshot; see the header note.
+	-- For a playlist created by this run (a flow into a missing
+	-- playlist), the snapshot is legitimately empty: playlistIDs
+	-- returns {} when the bulk read fails but the unfiltered
+	-- track count is 0 (2026-10-29, mode 34). Nothing is
+	-- duplicated until the delete-empty verification passes, so
+	-- an empty snapshot cannot wipe anything that existed.
 	set backupIDs to my playlistIDs(destPl)
 	my writeBackupAtomically(backupPath, backupIDs)
 
@@ -355,7 +361,14 @@ on deletePlaylistSongs(pl)
 				set remaining to count of (every track of pl whose media kind is song)
 			end tell
 		on error
-			set remaining to -1
+			-- Filtered count can fail (-1728) on a brand-new
+			-- empty playlist (2026-10-29, mode 34); an
+			-- unfiltered count of 0 proves it is empty
+			-- regardless. Any other value stays a failure:
+			-- with a filtered error and tracks present, song
+			-- vs non-song entries cannot be distinguished, so
+			-- the delete is NOT declared verified.
+			set remaining to my playlistTrackCount(pl)
 		end try
 		if remaining is 0 then return true
 	end repeat
@@ -408,8 +421,19 @@ on resolvePlaylist(playlistName, allowCreate)
 	end tell
 	if (count of matches) is 0 then
 		if allowCreate then
+			-- Create-then-read fix (2026-10-29, mode 34): a flow
+			-- into a playlist that does not exist yet failed at
+			-- the first bulk ID read with -1728. The make-new
+			-- return value can go stale (Music / iCloud sync
+			-- re-identifies the new playlist), so never build
+			-- from it blindly: re-resolve the new playlist by
+			-- its id with a fresh lookup and use that reference
+			-- for the whole run. If the fresh lookup fails, the
+			-- run aborts before anything changes.
 			tell application "Music"
-				return make new user playlist with properties {name:playlistName}
+				set newPl to make new user playlist with properties {name:playlistName}
+				set newID to id of newPl
+				return first user playlist whose id is newID
 			end tell
 		else
 			error "No playlist named \"" & playlistName & "\"." number 1
@@ -459,12 +483,39 @@ on playlistIDs(pl)
 	-- a 1612-entry playlist must not be cut off by AppleScript's
 	-- default timeout mid-read (a failed read fails the verify,
 	-- which restores; a slow read must not be mistaken for one).
-	with timeout of 3600 seconds
-		tell application "Music"
-			return persistent ID of every track of pl whose media kind is song
-		end tell
-	end timeout
+	-- Empty-playlist fallback (2026-10-29, mode 34): the filtered
+	-- bulk read can fail with -1728 on a brand-new empty playlist
+	-- even though it holds nothing. An unfiltered track count of 0
+	-- proves the snapshot is empty regardless of the filter, so
+	-- that case returns {} instead of failing. Any other failure
+	-- rethrows: a non-empty playlist whose IDs cannot be read is
+	-- not a playlist to build into, and a snapshot must never be
+	-- guessed.
+	try
+		with timeout of 3600 seconds
+			tell application "Music"
+				return persistent ID of every track of pl whose media kind is song
+			end tell
+		end timeout
+	on error
+		if my playlistTrackCount(pl) is 0 then return {}
+		error "apply-order: could not read the playlist's song IDs (bulk read failed and the playlist is not empty); playlist untouched." number 1
+	end try
 end playlistIDs
+
+-- Unfiltered track count, or -1 if even that cannot be read.
+-- Used only as the empty proof in playlistIDs and in the
+-- delete-empty re-read: count 0 means no tracks at all, hence
+-- no songs, whatever the filtered reads do on a fresh playlist.
+on playlistTrackCount(pl)
+	try
+		tell application "Music"
+			return count of tracks of pl
+		end tell
+	on error
+		return -1
+	end try
+end playlistTrackCount
 
 on listsEqual(a, b)
 	if (count of a) is not (count of b) then return false

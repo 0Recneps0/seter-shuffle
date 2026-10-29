@@ -205,7 +205,7 @@ edit `run.sh` if you want different ones baked in.
 
 ## What was actually tested, and what was not
 
-Tested here, for real (134 tests, all passing):
+Tested here, for real (141 tests, all passing):
 
 ```bash
 python3 -m unittest discover -s tests -v

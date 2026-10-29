@@ -186,9 +186,25 @@ on run argv
 end run
 
 on playlistIDs(pl)
-	tell application "Music"
-		return persistent ID of every track of pl whose media kind is song
-	end tell
+	-- Same empty-playlist fallback as apply-order (2026-10-29,
+	-- mode 34): a filtered bulk read can fail with -1728 on a
+	-- brand-new playlist, so an unfiltered count of 0 returns {}
+	-- instead of failing. This script is retired from builds and
+	-- only ever reads a 3-song probe playlist, so the fallback
+	-- never fires in practice; it is here for consistency, and
+	-- a non-empty read failure still errors.
+	try
+		tell application "Music"
+			return persistent ID of every track of pl whose media kind is song
+		end tell
+	on error
+		try
+			tell application "Music"
+				if (count of tracks of pl) is 0 then return {}
+			end tell
+		end try
+		error "probe: could not read the probe playlist's song IDs." number 1
+	end try
 end playlistIDs
 
 on reverseList(a)

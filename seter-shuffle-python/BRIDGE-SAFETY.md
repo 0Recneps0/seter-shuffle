@@ -2,7 +2,7 @@
 
 Status, stated plainly: **this document describes a reviewed design,
 not a tested one.** The Python core and its validation were tested on
-Linux (128 tests, all passing). The AppleScript bridge cannot run here:
+Linux (141 tests, all passing). The AppleScript bridge cannot run here:
 this machine has no Music app and no osascript, so no bridge script
 has ever been executed. Nothing below claims a bridge script works.
 The Mac verification procedure at the end is what turns "reviewed"
@@ -314,6 +314,54 @@ Three smaller runner gaps, all fail-closed now:
     the second check. No run.sh path builds without a mapping,
     and no bridge script builds with an "other" mapping.
 
+## Failure mode 34: flow into a playlist that does not exist yet fails at the first bulk read (2026-10-29, real failure)
+
+On 2026-10-29 Spencer ran `./run.sh flow "SeTeR Flow"` from
+the .3 folder. Flow compute and validation passed, but apply
+failed with AppleScript error -1728: "Can't get persistent ID
+of every track of user playlist id 78940 ... whose media kind =
+song", in the `playlistIDs` bulk read. Safety worked: no
+per-run snapshot was written, the playlist was untouched, and
+the main backup was untouched. Spencer then confirmed the
+target playlist did not exist yet in Music, so the failing path
+is: `resolvePlaylist(allowCreate=true)` creates the playlist
+via `make new user playlist`, and the next bulk filtered read
+on that freshly created (empty) playlist fails. Two mechanisms
+could produce that, and the Mac evidence cannot distinguish
+them: the make-new return value going stale (Music / iCloud
+sync re-identifying the new playlist), or the filtered bulk
+read itself failing on a brand-new empty playlist. The fix
+covers both, and does not depend on which one it was:
+
+  * After creating a playlist, apply-order re-resolves it by
+    id with a fresh lookup (`first user playlist whose id is
+    newID`) and builds only from that reference. A failed
+    fresh lookup aborts before anything changes.
+  * `playlistIDs` now falls back on a bulk-read error to an
+    unfiltered track count: count 0 proves the snapshot is
+    empty and returns {}, anything else rethrows, because a
+    snapshot for a non-empty playlist must never be guessed.
+  * `deletePlaylistSongs` applies the same fallback to its
+    empty re-read: a filtered-count error plus an unfiltered
+    count of 0 counts as verified empty, so a fresh empty
+    playlist passes a gate it already satisfies. A filtered
+    error with tracks present still fails, since song vs
+    non-song entries cannot be told apart in that case.
+
+Audit result for the same pattern elsewhere: only apply-order
+creates a playlist on a build path. Undo, restore-original,
+and sort-probe resolve existing playlists and refuse when
+missing. The retired standalone probe-order script also creates
+its own throwaway (and deletes it afterwards); its
+`playlistIDs` carries the same empty fallback for
+consistency, though it only ever reads a 3-song playlist.
+
+This fix is UNPROVEN on a Mac like every other bridge change:
+the -1728 diagnosis rests on Spencer's confirmed missing
+playlist plus the error text, and the fresh-lookup plus
+count-0 fallback must be proven by the Mac test below before
+any flow into a missing playlist is trusted.
+
 ## What the bridge is allowed to do
 
 - Modify exactly one regular user playlist, resolved by name, and
@@ -403,6 +451,7 @@ that proves the guard on a real Mac.
 | 30 | run.sh captured a log line into the mapping (narrative mode 31) | `mapping_for_build` logged with `log()` (tee to stdout) while callers captured it with `$(...)`, so every captured mapping carried a log line and the bridge refused it: no .1 build through run.sh could run at all. | `mapping_for_build` logs with `logfile()` only; a structural test extracts the function body and refuses any `log ` call in it. | Run any build through run.sh (not direct osascript) on a throwaway: the apply must reach Music instead of failing at the mapping argument. If it fails there, the capture bug is back. |
 | 31 | Failed run overwrote the only good backup (narrative mode 32) | The 00:41 run wrote a doubled-state snapshot to the main backup path; only `.prev` saved the original, and one more failed run would have overwritten `.prev` too. | Per-run snapshot files, installed as the main backup only after a verified successful apply; previous main backup kept as `.prev`; newest 10 per-run snapshots kept as a chain; failure restores use the per-run snapshot and leave the main backup untouched. | Run a failing apply on a throwaway (e.g. a bad order that passes Python validation but fails in the bridge, or a forced failure), then confirm the main backup file is byte-identical to before the run and a per-run snapshot exists. |
 | 32 | Stale mapping survived a failed re-probe; restore had no gated path; undo could discover a missing backup after deleting (narrative mode 33) | A failed sort-probe left the old mapping in place; restore-original could only be called directly (no freshness check); undo resolved the playlist before checking the backup file existed (the script itself validates first, so this was a clarity gap, not a data-loss path). | Sort-probe failure deletes the recorded mapping; `./run.sh restore` gates backup existence and mapping freshness like undo; `run.sh undo` refuses with a list of recent backups when the main backup file is missing. | Fail a sort-probe (e.g. on a title-sorted throwaway returning "other"), then attempt a build: it must refuse for lack of a mapping, not proceed under the old one. Run `./run.sh restore` on a throwaway with a missing backup file: it must refuse untouched. |
+| 33 | Flow into a missing playlist fails at the first bulk read, -1728 (narrative mode 34) | `resolvePlaylist(allowCreate=true)` created "SeTeR Flow" via `make new user playlist`, and the next bulk filtered ID read on the fresh empty playlist failed with -1728 before any snapshot existed; safety held (nothing changed), but a flow into a missing playlist could never succeed. | Apply-order re-resolves a created playlist by id with a fresh lookup and builds only from that reference; `playlistIDs` falls back on a bulk-read error to an unfiltered count (0 returns {}, anything else rethrows); `deletePlaylistSongs` applies the same fallback to its empty re-read. | Delete "SeTeR Flow" in Music if it exists, then run `./run.sh flow` (under a fresh sortprobe mapping): it must create the playlist and apply exactly with APPLY OK. Then run flow again on the now-existing playlist: it must refresh it exactly. A -1728 at the snapshot step on either run is a fail. |
 
 ## Further audit (2026-10-28): other potential bugs, beyond the reversal
 
