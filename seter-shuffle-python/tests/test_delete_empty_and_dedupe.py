@@ -312,12 +312,14 @@ class RunnerStructuralTests(unittest.TestCase):
         self.assertIn("was NOT overwritten by this failed run", RUN_SH)
 
     def test_sortprobe_failure_deletes_mapping(self):
-        self.assertIn('rm -f "$STATE/sort-mapping.txt"', RUN_SH)
+        # Since .5 the mapping is per-target: a failed probe deletes
+        # only that target's mapping file, never a shared one.
+        self.assertIn('rm -f "$MAP_FILE"', RUN_SH)
 
     def test_restore_command_exists_and_gates_on_backup(self):
         self.assertIn('"$CMD" = "restore"', RUN_SH)
         self.assertIn("restore-original.applescript", RUN_SH)
-        self.assertIn('MAPPING="$(mapping_for_build)"', RUN_SH)
+        self.assertIn('MAPPING="$(mapping_for_build "$PLAYLIST")"', RUN_SH)
 
     def test_undo_refuses_without_backup_file(self):
         self.assertIn('if [ ! -f "$BACKUP" ]', RUN_SH)

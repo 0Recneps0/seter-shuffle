@@ -27,15 +27,18 @@
 #                                   fresh 3-song probe playlist; a
 #                                   standalone sanity check ONLY, no
 #                                   build consults it anymore
-#   ./run.sh sortprobe <throwaway>  measure the build-to-list mapping
+#   ./run.sh sortprobe <throwaway> <target> <sort-label>
+#                                   measure the build-to-list mapping
 #                                   on a throwaway YOU set to the
-#                                   same sort as the target playlist
-#                                   (Playlist Order descending for
-#                                   the 2026-10-28 failure); snapshots
-#                                   the throwaway, builds a rotation,
+#                                   target's sort, and record it
+#                                   PER-TARGET (a mapping for one
+#                                   target never authorizes a build
+#                                   on another); snapshots the
+#                                   throwaway, builds a rotation,
 #                                   reads it back, restores it, and
-#                                   records the mapping for builds
-#                                   (fresh for 24 hours)
+#                                   records the mapping for that
+#                                   target's builds (fresh for 24
+#                                   hours)
 #   ./run.sh probe-keep             like probe, but LEAVE the probe
 #                                   playlist in place so its on-screen
 #                                   order in Music can be eyeballed
@@ -155,6 +158,29 @@ backup_path_for() {
   printf '%s/backup-%s-%s.txt' "$STATE" "$safe" "$hash"
 }
 
+# Mapping filename for a target playlist: same safe-name-plus-hash
+# scheme as backups, so distinct targets can never share a mapping
+# file. This is the .5 fix for the 2026-10-29 mapping-transfer
+# failure: a Flow build reused a mapping measured on the main
+# playlist (Playlist Order descending, reversed) for a brand-new
+# "SeTeR Flow" playlist (default/manual sort, forward), landed
+# backwards, and verify correctly refused it. Mappings are
+# per-target since .5: a build for target X reads ONLY the mapping
+# file for X, never a shared file, so a mapping measured for one
+# playlist's sort cannot silently authorize a build on another.
+mapping_file_for() {
+  local name="$1" safe hash
+  safe="$(printf '%s' "$name" | tr '\n\r' '__' | tr ' /' '__')"
+  if command -v shasum >/dev/null 2>&1; then
+    hash="$(printf '%s' "$name" | shasum -a 256 | cut -c1-12)"
+  elif command -v md5 >/dev/null 2>&1; then
+    hash="$(printf '%s' "$name" | md5 | cut -c1-12)"
+  else
+    hash="nohash"
+  fi
+  printf '%s/sort-mapping-%s-%s.txt' "$STATE" "$safe" "$hash"
+}
+
 # 1. A real python3, or fail loudly before Music is touched.
 # check-python.sh prints "<path> (<version>)" on stdout; only the path
 # is used as the interpreter. Paths with spaces are refused by
@@ -167,7 +193,7 @@ CMD="${1:-}"
 case "$CMD" in
   audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway>}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>}" >&2
     exit 2
     ;;
 esac
@@ -245,16 +271,26 @@ if [ "$CMD" = "probe-keep" ]; then
   exit 1
 fi
 
-# Read the recorded sort-matched mapping for builds, or refuse.
-# sortprobe writes $STATE/sort-mapping.txt with lines:
+# Read the recorded sort-matched mapping for one target, or refuse.
+# sortprobe writes the per-target file from mapping_file_for with
+# lines:
 #   MAPPING: forward|reversed
 #   THROWAWAY: <name the user set to the target's sort>
+#   TARGET: <target playlist the mapping was measured for>
+#   SORT: <sort label the user declared for the throwaway>
 #   TIMESTAMP: <epoch seconds>
-# Builds refuse without it, refuse a stale one (older than 24h),
-# and log the source, so a build never silently uses a mapping
-# measured for a different sort or a different day. If the target's
+# Builds refuse without a mapping for THEIR target, refuse a stale
+# one (older than 24h), and refuse a file whose TARGET field does
+# not match, so a build never silently uses a mapping measured for
+# a different playlist's sort or a different day. If the target's
 # sort may have changed since the probe, re-run sortprobe first:
 # a stale mapping is a wrong mapping.
+# The pre-.5 shared file $STATE/sort-mapping.txt is IGNORED since
+# .5: it is exactly the file that let a Flow build reuse a mapping
+# measured on the main playlist's descending sort for a new
+# default-sorted playlist (mode 35). If it exists and no per-target
+# file does, the failure message says so explicitly instead of
+# silently falling back to it.
 # CRITICAL: this function is always called inside $(...) (its
 # output IS the mapping), so it must NEVER write to stdout except
 # the final mapping word. log() tees to stdout, which would pollute
@@ -267,60 +303,115 @@ fi
 # error. The .3 rule is: failures go through logerr() (log file
 # AND stderr, never stdout), success info stays logfile-only.
 mapping_for_build() {
-  local map_file="$STATE/sort-mapping.txt" mapping throwaway ts now
+  local target="$1" map_file mapping throwaway recorded_target sort_label ts now
+  map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
-    logerr "GATE FAILED: no sort-matched mapping recorded; run ./run.sh sortprobe <throwaway> on a throwaway set to the target's sort first"
+    if [ -f "$STATE/sort-mapping.txt" ]; then
+      logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; the pre-.5 shared sort-mapping.txt is ignored since .5 because mappings do not transfer between sorts; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+    else
+      logerr "GATE FAILED: no sort-matched mapping recorded for '$target'; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+    fi
     return 1
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
   throwaway="$(grep '^THROWAWAY: ' "$map_file" | head -n 1 | sed 's/^THROWAWAY: //')"
+  recorded_target="$(grep '^TARGET: ' "$map_file" | head -n 1 | sed 's/^TARGET: //')"
+  sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
   ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
   now="$(date +%s)"
   if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
-    logerr "GATE FAILED: recorded mapping is not forward or reversed (got '$mapping'); re-run sortprobe"
+    logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe"
     return 1
   fi
-  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping has no valid timestamp; re-run sortprobe"; return 1;; esac
+  if [ "$recorded_target" != "$target" ]; then
+    logerr "GATE FAILED: recorded mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; re-run sortprobe for '$target'"
+    return 1
+  fi
+  if [ -z "$sort_label" ]; then
+    logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label"
+    return 1
+  fi
+  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1;; esac
   if [ $((now - ts)) -gt 86400 ]; then
-    logerr "GATE FAILED: recorded mapping is older than 24 hours (throwaway '$throwaway'); re-run sortprobe so the mapping matches the target's current sort"
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 24 hours (throwaway '$throwaway', sort '$sort_label'); re-run sortprobe so the mapping matches the target's current sort"
     return 1
   fi
-  logfile "sort mapping for builds: $mapping (measured on throwaway '$throwaway' at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
+  logfile "sort mapping for builds: $mapping (target '$target', throwaway '$throwaway', sort '$sort_label', at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
   printf '%s' "$mapping"
   return 0
 }
 
-# Sort-probe command: measure the mapping on a user-sorted throwaway.
-# The user MUST set the throwaway's sort in Music to the target's
-# sort (Playlist Order descending for the 2026-10-28 failure)
-# before running this; run.sh cannot set or verify a playlist's
-# UI sort, so a throwaway with the wrong sort measures the wrong
-# mapping, and the log line below says exactly what was assumed.
+# Print the recorded mapping's provenance to the terminal and the
+# log (via log(), NOT captured, so stdout pollution is impossible
+# here). Callers run this right after capturing the mapping, so a
+# mismatch between the mapping's sort label and the target's actual
+# sort is visible in the GATE lines BEFORE any build starts. This
+# is the .5 visibility half of the mapping-transfer fix: run.sh
+# cannot read a playlist's UI sort from Music, so the label the
+# user declared at sortprobe time is the checkable record, and it
+# must be on screen, not buried in the state directory.
+mapping_info_for() {
+  local target="$1" map_file mapping throwaway sort_label
+  map_file="$(mapping_file_for "$target")"
+  mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+  throwaway="$(grep '^THROWAWAY: ' "$map_file" | head -n 1 | sed 's/^THROWAWAY: //')"
+  sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
+  log "build mapping for '$target': $mapping (throwaway '$throwaway', sort '$sort_label'); if this sort does not match '$target''s sort in Music, stop and re-run sortprobe"
+}
+
+# Sort-probe command: measure the mapping on a user-sorted throwaway
+# FOR ONE TARGET. Since .5 the target and the sort label are
+# required arguments, and the mapping is recorded per-target
+# (mapping_file_for): a mapping measured for target X can never
+# authorize a build on target Y. The user MUST set the throwaway's
+# sort in Music to the target's sort before running this; run.sh
+# cannot set or verify a playlist's UI sort, so a throwaway with
+# the wrong sort measures the wrong mapping, and the STEP line
+# below records exactly what was declared. Worked example of why
+# this matters (2026-10-29, mode 35): the main playlist sorts
+# Playlist Order descending (mapping reversed), while a brand-new
+# "SeTeR Flow" playlist sorts default/manual (mapping forward);
+# reusing the main playlist's mapping for Flow landed backwards
+# and verify correctly refused it. Flow therefore needs its OWN
+# sortprobe, on a throwaway set to SeTeR Flow's sort, before any
+# Flow build, even when a main-playlist mapping already exists.
 if [ "$CMD" = "sortprobe" ]; then
   THROWAWAY="${2:-}"
-  [ -n "$THROWAWAY" ] || { echo "usage: $0 sortprobe <throwaway-playlist>" >&2; exit 2; }
+  PROBE_TARGET="${3:-}"
+  PROBE_SORT="${4:-}"
+  if [ -z "$THROWAWAY" ] || [ -z "$PROBE_TARGET" ] || [ -z "$PROBE_SORT" ]; then
+    echo "usage: $0 sortprobe <throwaway-playlist> <target-playlist> <sort-label>" >&2
+    echo "  example: $0 sortprobe 'Throwaway' 'My New Sandwich Recipe' 'Playlist Order descending'" >&2
+    echo "  the throwaway must be set in Music to the target's sort BEFORE running; the sort label is your declaration of that sort, e.g. 'Playlist Order descending', 'Playlist Order ascending', or 'Manual (default)'" >&2
+    exit 2
+  fi
   SNAPSHOT="$STATE/sort-probe-snapshot.txt"
-  log "STEP: sort-probe mapping on throwaway '$THROWAWAY' (assumed sort: same as target; set it in Music before running)"
+  MAP_FILE="$(mapping_file_for "$PROBE_TARGET")"
+  log "STEP: sort-probe mapping on throwaway '$THROWAWAY' for target '$PROBE_TARGET' (declared sort: '$PROBE_SORT'; set the throwaway to this sort in Music before running)"
   if osascript "$BRIDGE/sort-probe.applescript" "$THROWAWAY" "$SNAPSHOT" 2>&1 | tee -a "$LOG" "$WORK/sortprobe.out"; then
     mapping="$(grep '^MAPPING: ' "$WORK/sortprobe.out" | head -n 1 | sed 's/^MAPPING: //')"
     if [ "$mapping" = "forward" ] || [ "$mapping" = "reversed" ]; then
       {
         printf 'MAPPING: %s\n' "$mapping"
         printf 'THROWAWAY: %s\n' "$THROWAWAY"
+        printf 'TARGET: %s\n' "$PROBE_TARGET"
+        printf 'SORT: %s\n' "$PROBE_SORT"
         printf 'TIMESTAMP: %s\n' "$(date +%s)"
-      } > "$STATE/sort-mapping.txt.tmp"
-      mv -f "$STATE/sort-mapping.txt.tmp" "$STATE/sort-mapping.txt"
-      log "GATE OK: sort-probe mapping $mapping recorded for builds (valid 24 hours; throwaway '$THROWAWAY')"
-      log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build"
+      } > "$MAP_FILE.tmp"
+      mv -f "$MAP_FILE.tmp" "$MAP_FILE"
+      log "GATE OK: sort-probe mapping $mapping recorded for target '$PROBE_TARGET' (valid 24 hours; throwaway '$THROWAWAY', sort '$PROBE_SORT')"
+      log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build for '$PROBE_TARGET'"
       exit 0
     fi
   fi
   # Fail-closed on the mapping itself: a failed re-probe must not
   # leave a previous (possibly wrong-sort) mapping in place for a
-  # build to pick up. Delete it, and say so, so the next build
-  # refuses until a clean sort-probe passes.
-  rm -f "$STATE/sort-mapping.txt"
-  log "GATE FAILED: sort-probe did not return a usable mapping; any previously recorded mapping was deleted, no build will run until a clean sort-probe passes"
+  # build to pick up. Delete the PER-TARGET file, and say so, so
+  # the next build for this target refuses until a clean
+  # sort-probe passes. Other targets' mappings are untouched: a
+  # failed probe for one target never invalidates another's.
+  rm -f "$MAP_FILE"
+  log "GATE FAILED: sort-probe did not return a usable mapping; any previously recorded mapping for target '$PROBE_TARGET' was deleted, no build for that target will run until a clean sort-probe passes"
   log "check the throwaway '$THROWAWAY' in Music: if the probe could not restore it, its snapshot is at $SNAPSHOT"
   exit 1
 fi
@@ -341,7 +432,8 @@ if [ "$CMD" = "undo" ]; then
     ls -t "$STATE"/backup-*.txt 2>/dev/null | head -n 10 | while read -r f; do log "  $f"; done
     exit 1
   fi
-  MAPPING="$(mapping_for_build)" || exit 1
+  MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
+  mapping_info_for "$PLAYLIST"
   log "undo $PLAYLIST from $BACKUP (mapping $MAPPING; pre-undo snapshot will be saved at $BACKUP.pre-undo)"
   step "undo $PLAYLIST" osascript "$BRIDGE/undo.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || exit 1
   log "undo done"
@@ -364,7 +456,8 @@ if [ "$CMD" = "restore" ]; then
     log "GATE FAILED: backup file $BACKUP does not exist; restore refuses, playlist untouched"
     exit 1
   fi
-  MAPPING="$(mapping_for_build)" || exit 1
+  MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
+  mapping_info_for "$PLAYLIST"
   log "restore $PLAYLIST from $BACKUP (mapping $MAPPING; pre-fix snapshot will be saved at $BACKUP.fix-snapshot)"
   step "restore $PLAYLIST" osascript "$BRIDGE/restore-original.applescript" "$PLAYLIST" "$BACKUP" "$MAPPING" || exit 1
   log "restore done"
@@ -416,7 +509,8 @@ apply_order() {
   local -a apply_args
   backup="$(backup_path_for "$target")"
   run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$.txt"
-  build_mapping="$(mapping_for_build)" || exit 1
+  build_mapping="$(mapping_for_build "$target")" || exit 1
+  mapping_info_for "$target"
   step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$mode" || exit 1
   log "GATE: order validated for $target"
   # Duplicate allowance: "1" only for a one-playlist shuffle whose
@@ -468,7 +562,19 @@ apply_order() {
       if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "$build_mapping"; then
         log "restore from per-run snapshot succeeded; playlist is back to its pre-run state"
       else
-        log "CRITICAL: restore from per-run snapshot also failed; playlist may be partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+        # Distinguish undo-failed-before-any-change from
+        # undo-failed-after-changes (2026-10-29, mode 36): undo
+        # marks pre-change failures with PLAYLIST_UNTOUCHED. Only
+        # lines since this restore's STEP line count, so an older
+        # run's marker cannot false-positive here. A pre-change
+        # failure means the playlist was never touched, and saying
+        # "may be partial" for it (as .4 did) is wrong and scary.
+        restore_step_line="$(grep -n "STEP: restore $target from per-run snapshot" "$LOG" | tail -n 1 | cut -d: -f1)"
+        if [ -n "$restore_step_line" ] && tail -n +"$restore_step_line" "$LOG" | grep -q "PLAYLIST_UNTOUCHED"; then
+          log "restore from per-run snapshot failed while reading the playlist before any change (PLAYLIST_UNTOUCHED); playlist is untouched, NOT partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+        else
+          log "CRITICAL: restore from per-run snapshot also failed; playlist may be partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+        fi
       fi
     else
       log "no per-run snapshot was written, so the apply failed before any playlist change; playlist untouched and main backup at $backup untouched"

@@ -184,6 +184,19 @@ now-existing playlist: pass is a clean refresh with
 `APPLY OK`. A -1728 on either run is a fail; undo
 afterwards to restore the pre-flow state.
 
+Flow needs its OWN sortprobe (.5, failure mode 35): a
+mapping measured on one playlist's sort NEVER transfers to
+a playlist with a different sort. Before any `./run.sh flow`
+run, run `./run.sh sortprobe "<throwaway>" "SeTeR Flow"
+"<sort-label>"` on a throwaway set to SeTeR Flow's sort
+(default/manual sort for a new playlist), and confirm the
+GATE lines print the SeTeR Flow target and that sort label.
+Pass: a flow attempt with only a main-playlist mapping
+present refuses for lack of a SeTeR Flow mapping, and flow
+after its own sortprobe applies exactly with `APPLY OK`.
+A build for any other target must likewise refuse without
+its own per-target mapping.
+
 ### Step 11: rediscover-preview
 ```bash
 ./run.sh rediscover-preview
@@ -235,6 +248,7 @@ record below.
 | 9 negatives | | | |
 | 10 flowPreview / flow / undo | | | |
 | 10b flow into missing playlist (.4) | | | |
+| 10c flow's own sortprobe (.5) | | | mapping for SeTeR Flow only, never the main playlist's: |
 | 11 rediscover-preview | | | |
 | 12 restore from backup file | | | |
 | Stage 3 approval | | | approved by: |

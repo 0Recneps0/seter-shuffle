@@ -6,6 +6,133 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-29 — Per-target mapping guard and undo -1728 fallback (.5, focused fix for the two 15:38 PT Flow failures)
+
+**Why, plainly:** after .4 was published, Spencer ran
+`./run.sh flow "SeTeR Flow"` twice from the .4 folder, and both
+runs failed in two separate places. First, flow compute and
+validation passed, then apply failed verification ("final song
+order does not match the desired order under mapping
+reversed"), apply restored from the per-run snapshot, and then
+run.sh's restore via undo failed with the same AppleScript
+-1728 bulk-read error ("Can't get persistent ID of every
+track of user playlist id 78940 whose media kind = song").
+State files on his Mac prove: both SeTeR Flow per-run
+snapshots are 0 bytes (the playlist was empty at apply
+start), no main SeTeR Flow backup was ever installed, and the
+recorded mapping was "reversed", measured on throwaway "My New
+Sandwich Recipe" at 13:13 PT.
+
+Failure 1, mapping transfer: the .4 runs used the reversed
+mapping measured on the main playlist (sorted Playlist Order
+descending) for a NEW target playlist, SeTeR Flow, whose sort
+is the default/manual sort. A reversed build on a
+forward-sorted playlist lands backwards, so verify correctly
+refused. The .4 create-then-read fix worked for the snapshot
+(the empty fallback let the snapshot step succeed); this
+failure is the mapping being applied to a target with a
+different sort. It is not a -1728 failure and not a snapshot
+failure.
+
+Failure 2, undo -1728: the .4 empty fallback went into
+apply-order and the retired probe script, but NOT into
+undo.applescript (and restore-original was the same). Undo's
+first step is a bulk playlistIDs read on the target, which
+fails with -1728 on the empty SeTeR Flow playlist, so undo
+died before changing anything, and run.sh reported it as
+"playlist may be partial" when nothing had changed.
+
+**What changed:**
+
+- `run.sh`: mappings are now PER-TARGET. `mapping_file_for`
+  builds a mapping filename from the target name plus a hash,
+  the same scheme as backups. `mapping_for_build` takes a
+  target argument and reads ONLY that target's file; it
+  validates the file's TARGET field matches, requires a
+  non-empty SORT field, and requires a fresh (<24h)
+  timestamp. The pre-.5 shared `sort-mapping.txt` is IGNORED:
+  if only it exists, the build refuses with a message saying
+  so. `mapping_info_for` logs the mapping, throwaway, sort
+  label, and target (via log(), never captured) so the
+  provenance is visible in GATE lines before any build.
+  `sortprobe` now requires three arguments:
+  `./run.sh sortprobe <throwaway> <target> <sort-label>`,
+  and records MAPPING, THROWAWAY, TARGET, SORT, and TIMESTAMP
+  in the per-target file; a failed probe deletes ONLY that
+  target's file. Undo, restore, and apply_order call sites
+  pass the target and print the provenance. The post-apply
+  restore branch greps the log from the restore STEP line for
+  the PLAYLIST_UNTOUCHED marker and logs "untouched, NOT
+  partial" in that case, keeping the CRITICAL "may be
+  partial" message for all other restore failures.
+- `bridge/undo.applescript` and
+  `bridge/restore-original.applescript`: `playlistIDs` now
+  has the .4-style empty fallback (bulk-read error plus an
+  unfiltered track count of 0 returns {}, anything else
+  rethrows), `deletePlaylistSongs` falls back to the
+  unfiltered count the same way, and the pre-change snapshot
+  read/write is wrapped so a failure there rethrows with a
+  PLAYLIST_UNTOUCHED marker ("playlist untouched").
+  `bridge/sort-probe.applescript` got the same fallback pair.
+  `bridge/diagnose-playlist.applescript` (read-only) now
+  guards its bulk song-ID read the same way: count 0 reports
+  empty, anything else errors as unreadable rather than
+  guessing. Audit of every `playlistIDs` handler: apply-order,
+  undo, restore-original, sort-probe, and the retired
+  probe-order all now carry an empty fallback. The one
+  deliberate exception is `bridge/dump-library.applescript`,
+  which has no playlistIDs handler and whose bulk filtered
+  reads on the library (940 songs, proven working) were left
+  alone; a dump of an empty playlist could theoretically hit
+  the same -1728, but it fails before any change and is not
+  a build path that modifies anything.
+- `tests/test_per_target_mapping.py` (new, 20 tests):
+  behavioral bash-extraction tests for mapping_for_build
+  (valid per-target capture exactly; missing file refuses;
+  legacy shared file ignored with an "ignored" stderr
+  message; TARGET-field mismatch refuses; missing SORT
+  refuses; stale timestamp refuses; different targets get
+  different mapping files; mapping_info_for prints
+  target/throwaway/sort/mapping) and structural tests
+  (sortprobe requires target + sort label and records
+  TARGET/SORT lines; sortprobe failure deletes only the
+  per-target file; build callers pass target and print
+  provenance; mapping_for_build never reads the legacy
+  file's MAPPING; restore path distinguishes untouched from
+  partial; undo/restore/sort-probe playlistIDs + delete
+  fallbacks present; undo/restore PLAYLIST_UNTOUCHED markers
+  present; every playlistIDs handler across apply-order,
+  undo, restore-original, sort-probe, and probe-order has an
+  empty fallback). Two older test files were updated for the
+  API change, not weakened: test_mapping_stderr.py now
+  extracts mapping_file_for, writes fixtures to the
+  per-target file, and passes a target; the sortprobe
+  failure and restore assertions in
+  test_delete_empty_and_dedupe.py now name the per-target
+  file and the target-argument call.
+- `BRIDGE-SAFETY.md`: new failure modes 35 (mapping
+  transfer) and 36 (undo -1728), failure-mode table rows,
+  and procedure updates: a mapping measured on one
+  playlist's sort NEVER transfers to a playlist with a
+  different sort, with Flow as the worked example (main
+  descending reversed vs new SeTeR Flow default forward).
+- `STABLE-PROMOTION-TESTS.md`: Flow now needs its OWN
+  sortprobe on a throwaway matching SeTeR Flow's sort
+  (new step 10c and record row); a build for any other
+  target must refuse without its own per-target mapping.
+- `README-PYTHON.md`: per-target mapping, new sortprobe
+  usage, and the .5 test count.
+
+**Still unproven on a Mac:** everything in .5, like every
+bridge change before it. In particular the mapping-transfer
+fix cannot be proven without a Mac run on a new-sort target:
+a Flow build must refuse under the main playlist's reversed
+mapping (or rather, must refuse for lack of a SeTeR Flow
+mapping) and must succeed only after its own sortprobe on a
+throwaway set to SeTeR Flow's sort. The undo -1728 fallback
+likewise needs a Mac run against an empty playlist. Full
+suite here: 161 tests passed (141 existing + 20 new).
+
 ## 2026-10-29 — Create-then-read fix for flow into a missing playlist (.4, small focused release on the road to stable)
 
 **Why:** after .3 was published, Spencer ran `./run.sh flow

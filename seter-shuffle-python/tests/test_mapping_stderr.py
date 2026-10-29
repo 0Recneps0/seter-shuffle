@@ -52,8 +52,9 @@ def _extract_helpers() -> str:
     # logfile() and logerr() are single-line definitions.
     logfile = next(l for l in lines if l.startswith("logfile() {"))
     logerr = next(l for l in lines if l.startswith("logerr() {"))
+    mapping_file = "\n".join(_function_lines(text, "mapping_file_for"))
     mapping = "\n".join(_function_lines(text, "mapping_for_build"))
-    return "\n".join([logfile, logerr, mapping])
+    return "\n".join([logfile, logerr, mapping_file, mapping])
 
 
 def _run_mapping(map_contents: str | None) -> tuple[int, str, str]:
@@ -62,13 +63,21 @@ def _run_mapping(map_contents: str | None) -> tuple[int, str, str]:
         state = Path(tmp) / "state"
         state.mkdir()
         if map_contents is not None:
-            (state / "sort-mapping.txt").write_text(map_contents)
+            import hashlib
+
+            safe = "".join(
+                c if c.isalnum() else "_" for c in "Test Target"
+            )
+            digest = hashlib.sha256(b"Test Target").hexdigest()[:12]
+            (state / ("sort-mapping-" + safe + "-" + digest + ".txt")).write_text(
+                map_contents
+            )
         harness = textwrap.dedent(
             f"""\
             STATE={state}
             LOG={state}/run.log
             {_extract_helpers()}
-            out="$(mapping_for_build)"
+            out="$(mapping_for_build 'Test Target')"
             rc=$?
             printf 'RC=%s\\n' "$rc"
             printf 'OUT=[%s]\\n' "$out"
@@ -118,7 +127,7 @@ class MappingStderrTests(unittest.TestCase):
 
     def test_stale_mapping_fails_on_stderr_not_stdout(self):
         rc, out, err = _run_mapping(
-            "MAPPING: forward\nTHROWAWAY: T\nTIMESTAMP: %d\n"
+            "MAPPING: forward\nTHROWAWAY: T\nTARGET: Test Target\nSORT: Playlist Order descending\nTIMESTAMP: %d\n"
             % (int(time.time()) - 90000)
         )
         self.assertNotEqual(rc, 0)
@@ -128,7 +137,7 @@ class MappingStderrTests(unittest.TestCase):
 
     def test_valid_mapping_captures_exactly_with_quiet_stderr(self):
         rc, out, err = _run_mapping(
-            "MAPPING: reversed\nTHROWAWAY: T\nTIMESTAMP: %d\n" % int(time.time())
+            "MAPPING: reversed\nTHROWAWAY: T\nTARGET: Test Target\nSORT: Playlist Order descending\nTIMESTAMP: %d\n" % int(time.time())
         )
         self.assertEqual(rc, 0)
         self.assertEqual(out, "reversed")

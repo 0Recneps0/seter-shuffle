@@ -202,12 +202,36 @@ on playlistIDs(pl)
 	-- a 1612-entry playlist must not be cut off by AppleScript's
 	-- default timeout mid-read (a failed read fails the verify,
 	-- which restores; a slow read must not be mistaken for one).
-	with timeout of 3600 seconds
-		tell application "Music"
-			return persistent ID of every track of pl whose media kind is song
-		end tell
-	end timeout
+	-- Empty-playlist fallback (2026-10-29, modes 34 and 36): the
+	-- filtered bulk read can fail with -1728 on a brand-new empty
+	-- playlist even though it holds nothing. An unfiltered track
+	-- count of 0 proves the snapshot is empty regardless of the
+	-- filter, so that case returns {} instead of failing. Any
+	-- other failure rethrows: a snapshot must never be guessed.
+	try
+		with timeout of 3600 seconds
+			tell application "Music"
+				return persistent ID of every track of pl whose media kind is song
+			end tell
+		end timeout
+	on error
+		if my playlistTrackCount(pl) is 0 then return {}
+		error "sort-probe: could not read the playlist's song IDs (bulk read failed and the playlist is not empty); playlist untouched." number 1
+	end try
 end playlistIDs
+
+-- Unfiltered track count, or -1 if even that cannot be read.
+-- Used only as the empty proof in playlistIDs and in the
+-- delete-empty re-read.
+on playlistTrackCount(pl)
+	try
+		tell application "Music"
+			return count of tracks of pl
+		end tell
+	on error
+		return -1
+	end try
+end playlistTrackCount
 
 on listsEqual(a, b)
 	if (count of a) is not (count of b) then return false
@@ -296,7 +320,11 @@ on deletePlaylistSongs(pl)
 				set remaining to count of (every track of pl whose media kind is song)
 			end tell
 		on error
-			set remaining to -1
+			-- Filtered count can fail (-1728) on a brand-new
+			-- empty playlist (2026-10-29, modes 34 and 36); an
+			-- unfiltered count of 0 proves it is empty
+			-- regardless. Any other value stays a failure.
+			set remaining to my playlistTrackCount(pl)
 		end try
 		if remaining is 0 then return true
 	end repeat

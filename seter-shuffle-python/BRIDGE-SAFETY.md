@@ -362,6 +362,122 @@ playlist plus the error text, and the fresh-lookup plus
 count-0 fallback must be proven by the Mac test below before
 any flow into a missing playlist is trusted.
 
+## Failure mode 35: a mapping measured on one playlist's sort is used for a playlist with a different sort (2026-10-29, real failure)
+
+On 2026-10-29 at 15:38 PT Spencer ran `./run.sh flow "SeTeR
+Flow"` twice from the .4 folder. Both runs: flow compute and
+validation passed, then apply failed verification ("final song
+order does not match the desired order under mapping
+reversed"), apply restored from the per-run snapshot, and then
+run.sh's restore via undo failed (mode 36). State files on his
+Mac prove: both SeTeR Flow per-run snapshots are 0 bytes (the
+playlist was empty at apply start), no main SeTeR Flow backup
+was ever installed, and the recorded mapping was "reversed",
+measured on throwaway "My New Sandwich Recipe" at 13:13 PT.
+
+The apply failure is NOT a -1728 failure and NOT a snapshot
+failure. The .4 create-then-read fix worked for the snapshot
+(the empty fallback let the snapshot step succeed). The
+failure is mapping transfer: the .4 runs used the reversed
+mapping measured on the main playlist, which is sorted
+Playlist Order descending, for a NEW target playlist, SeTeR
+Flow, whose sort is the default/manual sort. A reversed build
+on a forward-sorted playlist lands backwards, so verify
+correctly refused. Under .4 there was one shared mapping
+file, so nothing stopped a Flow build from silently reusing a
+shuffle build's mapping.
+
+The rule, stated explicitly because .4 violated it by
+omission: a mapping measured on one playlist's sort NEVER
+transfers to a playlist with a different sort. The worked
+example is Flow itself: main playlist, Playlist Order
+descending, mapping reversed; new SeTeR Flow playlist,
+default/manual sort, mapping forward (to be measured, not
+assumed). run.sh cannot read a playlist's UI sort from Music,
+so the enforcement is structural, not observational:
+
+  * Mappings are per-target files, keyed by target name plus
+    a hash (`mapping_file_for`, same scheme as backups). A
+    build for target X reads ONLY X's file.
+  * `mapping_for_build` takes the target, validates the
+    file's TARGET field matches, and requires a non-empty
+    SORT field and a fresh (<24h) timestamp.
+  * The pre-.5 shared `sort-mapping.txt` is IGNORED, never
+    read as a mapping source; a build with only that file
+    refuses with a message saying so.
+  * `sortprobe` requires three arguments:
+    `./run.sh sortprobe <throwaway> <target> <sort-label>`,
+    and records MAPPING, THROWAWAY, TARGET, SORT, and
+    TIMESTAMP in the per-target file. The sort label is
+    user-declared: the user confirms the throwaway is set to
+    the target's sort, and the label is what later GATE
+    lines print.
+  * apply/undo/restore print the recorded sort label and
+    throwaway in their GATE lines (`mapping_info_for`, via
+    log(), never captured), so a mismatch is visible before
+    building.
+  * A failed sort-probe deletes ONLY that target's mapping
+    file.
+
+This fix is UNPROVEN on a Mac, and cannot be proven without
+a Mac run on a new-sort target: a Flow build must refuse for
+lack of a SeTeR Flow mapping (it must NOT silently reuse the
+main playlist's reversed mapping), and must succeed only
+after its own sortprobe on a throwaway set to SeTeR Flow's
+sort. Until that run, .5's guard is code-reviewed and
+unit-tested here only.
+
+## Failure mode 36: undo fails with -1728 on an empty playlist, and run.sh calls it "may be partial" (2026-10-29, real failure)
+
+Same two 15:38 PT runs as mode 35. After apply restored from
+the per-run snapshot, run.sh's restore via undo failed with
+the same AppleScript -1728 bulk-read error ("Can't get
+persistent ID of every track of user playlist id 78940 whose
+media kind = song"). The .4 empty fallback went into
+apply-order and the retired probe script, but NOT into
+undo.applescript (and restore-original was the same).
+Undo's first step is a bulk playlistIDs read on the target,
+which fails with -1728 on the empty SeTeR Flow playlist, so
+undo died before changing anything, and run.sh reported it
+as "playlist may be partial" when nothing had changed. The
+playlist was not partial; the restore step never started.
+
+Fix, the exact same fallback as .4, applied everywhere it
+was missing:
+
+  * `bridge/undo.applescript` and
+    `bridge/restore-original.applescript`: `playlistIDs`
+    falls back on a bulk-read error to an unfiltered track
+    count (0 returns {}, anything else rethrows), and
+    `deletePlaylistSongs` falls back to the unfiltered count
+    for its empty re-read. The pre-change snapshot read and
+    atomic write are wrapped so a failure there rethrows
+    with a PLAYLIST_UNTOUCHED marker ("playlist untouched").
+  * `bridge/sort-probe.applescript`: the same playlistIDs
+    and delete fallbacks.
+  * `bridge/diagnose-playlist.applescript` (read-only): its
+    bulk song-ID read is now guarded the same way; count 0
+    reports empty, anything else errors as unreadable
+    rather than guessing.
+  * `run.sh`'s post-apply restore branch greps the log from
+    the restore STEP line for the PLAYLIST_UNTOUCHED marker
+    and logs "untouched, NOT partial" in that case, keeping
+    the CRITICAL "may be partial" message for all other
+    restore failures.
+  * Audit of every `playlistIDs` handler: apply-order, undo,
+    restore-original, sort-probe, and the retired probe-order
+    all now carry an empty fallback. The one deliberate
+    exception is `bridge/dump-library.applescript`, which has
+    no playlistIDs handler; its bulk filtered reads on the
+    library (940 songs, proven working) were left alone. A
+    dump of an empty playlist could theoretically hit the
+    same -1728, but it fails before any change and is not a
+    build path that modifies anything.
+
+This fix is UNPROVEN on a Mac like every other bridge change:
+it needs a Mac run against an empty playlist (undo or
+restore on a fresh empty throwaway) before it is trusted.
+
 ## What the bridge is allowed to do
 
 - Modify exactly one regular user playlist, resolved by name, and
@@ -452,6 +568,8 @@ that proves the guard on a real Mac.
 | 31 | Failed run overwrote the only good backup (narrative mode 32) | The 00:41 run wrote a doubled-state snapshot to the main backup path; only `.prev` saved the original, and one more failed run would have overwritten `.prev` too. | Per-run snapshot files, installed as the main backup only after a verified successful apply; previous main backup kept as `.prev`; newest 10 per-run snapshots kept as a chain; failure restores use the per-run snapshot and leave the main backup untouched. | Run a failing apply on a throwaway (e.g. a bad order that passes Python validation but fails in the bridge, or a forced failure), then confirm the main backup file is byte-identical to before the run and a per-run snapshot exists. |
 | 32 | Stale mapping survived a failed re-probe; restore had no gated path; undo could discover a missing backup after deleting (narrative mode 33) | A failed sort-probe left the old mapping in place; restore-original could only be called directly (no freshness check); undo resolved the playlist before checking the backup file existed (the script itself validates first, so this was a clarity gap, not a data-loss path). | Sort-probe failure deletes the recorded mapping; `./run.sh restore` gates backup existence and mapping freshness like undo; `run.sh undo` refuses with a list of recent backups when the main backup file is missing. | Fail a sort-probe (e.g. on a title-sorted throwaway returning "other"), then attempt a build: it must refuse for lack of a mapping, not proceed under the old one. Run `./run.sh restore` on a throwaway with a missing backup file: it must refuse untouched. |
 | 33 | Flow into a missing playlist fails at the first bulk read, -1728 (narrative mode 34) | `resolvePlaylist(allowCreate=true)` created "SeTeR Flow" via `make new user playlist`, and the next bulk filtered ID read on the fresh empty playlist failed with -1728 before any snapshot existed; safety held (nothing changed), but a flow into a missing playlist could never succeed. | Apply-order re-resolves a created playlist by id with a fresh lookup and builds only from that reference; `playlistIDs` falls back on a bulk-read error to an unfiltered count (0 returns {}, anything else rethrows); `deletePlaylistSongs` applies the same fallback to its empty re-read. | Delete "SeTeR Flow" in Music if it exists, then run `./run.sh flow` (under a fresh sortprobe mapping): it must create the playlist and apply exactly with APPLY OK. Then run flow again on the now-existing playlist: it must refresh it exactly. A -1728 at the snapshot step on either run is a fail. |
+| 34 | Mapping measured on one sort used for a playlist with a different sort (narrative mode 35) | The .4 Flow runs used the main playlist's reversed mapping (Playlist Order descending) for the new, default-sorted SeTeR Flow playlist; a reversed build on a forward-sorted playlist lands backwards, so verify correctly refused. Under .4 one shared mapping file let any build silently reuse any other build's mapping. | Mappings are per-target files (name plus hash); a build reads only its own target's file, validates its TARGET field, requires a SORT field and a fresh (<24h) timestamp; the pre-.5 shared sort-mapping.txt is ignored; sortprobe requires throwaway, target, and sort label; GATE lines print the recorded throwaway and sort label before building. | Attempt `./run.sh flow` with only a main-playlist mapping present: it must refuse for lack of a SeTeR Flow mapping. Then run `./run.sh sortprobe` on a throwaway set to SeTeR Flow's sort for target "SeTeR Flow", and run flow: it must apply exactly with APPLY OK. |
+| 35 | Undo fails with -1728 on an empty playlist and is reported as "may be partial" (narrative mode 36) | The .4 empty fallback went into apply-order and the retired probe script but not into undo or restore-original; undo's first bulk playlistIDs read fails with -1728 on the empty SeTeR Flow playlist, so undo died before changing anything, and run.sh reported "may be partial" when nothing had changed. | Undo, restore-original, and sort-probe carry the same playlistIDs and delete empty fallbacks as apply-order; pre-change snapshot failures in undo/restore rethrow with a PLAYLIST_UNTOUCHED marker; run.sh's post-apply restore branch logs "untouched, NOT partial" for that marker and keeps "may be partial" for all other restore failures. | Run undo (or restore) on a fresh empty throwaway: it must not fail with -1728, and a failed restore that died at the snapshot read must be logged as untouched, not partial. |
 
 ## Further audit (2026-10-28): other potential bugs, beyond the reversal
 
@@ -553,13 +671,18 @@ read-only; the sort-probe touches only its own throwaway.
    create a throwaway playlist with at least 5 distinct songs, set
    its sort in Music to EXACTLY the target's sort from step 2
    (Playlist Order descending for the 2026-10-28 failure), and run
-   `./run.sh sortprobe "<throwaway name>"`. It must print
-   `MAPPING: forward` or `MAPPING: reversed` plus SORTPROBE_OK,
-   record the mapping (valid 24 hours), and restore the throwaway
-   to its snapshot. An "other" mapping, a failed restore, or a
-   missing mapping file means STOP: no build will run, by design.
-   If the throwaway's sort is not the target's sort, the mapping
-   is the wrong mapping; set the sort correctly and re-probe.
+   `./run.sh sortprobe "<throwaway name>" "<target>" "<sort-label>"`.
+   It must print `MAPPING: forward` or `MAPPING: reversed` plus
+   SORTPROBE_OK, record the mapping FOR THAT TARGET ONLY
+   (valid 24 hours), and restore the throwaway to its snapshot.
+   An "other" mapping, a failed restore, or a missing mapping
+   file means STOP: no build will run, by design. If the
+   throwaway's sort is not the target's sort, the mapping is
+   the wrong mapping; set the sort correctly and re-probe.
+   A mapping measured on one playlist's sort NEVER transfers
+   to a playlist with a different sort (mode 35): Flow needs
+   its own sortprobe on a throwaway set to SeTeR Flow's sort,
+   even when a main-playlist mapping already exists.
    The old `./run.sh probe` (fresh playlist) is a standalone
    sanity check only and is NOT a substitute for this step: it
    measures a playlist that does not share the target's sort, and

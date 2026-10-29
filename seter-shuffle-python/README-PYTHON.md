@@ -28,8 +28,16 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   end-to-end build-to-list mapping on a throwaway the user sets to
   the target playlist's sort (Playlist Order descending for the
   2026-10-28 failure), reporting forward, reversed, or other
-  (which aborts everything); run.sh records that mapping and
-  requires a fresh one (24 hours) before every apply and undo.
+  (which aborts everything); run.sh records that mapping
+  PER-TARGET, with the throwaway name and a user-declared sort
+  label, and requires a fresh one (24 hours) before every apply
+  and undo. A mapping measured on one playlist's sort NEVER
+  transfers to a playlist with a different sort: the 2026-10-29
+  15:38 PT Flow runs proved it, using the main playlist's
+  reversed (descending) mapping for the new, default-sorted
+  SeTeR Flow playlist and failing verification, correctly.
+  Flow needs its own sortprobe on a throwaway set to SeTeR
+  Flow's sort (see BRIDGE-SAFETY.md modes 35 and 36).
   The old `probe-order.applescript` (fresh 3-song probe) is a
   standalone sanity check only and is consulted by no build: a
   fresh playlist does not share a real playlist's sort, and the
@@ -231,7 +239,9 @@ IDs, the CLI dedupe command on dump files, and structural guards
 for the delete-empty handler in all four bridge scripts, the
 per-run backup chain, the sort-probe mapping deletion on
 failure, and the restore command, plus the .3 mapping-gate
-error visibility: failures in `mapping_for_build` and
+error visibility, plus the .5 per-target mapping guard and
+the undo/restore -1728 empty fallback (161 tests total):
+failures in `mapping_for_build` and
 `probe_mode` (both called inside `$(...)`) now go to the log
 file AND stderr via `logerr()`, never to stdout, so a refused
 build shows its `GATE FAILED` line on the terminal instead of
@@ -267,11 +277,13 @@ BRIDGE-SAFETY.md mode 29):
 Suggested Mac verification order: `./check-python.sh` first, then
 the BRIDGE-SAFETY.md Stage 0 sequence: the read-only diagnostic on
 the target, the UI sort check in Music, then
-`./run.sh sortprobe "<throwaway>"` on a throwaway set to the
-target's sort (Playlist Order descending for the 2026-10-28
-failure), which must return a forward or reversed mapping and
-restore the throwaway; an "other" mapping aborts everything by
-design. The old `./run.sh probe` (fresh 3-song probe) is a
+`./run.sh sortprobe "<throwaway>" "<target>" "<sort-label>"`
+on a throwaway set to the target's sort (Playlist Order
+descending for the 2026-10-28 failure), which must return a
+forward or reversed mapping and restore the throwaway; an
+"other" mapping aborts everything by design. The mapping is
+recorded for that target only; a build for any other target
+refuses until that target has its own sortprobe. The old `./run.sh probe` (fresh 3-song probe) is a
 standalone sanity check only and does not substitute for the
 sort-matched probe. Then `./run.sh audit` (changes nothing, and
 answers whether BPM is truly missing or the dump is failing), then

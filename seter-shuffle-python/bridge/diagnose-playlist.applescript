@@ -45,8 +45,24 @@ on run argv
 	set outLines to {}
 	tell application "Music"
 		set totalTracks to count of tracks of pl
-		set songIDs to persistent ID of every track of pl whose media kind is song
 	end tell
+	-- Read-only, but the same -1728 filtered-read failure that
+	-- broke builds on brand-new empty playlists (2026-10-29,
+	-- modes 34 and 36) would kill this diagnostic too. A total
+	-- track count of 0 already proves there are no songs, so
+	-- that case reports empty instead of erroring; any other
+	-- read failure is reported as unreadable, not guessed.
+	try
+		tell application "Music"
+			set songIDs to persistent ID of every track of pl whose media kind is song
+		end tell
+	on error
+		if totalTracks is 0 then
+			set songIDs to {}
+		else
+			error "diagnose: could not read the playlist's song IDs (bulk read failed and the playlist is not empty)." number 1
+		end if
+	end try
 	set songCount to count of songIDs
 	set end of outLines to "COUNT_SONGS: " & songCount
 	set end of outLines to "COUNT_TRACKS: " & totalTracks
