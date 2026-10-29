@@ -6,6 +6,97 @@ AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
 a Mac. The daily stable run stays AppleScript.
 
+## 2026-10-28 — Missing-BPM fallback and tag audit (second Python change)
+
+**Why:** Spencer ran `./run.sh flowPreview` on his Mac on 2026-10-28:
+940 songs dumped, 938 eligible, 50-song preview, nothing changed,
+but almost every energy was exactly 50 (one at 55). The old model
+defaulted missing BPM to 50 and his gospel/Christian genres matched
+no genre group, so the walk had nothing to climb with.
+
+**What changed (all in `seter-shuffle-python/`, nothing else):**
+
+- New `audit` command (`python3 -m seter_shuffle.cli audit --library
+  dump.json`, and `./run.sh audit` on a Mac): counts and percentages
+  for BPM present vs missing vs zero, genre present vs missing, the
+  most common raw genre strings with counts, played-count bands,
+  rating bands, favorited, disliked, enabled, Flow eligibility, and
+  the Flow energy spread. It changes nothing in Music. It is the
+  diagnostic that separates "library truly lacks BPM" from "dump
+  script fails to read BPM": some BPM present means the dump works
+  (a dump bug loses BPM for the whole list at once, via the bulk-read
+  fallback); zero BPM present means suspect the dump first.
+- Missing-BPM energy fallback, with BPM-present songs scoring
+  exactly as before (same BPM bands, same legacy genre nudges, same
+  single >=20 plays step, same rating/favorited): base 50, expanded
+  genre map (gospel/christian/worship/praise -2, latin/reggaeton +6,
+  afrobeats/reggae +4, soundtrack -3, old groups unchanged), tiered
+  plays (1-4 +2, 5-19 +4, 20-49 +6, 50+ +9), rating (3 stars +2,
+  4-5 stars +5, 1-2 stars -10), favorited +5, and a -5 skip penalty
+  only when at least 3 plays+skips exist and more than half were
+  skips. Skip-heavy songs stay Flow-eligible; the penalty is a
+  score, not an exclusion. Clamp stays 5..100.
+- Tie-breaking in the greedy walk: on an exact cost tie, prefer a
+  genre group different from the previous pick, then higher
+  familiarity (plays capped at 100, +25 favorited, +rating stars),
+  then the earliest pool song. Deterministic; flat-energy pools no
+  longer come out in raw library order.
+- `run.sh` gains `./run.sh audit` (dump, then audit, no apply, no
+  history write). `README-PYTHON.md` gains the audit commands, a
+  section explaining why BPM is not attached to every song, and the
+  fallback model in plain words.
+
+**Answer to the question behind this change:** no, not every song in
+Apple Music has a BPM attached. Music does not analyse tempo: the BPM
+field comes from the track's own metadata and is often blank,
+especially for rips, older files, and sources that never wrote a
+tempo tag. That is a metadata gap, not a bug in the shuffle, and the
+fallback above is built for exactly that case.
+
+**Before/after, on a varied 10-song missing-BPM fixture (run here):**
+
+- Before: 50, 65, 63, 58, 58, 38, 55, 50, 65, 50 — 6 distinct
+  values, three songs stuck at exactly 50.
+- After: 48, 64, 64, 58, 55, 38, 57, 50, 69, 60 — 9 distinct
+  values over 38-69, with only the truly blank song (unknown genre,
+  no plays, no rating, not favorited) still at 50.
+- The fallback spread is deliberately narrower than the BPM range:
+  without a tempo, plays and genre are weak signals, and a wide
+  spread would be guessing a tempo, not measuring one.
+
+**What was actually tested here (Linux VM, Python 3.12.3):**
+
+```bash
+python3 -m unittest discover -s tests -v
+# Ran 41 tests in 0.541s — OK
+```
+
+41 passed, 0 failed (31 pre-existing, all still passing, plus 10
+new). New coverage: audit counts matching the sample fixture
+(including BPM zero vs missing), audit CLI leaving the fixture
+untouched, the missing-BPM spread, gospel/Christian/worship/praise/
+latin/afrobeats/soundtrack mapping, BPM-present parity (including a
+gospel BPM track scoring exactly as before), the skip penalty
+applying only without BPM, skip-heavy songs staying Flow-eligible,
+and the tie-break being deterministic. Shell syntax of `run.sh` and
+`check-python.sh` checked with `bash -n`.
+
+**What the Mac run must prove (still unverified):**
+
+- `./run.sh audit` on Spencer's real library: the BPM present
+  percentage and the top raw genres. If BPM present is 0%, the dump
+  script is the prime suspect, not the library. If it is a small
+  non-zero share, the library really lacks BPM and the fallback is
+  the right fix. The top genres list also tells whether the new
+  genre map covers what he actually has, or needs another pass.
+- `./run.sh flowPreview` after the fallback: energies should spread
+  instead of clumping at 50, and the arc should visibly rise and
+  fall. If they still clump, the audit's genre/plays data will show
+  why (for example, if his plays and ratings are also mostly blank).
+- Everything from the first build's unverified list (bridge scripts,
+  runner end to end, undo) remains unverified: no Mac run of those
+  has happened from here.
+
 ## 2026-10-28 — Python core, first build (based on v2.6 + Flow)
 
 **What it is:** the shuffle, Rediscover, and Flow logic rewritten in

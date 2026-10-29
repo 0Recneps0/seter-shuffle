@@ -12,6 +12,8 @@ Commands:
   rediscover-preview   Same picks, printed, no files written except --out
   flow                 Flow ordering (ordered IDs only; no Music write)
   flowPreview          Flow ordering printed with energy scores
+  audit                Tag-coverage audit of a library dump (changes
+                       nothing; tells a real BPM gap from a dump bug)
   record-history       Append picked IDs to a Rediscover history file
                        (the runner calls this only after a successful
                        apply, so a failed apply never burns cooldown)
@@ -42,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .audit import audit_library, format_audit
 from .flow import flow_energy, prepare_flow
 from .rediscover import (
     load_rediscover_history,
@@ -161,6 +164,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--playlist", default="SeTeR Flow")
 
     p = sub.add_parser(
+        "audit", help="tag-coverage audit of a library dump (changes nothing)"
+    )
+    p.add_argument("--library", required=True, help="library JSON dump")
+    p.add_argument("--out", default=None, help="write audit JSON here")
+    p.add_argument("--top-genres", type=int, default=20)
+
+    p = sub.add_parser(
         "record-history",
         help="append picked IDs to a Rediscover history file (after apply)",
     )
@@ -181,6 +191,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "audit":
+        tracks = load_library(args.library)
+        report = audit_library(tracks)
+        if args.out is not None:
+            Path(args.out).write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
+        for line in format_audit(report, top_genres=args.top_genres):
+            print(line)
+        return 0
+
     if args.command == "record-history":
         from datetime import date
 

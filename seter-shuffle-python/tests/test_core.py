@@ -24,7 +24,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from seter_shuffle.artists import artist_key
+from seter_shuffle.audit import audit_library, format_audit
 from seter_shuffle.flow import (
+    familiarity,
     flow_energy,
     flow_order,
     flow_target_energy,
@@ -398,6 +400,181 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("2026-10-28\tAAA", history.read_text(encoding="utf-8"))
+
+
+class MissingBpmFallbackTests(unittest.TestCase):
+    def missing_bpm_cases(self):
+        return [
+            ("gospel-never", dict(genre="Gospel", played_count=0, rating=0, favorited=False, skipped_count=0)),
+            ("gospel-loved", dict(genre="Christian", played_count=40, rating=100, favorited=True, skipped_count=0)),
+            ("pop-often", dict(genre="Pop", played_count=25, rating=0, favorited=False, skipped_count=0)),
+            ("pop-never", dict(genre="Pop", played_count=0, rating=0, favorited=False, skipped_count=0)),
+            ("rock-skippy", dict(genre="Rock", played_count=2, rating=0, favorited=False, skipped_count=8)),
+            ("ambient-never", dict(genre="Ambient", played_count=0, rating=0, favorited=False, skipped_count=0)),
+            ("worship-mid", dict(genre="Worship", played_count=8, rating=80, favorited=False, skipped_count=0)),
+            ("unknown-never", dict(genre="", played_count=0, rating=0, favorited=False, skipped_count=0)),
+            ("unknown-loved", dict(genre="", played_count=60, rating=100, favorited=True, skipped_count=0)),
+            ("latin-often", dict(genre="Reggaeton", played_count=15, rating=0, favorited=False, skipped_count=0)),
+        ]
+
+    def test_missing_bpm_songs_spread_instead_of_clumping_at_50(self):
+        energies = []
+        for name, kw in self.missing_bpm_cases():
+            track = make_track(name, bpm=None, **kw)
+            energies.append(flow_energy(track))
+        # Old model gave only 6 distinct values, three of them exactly
+        # 50 (gospel-never, latin-often, unknown-never). The fallback
+        # must spread them without inventing a tempo-wide range.
+        self.assertGreaterEqual(len(set(energies)), 7)
+        self.assertNotEqual(energies.count(50), len(energies))
+        self.assertEqual(
+            flow_energy(make_track("gospel-never", bpm=None, genre="Gospel",
+                                  played_count=0, rating=0, favorited=False, skipped_count=0)),
+            48,  # 50 base - 2 gospel nudge, no familiarity
+        )
+        self.assertEqual(
+            flow_energy(make_track("unknown-never", bpm=None, genre="",
+                                  played_count=0, rating=0, favorited=False, skipped_count=0)),
+            50,  # the truly blank song still sits at mid-energy
+        )
+        self.assertEqual(
+            flow_energy(make_track("ambient-never", bpm=None, genre="Ambient",
+                                  played_count=0, rating=0, favorited=False, skipped_count=0)),
+            38,  # 50 - 12, unchanged from the old ambient nudge
+        )
+
+    def test_new_genre_groups_map(self):
+        self.assertEqual(genre_group("Gospel"), 8)
+        self.assertEqual(genre_group("Christian"), 8)
+        self.assertEqual(genre_group("Worship"), 8)
+        self.assertEqual(genre_group("Praise & Worship"), 8)
+        self.assertEqual(genre_group("Reggaeton"), 9)
+        self.assertEqual(genre_group("Latin"), 9)
+        # Substring order: "Latin Pop" hits the pop group first.
+        self.assertEqual(genre_group("Latin Pop"), 3)
+        self.assertEqual(genre_group("Afrobeats"), 10)
+        self.assertEqual(genre_group("Soundtrack"), 11)
+
+    def test_bpm_present_songs_score_exactly_as_before(self):
+        # Old formula for a gospel BPM track: no genre nudge (group 7
+        # under the legacy map), single >=20 plays step, rating, fav.
+        self.assertEqual(
+            flow_energy(make_track("g", bpm=120, genre="Gospel",
+                                  played_count=5, rating=0, favorited=False)),
+            75,
+        )
+        self.assertEqual(
+            flow_energy(make_track("g2", bpm=120, genre="Gospel",
+                                  played_count=30, rating=100, favorited=True)),
+            90,  # 75 + 0 + 5 + 5 + 5, NOT tiered plays or a gospel nudge
+        )
+        # And the pre-existing BPM band tests still hold verbatim.
+        self.assertEqual(flow_energy(make_track("a", bpm=70, genre="Rock", played_count=0)), 33)
+        self.assertEqual(flow_energy(make_track("b", bpm=130, genre="Classical", played_count=0)), 63)
+
+    def test_skip_penalty_applies_only_without_bpm_and_only_when_mostly_skipped(self):
+        # 2 plays, 8 skips: fallback 50 + 8 rock + 2 tier - 5 penalty = 55.
+        self.assertEqual(
+            flow_energy(make_track("s", bpm=None, genre="Rock",
+                                  played_count=2, rating=0, favorited=False, skipped_count=8)),
+            55,
+        )
+        # Same song WITH bpm: old formula, no skip penalty at all.
+        self.assertEqual(
+            flow_energy(make_track("s2", bpm=120, genre="Rock",
+                                  played_count=2, rating=0, favorited=False, skipped_count=8)),
+            83,
+        )
+        # Skip-heavy song is still Flow-eligible (penalty, not exclusion).
+        tracks = [make_track("ok", bpm=120), make_track("skippy", bpm=None, genre="Pop",
+                                                        played_count=1, skipped_count=9)]
+        ordered, _, eligible = prepare_flow(tracks, Settings(flow_size=2))
+        self.assertEqual(eligible, 2)
+        self.assertEqual(len(ordered), 2)
+
+    def test_prepare_flow_missing_bpm_spread(self):
+        tracks = [make_track(name, bpm=None, **kw) for name, kw in self.missing_bpm_cases()]
+        ordered, energies, eligible = prepare_flow(tracks, Settings(flow_size=10))
+        self.assertEqual(eligible, 10)
+        self.assertGreaterEqual(len(set(energies)), 7)
+
+    def test_familiarity_tie_break_is_deterministic_and_prefers_movement(self):
+        # Position 2 cost tie: same-group song at distance 20 (cost 20)
+        # vs different-group song at distance 0 (cost 0 + 20 genre = 20).
+        # The movement tie-break must pick the different-group song,
+        # even though it is later in the pool.
+        order = flow_order(
+            [50, 70, 90], [3, 3, 7], [None, None, None], ["", "", ""],
+            3, spacing=2, familiarity=[0, 0, 0],
+        )
+        self.assertEqual(order, [0, 2, 1])
+        # Familiarity breaks a tie before earliest-pool order does.
+        order = flow_order(
+            [50, 50, 50], [3, 3, 3], [None, None, None], ["", "", ""],
+            3, spacing=2, familiarity=[0, 10, 0],
+        )
+        self.assertEqual(order[0], 1)
+        # Same input twice gives the same order.
+        self.assertEqual(
+            flow_order([50, 70, 90], [3, 3, 7], [None, None, None], ["", "", ""], 3, spacing=2),
+            flow_order([50, 70, 90], [3, 3, 7], [None, None, None], ["", "", ""], 3, spacing=2),
+        )
+        self.assertEqual(familiarity(make_track("f", played_count=30, rating=100, favorited=True)), 60)
+
+
+class AuditTests(unittest.TestCase):
+    def test_audit_counts_match_the_fixture(self):
+        tracks = load_library(FIXTURE)
+        report = audit_library(tracks)
+        self.assertEqual(report["total"], 8)
+        self.assertEqual(report["bpm_present"], 7)
+        self.assertEqual(report["bpm_missing"], 1)
+        self.assertEqual(report["bpm_zero"], 0)
+        self.assertEqual(report["genre_present"], 8)
+        self.assertEqual(report["genre_missing"], 0)
+        self.assertEqual(report["genre_distinct"], 5)
+        self.assertEqual(report["genre_counts"][0], ("Pop", 3))
+        self.assertEqual(report["genre_counts"][1], ("Electronic", 2))
+        self.assertEqual(report["played_bands"], {"0": 1, "1-4": 2, "5-19": 1, "20-49": 3, "50+": 1})
+        self.assertEqual(report["rating_bands"]["unrated"], 5)
+        self.assertEqual(report["rating_bands"]["4-5 stars"], 3)
+        self.assertEqual(report["favorited"], 2)
+        self.assertEqual(report["disliked"], 1)
+        self.assertEqual(report["enabled"], 7)
+        self.assertEqual(report["disabled"], 1)
+        self.assertEqual(report["flow_eligible"], 6)
+        self.assertEqual(report["flow_eligible_missing_bpm"], 1)
+
+    def test_audit_separates_bpm_zero_from_missing(self):
+        tracks = [
+            make_track("present", bpm=120),
+            make_track("missing", bpm=None),
+            make_track("zero", bpm=0),
+        ]
+        report = audit_library(tracks)
+        self.assertEqual((report["bpm_present"], report["bpm_missing"], report["bpm_zero"]), (1, 1, 1))
+
+    def test_audit_format_lists_top_genres_and_changes_nothing(self):
+        tracks = load_library(FIXTURE)
+        before = [t.persistent_id for t in tracks]
+        lines = format_audit(audit_library(tracks), top_genres=2)
+        text = "\n".join(lines)
+        self.assertIn("BPM: present 7 (87.5%)", text)
+        self.assertIn("Pop", text)
+        self.assertIn("Nothing was changed.", text)
+        self.assertEqual([t.persistent_id for t in tracks], before)
+
+    def test_cli_audit_reports_and_leaves_fixture_untouched(self):
+        before = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
+        result = subprocess.run(
+            [sys.executable, "-m", "seter_shuffle.cli", "audit", "--library", str(FIXTURE)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Audit: 8 songs.", result.stdout)
+        self.assertIn("BPM: present 7", result.stdout)
+        self.assertIn("Nothing was changed.", result.stdout)
+        self.assertEqual(hashlib.sha256(FIXTURE.read_bytes()).hexdigest(), before)
 
 
 if __name__ == "__main__":

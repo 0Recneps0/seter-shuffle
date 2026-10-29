@@ -46,6 +46,7 @@ parsing JSON by hand in AppleScript would be a new bug factory.
 From this directory:
 
 ```bash
+./run.sh audit                  # tag-coverage audit, change nothing (run this first)
 ./run.sh flowPreview            # print the would-be Flow order, change nothing
 ./run.sh flow                   # build or refresh "SeTeR Flow"
 ./run.sh shuffle                # shuffle the whole library into "SeTeR Shuffle"
@@ -59,6 +60,7 @@ From this directory:
 Direct core commands (no Music involved, useful for testing):
 
 ```bash
+python3 -m seter_shuffle.cli audit --library dump.json
 python3 -m seter_shuffle.cli flowPreview --library dump.json --seed 42
 python3 -m seter_shuffle.cli flow --library dump.json --out order.json --order-txt order.txt
 python3 -m seter_shuffle.cli shuffle --library dump.json --out order.json --order-txt order.txt
@@ -69,7 +71,46 @@ python3 -m seter_shuffle.cli record-history --history rediscover-history.tsv --i
 `flowPreview` and `rediscover-preview` never call the apply script and
 never write history. `rediscover` (the core command) also does not
 write history; the runner records it only after the apply succeeds, so
-a failed apply never burns a song's cooldown.
+a failed apply never burns a song's cooldown. `audit` never touches
+Music at all: it only counts what is in a dump file.
+
+## BPM is not attached to every song, and Flow now handles that
+
+No, not every song in Apple Music has a BPM. Music does not analyse
+tempo for you: the BPM field comes from the track's own metadata, and
+it is often blank, especially for rips, older files, and tracks whose
+source never wrote a tempo tag. A library with most BPM missing is
+normal metadata, not proof the dump failed.
+
+That is exactly what Spencer's 2026-10-28 preview showed: 940 songs
+dumped, 938 eligible, but almost every energy at exactly 50, because
+missing BPM defaulted to 50 and his gospel/Christian genres matched
+no genre group. Two causes look identical in a preview, and `audit`
+separates them: if BPM is present for *some* songs, the dump works
+(a dump bug would lose BPM for the whole list at once) and the rest
+truly lack BPM metadata. If BPM is present for *zero* songs, suspect
+the dump script first.
+
+The missing-BPM fallback model (songs WITH BPM score exactly as
+before) is: base 50, an expanded genre map (gospel/christian/worship
+-2, latin/reggaeton +6, afrobeats/reggae +4, soundtrack -3, old
+groups unchanged), tiered plays (1-4 plays +2, 5-19 +4, 20-49 +6,
+50+ +9), rating (3 stars +2, 4-5 stars +5, 1-2 stars -10), favorited
++5, and a -5 penalty only when at least 3 plays+skips exist and more
+than half were skips (skip-heavy songs stay eligible; they just do
+not score like never-skipped ones). The fallback spread is
+deliberately narrower than the BPM range: without a tempo, plays and
+genre are weak signals, and a wide spread would be guessing a tempo,
+not measuring one. On a varied missing-BPM fixture the old model gave
+6 distinct energies with three songs stuck at 50; the fallback gives
+9 distinct energies over 38-69, with only the truly blank song
+(unknown genre, no plays, no rating, not favorited) still at 50.
+
+Tie-breaking also changed: on an exact cost tie the walk now prefers
+a genre group different from the previous pick, then higher
+familiarity (plays, favorited, rating), then the earliest pool song,
+so flat-energy pools stop coming out in raw library order. The order
+stays deterministic.
 
 ## The python3 check
 
@@ -100,7 +141,7 @@ edit `run.sh` if you want different ones baked in.
 
 ## What was actually tested, and what was not
 
-Tested here, for real (31 tests, all passing):
+Tested here, for real (41 tests, all passing):
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -113,8 +154,13 @@ Flow with 0/1/2 songs, Flow eligibility (disliked/unchecked out,
 skip-heavy kept, unlike Rediscover), Flow artist spacing winning over
 vibe, Rediscover eligibility/weights/target clamps, max-per-artist and
 cooldown enforcement, history load/record roundtrips, duplicate-ID
-rejection, and CLI previews proving they leave the input file
-byte-identical and write nothing to any library.
+rejection, CLI previews proving they leave the input file
+byte-identical and write nothing to any library, plus the new work:
+audit counts matching a known fixture (including BPM zero vs
+missing), the missing-BPM spread, gospel/Christian/latin/afrobeats/
+soundtrack genre mapping, BPM-present songs scoring exactly as
+before, the skip penalty applying only without BPM, and the
+movement/familiarity tie-break being deterministic.
 
 NOT tested, and not claimed to work until a Mac run proves it (the
 full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md):
@@ -133,9 +179,11 @@ full list is in CHANGELOG-EXPERIMENTAL-PYTHON.md):
   been observed from here.
 
 Suggested Mac verification order: `./check-python.sh` first, then
-`./run.sh flowPreview` (changes nothing), then `./run.sh flow` on a
-small test playlist if possible, then check the playlist order, the
-run log, and `./run.sh undo "SeTeR Flow"` restoring the backup.
+`./run.sh audit` (changes nothing, and answers whether BPM is truly
+missing or the dump is failing), then `./run.sh flowPreview` (changes
+nothing), then `./run.sh flow` on a small test playlist if possible,
+then check the playlist order, the run log, and
+`./run.sh undo "SeTeR Flow"` restoring the backup.
 
 ## Known differences and quirks, kept on purpose
 

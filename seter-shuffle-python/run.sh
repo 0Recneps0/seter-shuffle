@@ -6,6 +6,7 @@
 # order. Previews never call the apply script at all.
 #
 # Usage (from this directory):
+#   ./run.sh audit                  tag-coverage audit, change nothing
 #   ./run.sh flowPreview            print the would-be Flow order, change nothing
 #   ./run.sh flow                   build/refresh "SeTeR Flow"
 #   ./run.sh shuffle [playlist]     shuffle a playlist in place, or the
@@ -43,9 +44,9 @@ log "python: $CHECK_OUT"
 
 CMD="${1:-}"
 case "$CMD" in
-  flowPreview|flow|shuffle|rediscover-preview|rediscover|undo) ;;
+  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo) ;;
   *)
-    echo "usage: $0 {flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist]|rediscover-preview|rediscover|undo <playlist>}" >&2
     exit 2
     ;;
 esac
@@ -80,6 +81,11 @@ fi
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 case "$CMD" in
+  audit)
+    log "audit (no Music changes)"
+    "$PY" -m seter_shuffle.cli audit --library "$DUMP" | tee -a "$LOG"
+    log "audit done; nothing was applied"
+    ;;
   flowPreview)
     log "flowPreview (no Music changes)"
     "$PY" -m seter_shuffle.cli flowPreview --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" | tee -a "$LOG"
