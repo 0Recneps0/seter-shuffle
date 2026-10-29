@@ -17,6 +17,9 @@ Commands:
   record-history       Append picked IDs to a Rediscover history file
                        (the runner calls this only after a successful
                        apply, so a failed apply never burns cooldown)
+  library-manifest     Write a daily library manifest TSV
+                       (persistent_id, artist, album, title), the
+                       Python form of v2.6's daily manifest backup
   dedupe               Unique songs of a playlist dump, first
                        occurrence order (removes duplicate entries;
                        never invents or drops a distinct song)
@@ -58,6 +61,7 @@ from typing import Any
 
 from .audit import audit_library, format_audit
 from .flow import flow_energy, prepare_flow
+from .manifest import write_library_manifest
 from .rediscover import (
     load_rediscover_history,
     pick_rediscover,
@@ -219,6 +223,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backup", required=True, help="backup file to check")
 
     p = sub.add_parser(
+        "library-manifest",
+        help="write a daily library manifest TSV from a library dump",
+    )
+    p.add_argument("--library", required=True, help="library JSON dump")
+    p.add_argument("--out", required=True, help="manifest TSV to write")
+
+    p = sub.add_parser(
         "record-history",
         help="append picked IDs to a Rediscover history file (after apply)",
     )
@@ -253,6 +264,12 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "validate-backup":
         ids = validate_backup_file(args.backup)
         print(f"Backup valid: {len(ids)} IDs.")
+        return 0
+
+    if args.command == "library-manifest":
+        tracks = load_library(args.library)
+        count = write_library_manifest(tracks, args.out)
+        print(f"Library manifest: {count} tracks written to {args.out}.")
         return 0
 
     if args.command == "audit":

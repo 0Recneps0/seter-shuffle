@@ -1,8 +1,47 @@
 # SeTeR Shuffle, Python experimental core
 
 Experimental only. Stable v2.6 (AppleScript) is untouched, and the daily
-launchd run still uses it. This Python version is opt-in: nothing here
-installs itself, schedules itself, or replaces the stable install.
+launchd run still uses it, unless and until Spencer approves the exact
+stable change list. This Python version is opt-in: nothing here
+installs itself, schedules itself, or replaces the stable install
+on its own. The stable-preparation package (installer, daily run,
+migration) is built on this branch but has never run on a Mac; see
+"Stable preparation (proposed v3.0)" below and the changelog audit.
+
+## Stable preparation (proposed v3.0, NOT a stable release)
+
+Proposed stable name: v3.0. Proposed daily time: 8:00 AM, matching
+v2.6. Neither is a decision until Spencer approves the exact change
+list; the installer records `3.0-proposed`, and no v3.0 tag or
+release exists.
+
+```bash
+bash setup-python.sh                     # install + 8:00 AM daily run
+bash setup-python.sh --no-daily          # install only, no schedule
+bash setup-python.sh --hour 9            # install + daily run at 9:00 AM
+bash setup-python.sh --uninstall         # remove Python schedule + install dir
+bash migrate-to-python.sh --dry-run      # print the migration plan, change nothing
+bash migrate-to-python.sh --confirm      # disable v2.6 daily job, enable Python job
+bash migrate-to-python.sh --rollback     # restore the v2.6 daily job
+```
+
+Installer facts: local files only, nothing downloaded; new install
+dir `~/Documents/SeTeRShufflePython`; new plist label
+`com.seter.python.daily`; the daily hour lives in exactly one place
+(`DAILY_HOUR`/`DAILY_MINUTE` at the top of `setup-python.sh`).
+Daily facts: `daily.sh` writes a daily library manifest (kept 14
+days), dedupes, shuffles, then refreshes "SeTeR Rediscover"; it
+REFUSES without fresh (<24h) per-target mappings for both targets
+and never auto-probes, so a scheduled daily run fails closed on
+any day without a manual sortprobe. That is the main remaining
+stable gap, stated plainly in the changelog audit table, which
+also lists the other gaps (no menu app, no description stamp,
+logs instead of notifications, CLI-only library size choice).
+Migration facts: v2.6 script, backups, apps, and history are never
+deleted or edited; only the v2.6 plist is renamed to
+`.disabled-<timestamp>` on `--confirm`, and `--rollback`
+restores it. Rediscover history carries over as-is because the
+Python run reads the same file.
 
 ## Architecture: what each part does
 

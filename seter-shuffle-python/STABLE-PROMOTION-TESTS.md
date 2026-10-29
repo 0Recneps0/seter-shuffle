@@ -260,23 +260,87 @@ something to work around by running the old code or the
 retired fix script (never run `seter-fix-playlist.applescript`
 on any playlist).
 
-## Stable-promotion gaps NOT resolved by this release
+## Stable-preparation state (built on experimental, NOT yet proven on a Mac)
 
-These must be resolved before any stable promotion, and none
-of them is fixed by exp-2026-10-29.3:
+The following gaps are now BUILT on the experimental branch but
+still UNPROVEN on a Mac, so they do not yet clear promotion.
+Nothing here merges to main, and no stable release or tag exists
+until Spencer approves the exact change list.
 
-- No installer for the Python build. `run.sh` only runs from
-  inside the unzipped folder; it copies nothing anywhere and
-  schedules nothing. Stable v2.6 ships `setup.sh` and a daily
-  launchd run.
-- No launchd daily schedule for the Python build, so there is
-  no daily shuffle/Rediscover run to replace v2.6's 8am run.
-- Version naming is undecided (v3.0, v2.7, or another number
-  for the Python build as stable). Do not pick one by
-  accident in a release title.
-- Migration from the v2.6 AppleScript daily run is undesigned:
-  what happens to the existing launchd job, the stable
-  script, and the `SeTeRShuffleTemp` workflow on the Mac.
+- Installer: BUILT (`setup-python.sh`, local-copy only, new
+  install dir `~/Documents/SeTeRShufflePython`, version marker
+  `3.0-proposed`, idempotent, refuses a different version
+  without `--force`, never touches the v2.6 install or job).
+  UNPROVEN: no installer run on a Mac yet.
+- Launchd daily schedule: BUILT (`daily.sh` + plist
+  `com.seter.python.daily`, proposed 8:00 AM matching v2.6,
+  time in one place as `DAILY_HOUR`/`DAILY_MINUTE` in
+  `setup-python.sh`). UNPROVEN: no launchd daily run on a Mac
+  yet, and the daily run refuses without fresh (<24h)
+  per-target mappings for both the daily playlist and "SeTeR
+  Rediscover" (it never auto-probes). That mapping-freshness
+  requirement is a real stable gap: v2.6 daily needed no probe.
+- Version naming: PROPOSED v3.0 (major bump: AppleScript to
+  Python, and the mapping model changed). Recorded as a
+  proposal in the installer (`3.0-proposed`); no v3.0 tag or
+  release exists. Spencer's approval of the exact change list
+  is still required before any stable publish.
+- Migration: BUILT (`migrate-to-python.sh`: `--dry-run` default
+  changes nothing, `--confirm` disables `com.seter.daily` by
+  renaming its plist to `.disabled-<timestamp>` and loads the
+  Python job, `--rollback` restores it; v2.6 script, backups,
+  apps, and history are never deleted or edited; Rediscover
+  history carries over as-is). UNPROVEN: no migration or
+  rollback run on a Mac yet.
 - Stable v2.6 stays intact as the fallback throughout. A
   stable promotion must leave a working way back to v2.6,
-  not overwrite it in place.
+  not overwrite it in place. This package preserves that:
+  separate install dir, separate plist label, rollback script.
+
+## Stable-prep Mac steps (run AFTER the throwaway checklist above, before any stable publish)
+
+1. Install only, no schedule, from the latest experimental
+   folder: `bash setup-python.sh --no-daily`. Pass: files land
+   in `~/Documents/SeTeRShufflePython`, version marker reads
+   `3.0-proposed`, and the v2.6 install and `com.seter.daily`
+   are untouched.
+2. Re-run the installer: pass is idempotent (same files, same
+   marker, no error). Then schedule: `bash setup-python.sh`
+   (8:00 AM). Pass: `com.seter.python.daily.plist` exists with
+   Hour 8, and `com.seter.daily.plist` still exists untouched.
+3. Daily dry check: `bash daily.sh "My New Sandwich Recipe"`
+   with no fresh mappings must refuse with a sortprobe
+   instruction and change nothing. Then sortprobe both targets
+   (daily playlist and "SeTeR Rediscover") on throwaways set
+   to each target's sort, and run `daily.sh` by hand once:
+   pass is manifest written, dedupe no-op or clean, shuffle
+   APPLY OK, rediscover APPLY OK, history recorded.
+4. Migration dry-run: `bash migrate-to-python.sh --dry-run`
+   must change nothing. Only with Spencer's explicit approval:
+   `--confirm`, then verify the v2.6 job is disabled (plist
+   renamed to `.disabled-*`) and the Python job is loaded.
+   Then `--rollback` must restore the v2.6 job exactly, and a
+   second `--confirm` must switch back. Do not leave the Mac
+   migrated at the end of testing unless Spencer says so.
+5. Remaining throwaway checklist items still owed before any
+   stable publish: throwaway shuffle+undo, dedupe on a doubled
+   throwaway, negatives, flow undo (see the record table
+   above). A successful installer/daily/migration test does
+   NOT replace those.
+
+## Stable-promotion gaps STILL open (not fixed by this prep package)
+
+- Daily mapping freshness: the Python daily run is not a
+  drop-in replacement for v2.6's daily run until the mapping
+  rule is settled (manual sortprobe within 24 hours, or a
+  deliberately designed alternative). Do not ship a daily job
+  that silently fails every morning and call it stable.
+- No interactive menu app or one-click app (Terminal only),
+  no playlist description stamp, no notifications (logs only),
+  and no run.sh size choice for library shuffles (CLI
+  `--size` only). See the changelog audit table for the full
+  list; do not claim parity where it does not exist.
+- Main-playlist state on the Mac (dedupe method/count)
+  was still unconfirmed when this package was built; a daily
+  auto run needs a clean per-target mapping for the main
+  playlist, and sortprobe refuses a doubled playlist.

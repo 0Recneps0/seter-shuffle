@@ -478,6 +478,25 @@ This fix is UNPROVEN on a Mac like every other bridge change:
 it needs a Mac run against an empty playlist (undo or
 restore on a fresh empty throwaway) before it is trusted.
 
+## Failure mode 37: a scheduled daily run with no fresh mapping (stable-prep gap, not a bridge bug)
+
+The Python daily run (`daily.sh`, plist `com.seter.python.daily`,
+proposed 8:00 AM) needs fresh (<24h) per-target mappings for both
+its targets (the daily playlist and "SeTeR Rediscover"). Stable
+v2.6's daily run needed no such step: it ran unattended every
+morning. If the Python daily job runs on a day without a manual
+sortprobe in the previous 24 hours, it refuses before touching
+Music and logs which sortprobe to run by hand. That refusal is
+correct under the current rules, but it means the Python daily
+job is NOT yet a drop-in replacement for v2.6's daily job.
+`daily.sh` deliberately never auto-probes: an automated probe
+would measure a throwaway whose sort nobody just verified, which
+is exactly the mapping-transfer failure of 2026-10-29 (mode 35).
+Do not "fix" this gap by auto-probing or by borrowing another
+target's mapping; settling the mapping rule is a decision for
+Spencer before any stable publish, and the daily job must keep
+failing closed until then.
+
 ## What the bridge is allowed to do
 
 - Modify exactly one regular user playlist, resolved by name, and

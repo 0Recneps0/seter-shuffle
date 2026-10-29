@@ -4,7 +4,108 @@ This file tracks the Python experimental build only. Stable releases
 (v2.6 is current stable) are untouched by anything here, and so is the
 AppleScript experimental build. The Python version is published, if at
 all, as a prerelease, never as stable, and is never auto-installed on
-a Mac. The daily stable run stays AppleScript.
+a Mac. The daily stable run stays AppleScript until Spencer approves
+the exact stable change list for the proposed v3.0 promotion; this
+entry is preparation for that decision, not the promotion itself.
+
+## 2026-10-29 — Stable-preparation package (installer, daily run, migration, functionality audit)
+
+**What this build adds, on branch experimental only:** a macOS
+installer (`setup-python.sh`), a daily runner (`daily.sh`), a
+migration/rollback script (`migrate-to-python.sh`), a daily
+library-manifest writer (`seter_shuffle/manifest.py` plus the
+`library-manifest` CLI command), and a full v2.6 functionality
+audit (below). No merge to main, no stable release, no tag was
+created for this work, and nothing ran on Spencer's Mac.
+
+**Installer usage (from the unzipped build folder, macOS only):**
+
+```bash
+bash setup-python.sh                     # install + 8:00 AM daily run
+bash setup-python.sh --no-daily          # install only, no schedule
+bash setup-python.sh --hour 9            # install + daily run at 9:00 AM
+bash setup-python.sh --uninstall         # remove Python schedule + install dir
+```
+
+The installer copies local files only (nothing is downloaded),
+installs to a NEW directory (`~/Documents/SeTeRShufflePython`),
+writes a NEW launchd plist (`com.seter.python.daily`), records
+the version marker `3.0-proposed`, is idempotent for the same
+version, and REFUSES a different installed version unless
+`--force` is given. It never touches the v2.6 install, its
+backups, its history, or its `com.seter.daily` job.
+
+**Daily run (proposed: 8:00 AM, matching v2.6):** the time lives
+in exactly one place, `DAILY_HOUR`/`DAILY_MINUTE` at the top of
+`setup-python.sh`; the plist is generated from those variables.
+`daily.sh` saves a once-a-day library manifest (kept 14 days),
+dedupes the daily playlist (no-op when clean), shuffles it in
+place, then refreshes "SeTeR Rediscover". It NEVER auto-probes
+and NEVER borrows another target's mapping: it refuses before
+touching Music unless BOTH the daily playlist and "SeTeR
+Rediscover" have fresh (<24h) per-target mappings. That is a
+known stable gap (see below): a scheduled daily run fails closed
+on any day without a manual sortprobe in the previous 24 hours.
+
+**Migration and rollback (explicit only):**
+
+```bash
+bash migrate-to-python.sh --dry-run   # default: print the plan, change nothing
+bash migrate-to-python.sh --confirm   # disable v2.6 daily job, enable Python job
+bash migrate-to-python.sh --rollback  # restore the v2.6 daily job
+```
+
+`--confirm` unloads `com.seter.daily` and renames its plist to
+`com.seter.daily.plist.disabled-<timestamp>`; it never deletes,
+moves, or edits the v2.6 script, backups, apps, or history.
+Rediscover history (`~/Documents/SeTeRShuffle/rediscover-history.tsv`)
+is read as-is by the Python run, so it carries over with no copy.
+Rollback restores the newest disabled v2.6 plist and leaves the
+Python install in place.
+
+**Version naming:** the proposed stable name is v3.0 (major
+bump: the implementation language changed from AppleScript to
+Python, and the mapping model changed to per-target sort-matched
+mappings). The installer marks installs `3.0-proposed` to make
+clear this is not yet a stable release. No v3.0 tag or release
+exists, and none is created until Spencer approves the exact
+change list.
+
+**Full functionality audit — v2.6 daily behavior vs Python:**
+
+| v2.6 behavior | Python equivalent | Status |
+|---|---|---|
+| True-random Fisher-Yates shuffle, artist spacing | `shuffle` core, spacing 2, featuring = same artist | Parity (unit-tested) |
+| Rediscover scored picks, preview, 14-day cooldown, max 3/artist, stale 60d, disliked/unchecked/skip-heavy exclusions | `rediscover` / `rediscover-preview`, same settings, history only after successful apply | Parity (unit-tested) |
+| Remove duplicates (daily, and menu) | `dedupe`, first-occurrence order, no-op when clean | Parity, except: v2.6 logs each duplicate removed by name; Python logs counts only |
+| Undo last shuffle/dedupe | `undo` / `restore` from per-run main backup + `.prev` chain | Parity, stronger backups; extra gate: undo requires a fresh per-target mapping |
+| Backup snapshots before any change, restore on failure | Per-run snapshots, installed as main backup only after verified apply | Stronger than v2.6 (v2.6 overwrote one backup file per run) |
+| Daily library manifest, kept 14 days | `library-manifest` TSV (persistent_id, artist, album, title), written by `daily.sh`, pruned at 14 days | Parity, new in this build |
+| Daily run at 8:00 AM: dedupe + shuffle + Rediscover, no dialogs | `daily.sh` + `com.seter.python.daily` plist at 8:00 AM | Built, UNPROVEN on a Mac; plus the mapping-freshness gap below |
+| Flow and flowPreview | `flow` / `flowPreview`, 50 songs, energy arc | New functionality (Flow was experimental, not v2.6 stable); proven once on a Mac for SeTeR Flow (2026-10-29, .5); energy still flat (47-50) for gospel-heavy libraries, a tuning weakness, not a parity gap |
+| Interactive menu app and one-click sandwich app | None | GAP, plainly: Python runs from Terminal only; no .app bundles, no menu, no dialogs |
+| Playlist description stamp ("Last reshuffled:") | None | GAP: Python does not stamp playlist descriptions |
+| macOS notifications/dialogs on success/failure | Logs only (`run.log`, `daily.log`) | GAP by design: logs replace dialogs; no notification is sent |
+| Library shuffle with size choice (100/250/500/1000/all into "SeTeR Shuffle") | CLI `--size` exists, but `run.sh shuffle` (no playlist) always uses the whole library | PARTIAL GAP: size choice is CLI-only, not wired into run.sh |
+| Daily run with no manual step | None | GAP, the important one: v2.6 daily needed no probe; the Python daily run refuses without fresh (<24h) per-target mappings for both targets, and `daily.sh` never auto-probes. Until that rule changes, a scheduled daily run is not a drop-in replacement for v2.6's daily run |
+
+**Tests here:** full suite re-run after the final code state
+(see the release notes for the count); shell syntax checked
+for `setup-python.sh`, `daily.sh`, `migrate-to-python.sh`,
+`run.sh`, and `check-python.sh`. New tests
+(`tests/test_stable_prep.py`) cover installer idempotency,
+version refusal/force, plist generation and hour override,
+migration dry-run/confirm/rollback file effects, daily mapping
+pre-checks (missing and stale), daily dry-run, and the manifest
+writer (columns, rows, CLI).
+
+**Still unproven on a Mac, plainly:** the installer run, the
+launchd daily run, migration and rollback, and the remaining
+throwaway checklist items (throwaway shuffle+undo, dedupe on a
+doubled throwaway, negatives, flow undo). The installer,
+daily.sh, and migration script have never executed on a Mac;
+their tests here prove shell logic with override directories,
+not macOS launchd, osascript, or Music behavior.
 
 ## 2026-10-29 — Per-target mapping guard and undo -1728 fallback (.5, focused fix for the two 15:38 PT Flow failures)
 
