@@ -35,7 +35,10 @@ REFUSES without fresh (<48h) per-target mappings for both targets
 and never auto-probes, so an evening sortprobe covers the next
 two mornings' 8am runs, and a run without a probe in the previous
 48 hours fails closed. The former stable-prep gaps are closed in
-the drop-in package: `./run.sh menu` (Terminal menu), a
+the drop-in package: `./run.sh menu` (Terminal menu; it
+pre-checks the target's mapping and refuses before any dump
+when none is recorded, and a blank size no longer crashes on
+macOS bash 3.2), a
 "Last reshuffled" playlist description stamp after verified
 shuffle/flow applies (best-effort, never fails the apply),
 macOS notifications on success and failure, `./run.sh shuffle

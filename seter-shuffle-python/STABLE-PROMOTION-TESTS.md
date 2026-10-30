@@ -344,6 +344,12 @@ until Spencer approves the exact change list.
 1. Menu: `./run.sh menu`, choose shuffle on a throwaway.
    Pass: the mapping-status line prints before the build, and
    the build applies (or refuses cleanly without a mapping).
+   Menu blank-size step (mode 39 regression): choose shuffle
+   on a throwaway with a blank size. Pass: no unbound-variable
+   error, the shuffle computes and applies. Menu no-mapping
+   step: choose shuffle on a target with no mapping recorded.
+   Pass: the menu refuses with the sortprobe command BEFORE
+   any dump, and returns to the menu.
 2. Stamp: after a throwaway shuffle or flow, check the
    playlist description in Music. Pass: it reads
    "Last reshuffled: <date/time>"; if Music exposes no

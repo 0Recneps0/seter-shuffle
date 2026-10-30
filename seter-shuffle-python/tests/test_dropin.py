@@ -198,7 +198,15 @@ class NotificationTests(unittest.TestCase):
 
 class SizeTests(unittest.TestCase):
     def test_shuffle_size_wiring_in_run(self):
-        self.assertIn('shuffle_size_args=(--size "$SHUFFLE_SIZE")', RUN_TEXT)
+        # Mode 39: the old shuffle_size_args array died under
+        # bash 3.2 set -u on every blank-size shuffle, so size
+        # is now spelled out branch by branch, never via an
+        # array that can be empty. The flag itself is unchanged.
+        # (The name still appears in the explanatory comment;
+        # assert on code forms, not the comment.)
+        self.assertNotIn("shuffle_size_args=", RUN_TEXT)
+        self.assertNotIn("shuffle_size_args[@]", RUN_TEXT)
+        self.assertIn('--size "$SHUFFLE_SIZE"', RUN_TEXT)
         self.assertIn("SETER_SHUFFLE_SIZE", RUN_TEXT)
         self.assertIn("100|250|500|1000|all", RUN_TEXT)
 

@@ -8,6 +8,58 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — Menu bug fix (bash 3.2 empty-array crash, pre-dump mapping gate)
+
+Spencer's Mac paste, 17:01 PT, from the .6 folder: `./run.sh
+menu`, choice 1 Shuffle, playlist "My New Sandwich Recipe",
+size blank (all). Dump playlist succeeded (1612 songs), then
+run.sh died with an unbound-variable error at the shuffle
+compute step, before any compute or apply. No playlist change
+happened; the run aborted cleanly but uselessly, after a
+wasted dump.
+
+**Root cause, proven not guessed.** macOS ships bash 3.2,
+where expanding an empty array under `set -u` is an
+unbound-variable error, unlike bash 5 on Linux where it
+expands to nothing. The shuffle path built an empty size
+array for a blank size and then expanded it, and the menu
+path had the same shape (a blank playlist plus a blank size
+also meant an empty menu argument array). The bug was
+invisible here because this machine runs bash 5.
+
+**What changed.** Both arrays are gone. The shuffle compute
+block now spells out its full argument list branch by branch
+(blank/all passes no size flag; a set size passes exactly
+one), and the menu shuffle dispatch does the same for its
+four playlist/size combinations. The only array expansion
+left in run.sh is apply_args, which is always assigned
+exactly seven elements before use. Daily, setup, and
+migration scripts were audited for the same pattern and
+have no array expansions. An existing drop-in test
+assertion that named the old array variable was updated to
+the new branch spelling; nothing was weakened.
+
+**Related menu gap, fixed in the same build.** The same
+paste showed the menu printing "mapping status: none
+recorded" and then dumping anyway, because the mapping gate
+only fired at apply time. The menu now pre-checks with
+mapping_ready_for before invoking any build: a missing,
+stale (>48h), non-forward/reversed, or sort-label-less
+mapping refuses with the exact sortprobe command and the
+menu loops back, before any dump. Flow preview and audit
+need no mapping and are unchanged. The non-interactive
+dedupe refusal in the same paste (1612 entries / 806
+unique, then GATE FAILED on the missing mapping, no change
+applied) was correct and is unchanged; non-interactive
+paths still dump first and refuse at apply time.
+
+**Still unproven on a Mac, plainly.** This build has never
+run on a Mac: the bash 3.2 fix is reasoned from the macOS
+bash version and the exact pasted error, not observed on
+bash 3.2 here, and the menu pre-check needs a Mac run
+(menu shuffle with a blank size, and menu shuffle with no
+mapping must refuse before any dump).
+
 ## 2026-10-29 — Flow energy fix (arc-first walk, finer vibe score)
 
 Spencer authorized fixing Flow flatness by any offline means, on

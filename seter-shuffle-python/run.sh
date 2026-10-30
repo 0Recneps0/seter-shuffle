@@ -413,13 +413,52 @@ mapping_status_for() {
   fi
 }
 
+# Gate a menu build BEFORE any dump or apply (2026-10-29, mode 39):
+# the non-interactive paths dump first and refuse at apply time,
+# which is safe (nothing changes) but wasteful and confusing in
+# the menu, where the user has already been told the mapping is
+# missing. mapping_ready_for returns 0 only for a fresh (<48h),
+# per-target, forward/reversed mapping with a sort label; anything
+# else prints the exact sortprobe command and returns 1, and the
+# menu then loops back without invoking the build at all.
+mapping_ready_for() {
+  local target="$1" map_file mapping sort_label ts now age
+  mapping_status_for "$target"
+  map_file="$(mapping_file_for "$target")"
+  if [ ! -f "$map_file" ]; then
+    logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+    return 1
+  fi
+  mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+  sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
+  ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+  now="$(date +%s)"
+  case "$mapping" in
+    forward|reversed) ;;
+    *) logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe"; return 1 ;;
+  esac
+  case "$sort_label" in
+    '') logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label"; return 1 ;;
+  esac
+  case "$ts" in
+    ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1 ;;
+  esac
+  age=$((now - ts))
+  if [ "$age" -gt 172800 ]; then
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours; re-run sortprobe so the mapping matches the target's current sort"
+    return 1
+  fi
+  return 0
+}
+
 # Interactive menu (Terminal only, matching v2.6's interactive
 # options; there is no .app bundle in this build). Every choice
 # re-invokes run.sh as a fresh process, so every gate in the
 # non-interactive paths applies unchanged: a build still refuses
 # without a fresh per-target mapping, still validates its order,
-# still snapshots and verifies. The menu only adds prompts and a
-# mapping-status line before the build it is about to run; it
+# still snapshots and verifies. The menu pre-checks the mapping
+# with mapping_ready_for before invoking any build, so a missing
+# or stale mapping refuses before any dump, not after it; it
 # never probes, never picks a mapping, and never overrides a
 # refusal. Playlist names may contain spaces; size is the
 # documented 100/250/500/1000/all choice, blank for all.
@@ -432,34 +471,44 @@ if [ "$CMD" = "menu" ]; then
       1)
         printf 'Playlist (blank for SeTeR Shuffle): '
         read -r pl || exit 0
-        if [ -n "$pl" ]; then mapping_status_for "$pl"; else mapping_status_for "SeTeR Shuffle"; fi
+        if [ -n "$pl" ]; then menu_target="$pl"; else menu_target="SeTeR Shuffle"; fi
+        mapping_ready_for "$menu_target" || continue
         printf 'Size (100/250/500/1000/all, blank for all): '
         read -r sz || exit 0
-        menu_args=()
-        [ -n "$pl" ] && menu_args+=("$pl")
-        [ -n "$sz" ] && menu_args+=("$sz")
-        bash "$ROOT/run.sh" shuffle "${menu_args[@]}" || notify "SeTeR Shuffle: shuffle failed"
+        # No array here, for the same bash 3.2 reason as the
+        # shuffle-size fix below: an empty array under set -u
+        # is an unbound-variable error on macOS /bin/bash, and
+        # a blank playlist and a blank size are both legal.
+        if [ -n "$pl" ] && [ -n "$sz" ]; then
+          bash "$ROOT/run.sh" shuffle "$pl" "$sz" || notify "SeTeR Shuffle: shuffle failed"
+        elif [ -n "$pl" ]; then
+          bash "$ROOT/run.sh" shuffle "$pl" || notify "SeTeR Shuffle: shuffle failed"
+        elif [ -n "$sz" ]; then
+          bash "$ROOT/run.sh" shuffle "$sz" || notify "SeTeR Shuffle: shuffle failed"
+        else
+          bash "$ROOT/run.sh" shuffle || notify "SeTeR Shuffle: shuffle failed"
+        fi
         ;;
       2)
-        mapping_status_for "SeTeR Rediscover"
+        mapping_ready_for "SeTeR Rediscover" || continue
         bash "$ROOT/run.sh" rediscover || notify "SeTeR Shuffle: rediscover failed"
         ;;
       3)
         printf 'Playlist: '
         read -r pl || exit 0
         [ -n "$pl" ] || { echo "dedupe needs a playlist name."; continue; }
-        mapping_status_for "$pl"
+        mapping_ready_for "$pl" || continue
         bash "$ROOT/run.sh" dedupe "$pl" || notify "SeTeR Shuffle: dedupe failed"
         ;;
       4)
         printf 'Playlist: '
         read -r pl || exit 0
         [ -n "$pl" ] || { echo "undo needs a playlist name."; continue; }
-        mapping_status_for "$pl"
+        mapping_ready_for "$pl" || continue
         bash "$ROOT/run.sh" undo "$pl" || notify "SeTeR Shuffle: undo failed"
         ;;
       5)
-        mapping_status_for "SeTeR Flow"
+        mapping_ready_for "SeTeR Flow" || continue
         bash "$ROOT/run.sh" flow || notify "SeTeR Shuffle: flow failed"
         ;;
       6)
@@ -791,14 +840,27 @@ case "$CMD" in
     # playlist entry, and those entries must be preserved. A
     # whole-library shuffle never passes it, so a repeated ID in a
     # library dump still fails closed.
-    shuffle_size_args=()
+    # Bash 3.2 (macOS /bin/bash) under set -u treats expanding an
+    # empty array as an unbound variable, so the old code died
+    # here (2026-10-29, mode 39) on every blank-size shuffle:
+    # dump succeeded, then an unbound-variable error before any
+    # compute or apply, with no playlist change. There is
+    # deliberately no array in this block: each
+    # branch spells out its full argument list, so blank/all
+    # expands to nothing and a set size passes exactly one
+    # --size flag. (A sized in-place shuffle is already refused
+    # before the dump, so the size+source branch below is
+    # unreachable in practice; it is kept for safety, not use.)
     if [ -n "$SHUFFLE_SIZE" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
-      shuffle_size_args=(--size "$SHUFFLE_SIZE")
-    fi
-    if [ -n "${SOURCE_PLAYLIST:-}" ]; then
-      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --allow-duplicates "${shuffle_size_args[@]}" || exit 1
+      if [ -n "${SOURCE_PLAYLIST:-}" ]; then
+        step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --allow-duplicates --size "$SHUFFLE_SIZE" || exit 1
+      else
+        step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --size "$SHUFFLE_SIZE" || exit 1
+      fi
+    elif [ -n "${SOURCE_PLAYLIST:-}" ]; then
+      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --allow-duplicates || exit 1
     else
-      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" "${shuffle_size_args[@]}" || exit 1
+      step "compute shuffle order" "$PY" -m seter_shuffle.cli shuffle --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" || exit 1
     fi
     apply_order "$TARGET_PLAYLIST" "shuffle"
     log "shuffle done"
