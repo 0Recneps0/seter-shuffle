@@ -573,10 +573,60 @@ Safety properties, unchanged except as noted:
   probes" rule is superseded: it auto-probes, and never
   overrides a refusal or borrows another target's mapping.
 
-UNPROVEN ON A MAC: a self-probe on a real playlist, the
-daily auto-probe on a Mac, the menu/direct auto-probe on
-a Mac, and the doubled-playlist dedupe
-deadlock path. The sort-probe AppleScript's own "other"
+## Failure mode 40: trial-dedupe breaks the doubled-playlist deadlock (2026-10-29, proven on the Mac)
+
+On 2026-10-29 18:44 PT Spencer ran the v3.0.3 menu on the
+real main playlist and the auto self-probe refused on
+duplicate entries (1612 entries, 806 unique), target
+untouched, no dump or apply. Dedupe needs a mapping, and
+the probe cannot measure one on a doubled playlist: that
+is the deadlock mode 39 left open, and trial-dedupe
+(v3.0.4) breaks it WITHOUT weakening the probe.
+
+The distinction matters and must not be blurred later:
+the probe classifies a sort from a rotation WITHOUT
+changing the target's intended order, so a duplicate entry
+makes its read-back ambiguous and it must refuse. Dedupe
+changes the target to a KNOWN order (first occurrence of
+each song) and checks the result, so its mapping oracle
+is verify-after on that actual desired order, not a
+rotation. Trial-dedupe therefore tries the deduped order
+under mapping forward, verifies the list read against it,
+and on failure restores from the per-run snapshot and
+tries reversed. The first mapping that verifies wins and
+is recorded as a trial-dedupe mapping (SORT label says
+exactly that), so the next build reuses it directly. If
+neither verifies (for example an "other" sort like Title
+ascending), the playlist is restored to its pre-dedupe
+order, no mapping is recorded, and dedupe exits non-zero.
+If an attempt's restore itself fails critically
+(playlist possibly partial), the trial stops immediately
+and does NOT try the other mapping on top of a partial
+state; the per-run snapshot is named in the log.
+
+What trial-dedupe does NOT do, by design:
+- It never calls the rotation probe, and it never changes
+  the probe's duplicate refusal: sortprobe/selfprobe on a
+  doubled playlist still refuse and change nothing.
+- It never borrows another target's mapping, and it never
+  flips on failure: a failed verify restores, then the
+  other mapping is tried as a fresh, verified attempt,
+  not as a silent correction of the first.
+- A fresh mapping, when one exists, is used directly with
+  no trial. A clean playlist applies nothing and needs no
+  mapping at all.
+- Menu dedupe (choice 3) and direct dedupe use this path;
+  the daily run attempts trial-dedupe only when the daily
+  playlist's probe refused on duplicate entries specifically
+  (the probe output wording is checked, not just the exit
+  code), and a failed trial-dedupe stops the daily run
+  before shuffle/rediscover. Any other probe failure still
+  stops the daily run immediately, with no dedupe attempt.
+
+UNPROVEN ON A MAC: trial-dedupe on the real doubled
+playlist, the mapping recorded by a successful trial, and
+a subsequent shuffle after trial-dedupe. The sort-probe
+AppleScript's own "other"
 error text still says to set "the throwaway sort"; for a
 self-probe that wording is stale (there is no throwaway),
 and run.sh's failure log carries the corrected meaning.

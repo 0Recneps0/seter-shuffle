@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0.3)
+# SeTeR Shuffle, Python core (v3.0.4)
 
-This tree is the v3.0.3 stable tree on the main branch. The v2.6
+This tree is the v3.0.4 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.3)
+## One-click install or update (v3.0.4)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.3, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.4, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -27,8 +27,9 @@ probe chore is gone; the mapping gate stays: a failed
 self-probe fails the whole daily run closed before any build,
 and an "other" mapping still aborts. A self-probe on a
 playlist with duplicate entries refuses and changes nothing,
-so a doubled playlist must be deduped by hand (or under a
-mapping obtained another way) before it can be auto-probed.
+so a doubled playlist cannot be auto-probed; since v3.0.4
+it is cleaned by trial-dedupe instead (see NEW IN v3.0.4
+below), which verifies its own mapping without probing.
 You can also self-probe by hand any time:
 `./run.sh selfprobe "My New Sandwich Recipe"`.
 
@@ -42,10 +43,28 @@ A failed probe aborts before any dump or apply, with the
 probe error named. A doubled playlist still fails closed
 at the probe (duplicate refusal unchanged) until deduped.
 
-## Stable preparation (v3.0.3)
+NEW IN v3.0.4: trial-dedupe breaks that deadlock. Dedupe
+no longer probes first: a clean playlist applies nothing
+and needs no mapping, a fresh mapping is used directly,
+and otherwise dedupe tries its known deduped order
+(first occurrence of each song) under mapping forward,
+verifies the list read against it, and on failure
+restores from the per-run snapshot and tries reversed.
+The first mapping that verifies wins and is recorded, so
+the next build reuses it; if neither verifies, the
+playlist is restored to its pre-dedupe order and no
+mapping is recorded. The probe itself is untouched by
+this: sortprobe/selfprobe on a doubled playlist still
+refuse, because the probe's oracle is a rotation
+classification, while dedupe's oracle is verify-after on
+the actual desired order. The daily run attempts
+trial-dedupe only when the daily playlist's probe refused
+on duplicate entries specifically.
 
-Stable name: v3.0.3. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.3`. No tag or release is created by
+## Stable preparation (v3.0.4)
+
+Stable name: v3.0.4. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.4`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash

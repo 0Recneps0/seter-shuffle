@@ -24,7 +24,9 @@ bridge, exactly as in test_selfprobe.py):
     it aborts before any dump or apply.
   * The menu section contains ensure_mapping_for for every
     build target and no bare mapping_ready_for dispatch, and
-    the pre-dump block ensures shuffle/dedupe/flow/rediscover
+    the pre-dump block ensures shuffle/flow/rediscover
+    (dedupe is exempt since v3.0.4: it trial-dedupes instead,
+    because a doubled playlist fails the self-probe)
     (and undo/restore ensure before their mapping gate).
   * The duplicate refusal in bridge/sort-probe.applescript is
     unchanged, and no new bash 3.2 empty-array expansion was
@@ -285,13 +287,26 @@ class AutoProbeStructuralTests(unittest.TestCase):
             self.assertIn(f"ensure_mapping_for {target}", menu)
         self.assertNotIn("mapping_ready_for ", menu)
         self.assertNotIn("never probes", menu)
+        # v3.0.4: the menu dedupe choice (choice 3) is the one
+        # exception: dedupe handles its own mapping (trial), so
+        # it must not call ensure_mapping_for first, or a
+        # doubled playlist would deadlock the menu at the probe.
+        dedupe_choice = menu.split("      3)")[1].split("      4)")[0]
+        self.assertIn("dedupe", dedupe_choice)
+        self.assertNotIn("ensure_mapping_for", dedupe_choice)
 
     def test_pre_dump_ensures_every_build_target(self):
         block = RUN_TEXT.split("# Automatic self-probe before any dump")[1].split("# Dump:")[0]
         self.assertIn('ensure_mapping_for "${SHUFFLE_PLAYLIST:-SeTeR Shuffle}"', block)
-        self.assertIn('ensure_mapping_for "$2"', block)
         self.assertIn('ensure_mapping_for "SeTeR Flow"', block)
         self.assertIn('ensure_mapping_for "SeTeR Rediscover"', block)
+        # v3.0.4: dedupe is exempt from the pre-dump ensure. It
+        # must still be dispatched (usage check) but must not
+        # probe first: the dedupe case trial-dedupes instead.
+        dedupe_line = [line for line in block.splitlines() if line.strip().startswith("dedupe)")]
+        self.assertTrue(dedupe_line)
+        self.assertNotIn("ensure_mapping_for", "\n".join(dedupe_line))
+        self.assertIn("trial", block.lower())
 
     def test_undo_restore_ensure_before_mapping_gate(self):
         for mode in ("undo", "restore"):

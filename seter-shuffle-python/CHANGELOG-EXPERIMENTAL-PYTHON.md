@@ -8,6 +8,62 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — v3.0.4: trial-dedupe breaks the doubled-playlist deadlock (NOT yet a published release)
+
+On 2026-10-29 18:44 PT Spencer ran the v3.0.3 menu on the
+real main playlist and the auto self-probe refused on
+duplicate entries (1612 entries, 806 unique), target
+untouched, no dump or apply. Dedupe needs a mapping, and
+the probe cannot measure one on a doubled playlist. That
+deadlock is what this release breaks, without weakening
+the probe.
+
+**What changed.** `./run.sh dedupe` (menu choice 3 and
+direct) no longer probes first. A clean playlist applies
+nothing and needs no mapping. A fresh mapping, when one
+exists, is used directly with no trial. Otherwise dedupe
+trial-applies its known desired order (first occurrence
+of each song in list-read order, with one "Removed
+duplicate" line per removed entry as before): forward
+first, verify the list read against the deduped order,
+and on failure restore from the per-run snapshot and try
+reversed. The first mapping that verifies wins and is
+recorded as a trial-dedupe mapping, so the next build
+reuses it directly. If neither verifies, the playlist is
+restored to its pre-dedupe order, no mapping is recorded,
+and dedupe exits non-zero. If an attempt's restore itself
+fails critically (playlist possibly partial), the trial
+stops immediately and does not try the other mapping on
+top of a partial state; the per-run snapshot is named in
+the log. The daily run attempts trial-dedupe only when
+the daily playlist's probe refused on duplicate entries
+specifically (the probe output wording is checked, not
+just the exit code); any other probe failure still stops
+the daily run immediately, and a failed trial-dedupe stops
+it before shuffle/rediscover.
+
+**Snapshot/undo guarantee.** Every trial attempt writes
+its own per-run snapshot before any change (the filename
+now also carries $RANDOM, so two attempts in the same
+second cannot share a snapshot file), and the main backup
+is installed only after a verified successful dedupe, with
+the previous main backup preserved as .prev. Undo after a
+successful trial-dedupe therefore returns to the doubled
+pre-dedupe order.
+
+**Probe refusal, unchanged.** sortprobe/selfprobe on a
+doubled playlist still refuse and change nothing. The
+mapping oracle in trial-dedupe is verify-after on the
+actual desired deduped order, not a rotation
+classification, and this path must never be borrowed back
+into the probe.
+
+Version marker bumped to `3.0.4`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.4 one-click run, trial-dedupe
+on the real doubled playlist, the mapping recorded by a
+successful trial, and a subsequent shuffle after
+trial-dedupe.
+
 ## 2026-10-29 — v3.0.3: automatic self-probing for menu and direct builds (NOT yet a published release)
 
 v3.0.2 only auto-probed the daily run. Spencer then ran the

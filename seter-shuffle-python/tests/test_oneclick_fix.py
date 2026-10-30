@@ -84,7 +84,7 @@ class OneClickFixTest(unittest.TestCase):
             self.assertIn("ok install/update done", result.stdout)
             self.assertFalse((agents / "com.seter.daily.plist").exists())
             self.assertEqual(
-                (install / "installed-version.txt").read_text().strip(), "3.0.3"
+                (install / "installed-version.txt").read_text().strip(), "3.0.4"
             )
 
     def test_chmod_self_restores_execute_bits(self):

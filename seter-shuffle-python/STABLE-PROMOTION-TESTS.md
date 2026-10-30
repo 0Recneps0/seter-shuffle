@@ -440,6 +440,42 @@ until Spencer approves the exact change list.
    a mapping obtained another way) before it can be
    auto-probed; do not weaken the refusal to get past this.
 
+## Trial-dedupe Mac steps (v3.0.4)
+
+1. Menu dedupe on the doubled main playlist: from the
+   v3.0.4 install, open `./run.sh menu`, choice 3,
+   "My New Sandwich Recipe". Pass: no probe is attempted
+   (the log must NOT show a sort-probe duplicate refusal);
+   the dedupe tries forward, then reversed if the first
+   does not verify, and applies the first-occurrence
+   order: 1612 entries become 806 unique songs, the log
+   names each removed duplicate, the main backup holds
+   the pre-dedupe doubled order, and a trial-dedupe
+   mapping is recorded for the target.
+2. Shuffle after trial-dedupe: run a shuffle on the same
+   playlist immediately afterwards. Pass: it reuses the
+   trial-dedupe mapping directly, with no probe and no
+   trial, and applies.
+3. Failed trial on an other-sorted playlist: dedupe a
+   doubled playlist whose sort is Title ascending (or any
+   sort that is neither forward nor reversed). Pass:
+   neither mapping verifies, the playlist is restored to
+   its doubled pre-dedupe order, no mapping is recorded,
+   and no main backup is installed.
+4. Undo after trial-dedupe: run `./run.sh undo` on the
+   deduped playlist. Pass: it returns to the doubled
+   pre-dedupe order from the main backup.
+5. Daily run on a doubled daily playlist: with the daily
+   playlist doubled, run `./daily.sh` by hand. Pass: the
+   daily probe refuses on duplicates, trial-dedupe cleans
+   the playlist and records a mapping, and the daily run
+   then continues to shuffle and rediscover.
+
+Note: step 5 of the v3.0.2 section above ("doubled-playlist
+deadlock: dedupe it by hand") is SUPERSEDED by these
+steps: trial-dedupe is now the supported path, and the
+probe's duplicate refusal itself is unchanged.
+
 ## Menu and direct auto-probe Mac steps (v3.0.3)
 
 1. Menu shuffle with no mapping: open `./run.sh menu`,

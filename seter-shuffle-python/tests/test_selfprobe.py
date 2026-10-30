@@ -341,9 +341,17 @@ class SelfProbeStructuralTests(unittest.TestCase):
         text = (ROOT / "daily.sh").read_text(encoding="utf-8")
         probe_pos = text.index("auto_self_probe \"$PLAYLIST\"")
         check_pos = text.index('check_mapping "$PLAYLIST"')
-        dedupe_pos = text.index('run.sh" dedupe')
+        # v3.0.4: the FIRST dedupe in daily.sh is the trial
+        # fallback, guarded by a duplicate-only probe failure
+        # (probe_status == "2") and placed before the mapping
+        # check by design; the NORMAL dedupe step is still
+        # after the mapping check, which is what this test
+        # pins: probes before check before builds.
+        trial_pos = text.index('run.sh" dedupe')
+        self.assertIn('probe_status" = "2"', text[:trial_pos + 200])
+        normal_dedupe_pos = text.index('run.sh" dedupe', check_pos)
         self.assertLess(probe_pos, check_pos)
-        self.assertLess(check_pos, dedupe_pos)
+        self.assertLess(check_pos, normal_dedupe_pos)
         # daily.sh invokes only selfprobe, never a throwaway sortprobe.
         self.assertIn('selfprobe "$target"', text)
         self.assertNotIn('run.sh" sortprobe', text)

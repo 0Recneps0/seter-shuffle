@@ -48,16 +48,20 @@
 #   the snapshot named, recoverable via
 #   ./run.sh restore <target> <snapshot>. An "other" mapping
 #   is still an abort, never a build.
-# - DEADLOCK, STATED PLAINLY: the duplicate-entry refusal is
-#   unchanged, so a self-probe on a playlist with duplicate
-#   entries refuses and changes nothing. A currently doubled
-#   playlist (the main playlist was 1612 entries / 806 unique
-#   on 2026-10-29) therefore cannot be auto-probed until it is
-#   deduped by hand, or under a mapping obtained another way
-#   (a throwaway sortprobe, or a self-probe after a manual
-#   dedupe). The refusal is NOT weakened to work around this:
-#   a doubled playlist auto-probing itself into a dedupe would
-#   be exactly the unproven path that doubled it before.
+# - TRIAL-DEDUPE BREAKS THE OLD DEADLOCK (v3.0.4): the
+#   duplicate-entry refusal is unchanged, so a self-probe on
+#   a playlist with duplicate entries still refuses and
+#   changes nothing. But the daily run no longer stops there:
+#   when the daily playlist's probe refuses ONLY on duplicate
+#   entries (the probe output says so), the daily run attempts
+#   ./run.sh dedupe on that playlist, which trial-dedupes
+#   (forward, then reversed, verify-after as the oracle) and
+#   records the winning mapping. A probe failure for any
+#   other reason still stops the run immediately, and a failed
+#   trial-dedupe stops it before shuffle/rediscover. The
+#   Rediscover probe has no trial fallback: Rediscover is a
+#   generated playlist, and a doubled Rediscover is a manual
+#   dedupe, not a daily-run repair.
 # - Dry runs (SETER_DAILY_DRY_RUN=1, a test hook never used by
 #   launchd) do NOT run the self-probes, because a dry run
 #   changes nothing; they log the planned probes instead and
@@ -122,16 +126,30 @@ mapping_file_for() {
   printf '%s/sort-mapping-%s-%s.txt' "$STATE" "$safe" "$hash"
 }
 
-# Auto self-probe one target before the mapping check. On
-# failure, stop the whole daily run here: do not probe the
-# other target (shared snapshot file), do not build anything.
+# Auto self-probe one target before the mapping check. Return
+# codes: 0 on success; 2 when the probe refused ONLY on
+# duplicate entries (the caller may then try trial-dedupe, which
+# is the one repair that does not need a probe); 1 on any other
+# failure, in which case the whole daily run stops here: do not
+# probe the other target (shared snapshot file), do not build
+# anything. The probe output is captured to a file first so the
+# duplicate wording can be checked without guessing from the
+# exit code alone: a generic probe failure must never trigger
+# a dedupe attempt.
 auto_self_probe() {
-  local target="$1" snapshot
+  local target="$1" snapshot probe_out
   snapshot="$STATE/sort-probe-snapshot.txt"
+  probe_out="$STATE/daily-probe.out"
   log "daily auto self-probe for '$target' (probing the target itself under its own sort)"
-  if "$ROOT/run.sh" selfprobe "$target" >> "$LOG" 2>&1; then
+  if "$ROOT/run.sh" selfprobe "$target" > "$probe_out" 2>&1; then
+    cat "$probe_out" >> "$LOG"
     log "daily auto self-probe OK for '$target'"
     return 0
+  fi
+  cat "$probe_out" >> "$LOG"
+  if grep -q "duplicate song entry" "$probe_out"; then
+    log "daily auto self-probe for '$target' refused on duplicate entries only; trial-dedupe will be attempted (it verifies its own mapping, it does not probe)"
+    return 2
   fi
   log "DAILY FAILED: auto self-probe failed for '$target'; daily stopped before any build, dedupe, or rediscover, and before probing the other target."
   log "DAILY FAILED: if the probe could not restore '$target', it may hold the rotation order; its snapshot is at $snapshot; restore it with ./run.sh restore '$target' '$snapshot', then re-run the daily run (it will self-probe again)."
@@ -193,13 +211,30 @@ if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then
 fi
 
 # Auto self-probe each target, in order, BEFORE the mapping
-# check and before any build. A failure in the first probe
-# stops the run before the second probe (shared snapshot file)
-# and before anything else is touched.
+# check and before any build. A non-duplicate failure in the
+# first probe stops the run before the second probe (shared
+# snapshot file) and before anything else is touched. A
+# duplicate-only failure for the daily playlist triggers
+# trial-dedupe instead (v3.0.4): if it cleans the playlist and
+# records a mapping, the run continues to the mapping check
+# and the normal steps (the later dedupe step then no-ops);
+# if it fails, the run stops before shuffle/rediscover.
 if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
   log "dry run: auto self-probes skipped (dry runs change nothing); planned probes: '$PLAYLIST', '$REDISCOVER_PLAYLIST'"
 else
-  auto_self_probe "$PLAYLIST" || exit 1
+  probe_status=0
+  auto_self_probe "$PLAYLIST" || probe_status=$?
+  if [ "$probe_status" = "2" ]; then
+    log "daily trial-dedupe attempt for '$PLAYLIST' (probe refused on duplicates)"
+    if "$ROOT/run.sh" dedupe "$PLAYLIST" >> "$LOG" 2>&1; then
+      log "daily trial-dedupe cleaned '$PLAYLIST'; continuing to the mapping check"
+    else
+      log "DAILY FAILED: trial-dedupe failed for '$PLAYLIST'; daily stopped before shuffle and rediscover"
+      exit 1
+    fi
+  elif [ "$probe_status" != "0" ]; then
+    exit 1
+  fi
   auto_self_probe "$REDISCOVER_PLAYLIST" || exit 1
 fi
 

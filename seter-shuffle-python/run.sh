@@ -32,7 +32,31 @@
 #   ./run.sh dedupe <playlist>      remove duplicate entries from a
 #                                   playlist (unique songs, first
 #                                   occurrence order); skips the
-#                                   apply entirely if it has none
+#                                   apply entirely if it has none.
+#                                   TRIAL-DEDUPE (v3.0.4): when no
+#                                   fresh mapping is recorded, dedupe
+#                                   does NOT probe (a probe refuses
+#                                   on duplicate entries, which is
+#                                   exactly the deadlock this
+#                                   breaks). Instead it tries the
+#                                   deduped order under mapping
+#                                   forward, verifies the list
+#                                   read against it, and on failure
+#                                   restores from the snapshot and
+#                                   tries reversed. Verify-after
+#                                   on the actual desired order
+#                                   is the mapping oracle here,
+#                                   NOT a rotation classification,
+#                                   so this path must never be
+#                                   borrowed back into the probe:
+#                                   the probe's duplicate refusal
+#                                   is unchanged. A fresh mapping,
+#                                   when one exists, is used
+#                                   directly with no trial. If
+#                                   neither mapping verifies, the
+#                                   playlist is restored to its
+#                                   pre-dedupe order and no mapping
+#                                   is recorded.
 #   ./run.sh restore <playlist> <backup-txt>
 #                                   restore a playlist from a given
 #                                   backup file (freshness-checked
@@ -600,7 +624,11 @@ if [ "$CMD" = "menu" ]; then
         printf 'Playlist: '
         read -r pl || exit 0
         [ -n "$pl" ] || { echo "dedupe needs a playlist name."; continue; }
-        ensure_mapping_for "$pl" || continue
+        # No pre-check here (v3.0.4): dedupe handles its own
+        # mapping, because a doubled playlist fails the
+        # self-probe on duplicate entries and would deadlock the
+        # menu otherwise. A fresh mapping is used directly;
+        # otherwise the trial path tries forward then reversed.
         bash "$ROOT/run.sh" dedupe "$pl" || notify "SeTeR Shuffle: dedupe failed"
         ;;
       4)
@@ -663,9 +691,10 @@ fi
 # the restore before returning OK. The duplicate-entry refusal
 # is unchanged: a probe on a playlist with duplicate entries
 # refuses and changes nothing, so a doubled playlist cannot be
-# probed (self or throwaway) until it is deduped by hand or
-# under a mapping obtained another way; the refusal is NOT
-# weakened to work around that deadlock.
+# probed (self or throwaway) until it is trial-deduped
+# (v3.0.4: dedupe verifies its own mapping, it does not
+# probe); the refusal is NOT weakened to work around
+# that deadlock.
 # Failure handling, and the ONE exception to "a failed probe
 # deletes the mapping": a probe that measured forward/reversed
 # but could not verify its own restore leaves the probed
@@ -869,9 +898,15 @@ fi
 # the apply. Audit and preview commands never reach this block
 # with a build target, so they probe nothing. apply_order still
 # re-checks with mapping_for_build as its final gate.
+# Dedupe is EXEMPT from this block (v3.0.4): a doubled playlist
+# fails the self-probe on duplicate entries, so probing first
+# would deadlock dedupe exactly as it did on 2026-10-29. The
+# dedupe case below handles its own mapping: a fresh mapping
+# is used directly, otherwise dedupe_trial_apply() tries
+# forward then reversed with verify-after as the oracle.
 case "$CMD" in
   shuffle) ensure_mapping_for "${SHUFFLE_PLAYLIST:-SeTeR Shuffle}" || exit 1 ;;
-  dedupe) [ -n "${2:-}" ] || { echo "usage: $0 dedupe <playlist>" >&2; exit 2; }; ensure_mapping_for "$2" || exit 1 ;;
+  dedupe) [ -n "${2:-}" ] || { echo "usage: $0 dedupe <playlist>" >&2; exit 2; } ;;
   flow) ensure_mapping_for "SeTeR Flow" || exit 1 ;;
   rediscover) ensure_mapping_for "SeTeR Rediscover" || exit 1 ;;
 esac
@@ -899,11 +934,26 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # Validate an order, then apply it, with restore-on-failure. The
 # bridge also validates and verifies on its own side; this function
-# is the runner's half: read the recorded sort-matched mapping,
-# catch a bad order before Music is touched, and recover if the
-# apply step itself fails after changes start. The mapping is read
-# before validation on purpose: a missing or stale mapping costs
-# nothing, and an unmapped apply must never run.
+# is the runner's half: catch a bad order before Music is touched,
+# and recover if the apply step itself fails after changes start.
+# apply_order() is the normal entry point: it reads the recorded
+# sort-matched mapping first (a missing or stale mapping costs
+# nothing, and an unmapped apply must never run), then calls
+# apply_order_mapped(). Trial-dedupe (v3.0.4) calls
+# apply_order_mapped() directly with an explicit trial mapping,
+# because its mapping is what is being tested, not what is
+# recorded. Return codes from apply_order_mapped(): 0 on a
+# verified apply; 1 on an apply failure whose playlist was
+# restored (or never changed), so a trial caller may safely try
+# the other mapping; 2 on an apply failure whose restore also
+# failed and left the playlist possibly partial, so a trial
+# caller must NOT try the other mapping on top of a partial
+# state. Normal callers run under set -e, so any non-zero
+# return stops the run, exactly as the old exit 1 did.
+# APPLY_LAST_RUN_BACKUP and APPLY_RESTORE_FAILED are globals
+# set here for trial callers: the per-run snapshot to name in a
+# hard error, and whether the last attempt's restore failed
+# critically (partial), as opposed to merely failing to verify.
 #
 # BACKUP CHAIN (2026-10-29 doubling failure): the apply script
 # writes its pre-change snapshot to a FRESH PER-RUN file, never to
@@ -915,14 +965,23 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 # state and only .prev saved the original, and one more failed run
 # would have overwritten .prev too. Per-run snapshots are kept
 # (newest 10) as a chain, so recovery never depends on a single
-# previous file.
+# previous file. The per-run filename also carries $RANDOM, so
+# two trial attempts inside the same second can never share a
+# snapshot file and overwrite each other's restore point.
 apply_order() {
-  local target="$1" mode="$2" backup run_backup lib_songs allow_dupes build_mapping
-  local -a apply_args
-  backup="$(backup_path_for "$target")"
-  run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$.txt"
+  local target="$1" mode="$2" build_mapping
   build_mapping="$(mapping_for_build "$target")" || exit 1
   mapping_info_for "$target"
+  apply_order_mapped "$target" "$mode" "$build_mapping" || exit 1
+}
+
+apply_order_mapped() {
+  local target="$1" mode="$2" build_mapping="$3" backup run_backup lib_songs allow_dupes
+  local -a apply_args
+  backup="$(backup_path_for "$target")"
+  run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.txt"
+  APPLY_LAST_RUN_BACKUP="$run_backup"
+  APPLY_RESTORE_FAILED=0
   # A size-capped whole-library shuffle is a subset by design
   # (N songs into the generated "SeTeR Shuffle" playlist), so it
   # validates under "shuffle-size" (presence/multiplicity only),
@@ -932,7 +991,7 @@ apply_order() {
   if [ "$mode" = "shuffle" ] && [ -z "${SOURCE_PLAYLIST:-}" ] && [ -n "${SHUFFLE_SIZE:-}" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
     validate_mode="shuffle-size"
   fi
-  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" || exit 1
+  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" || return 1
   log "GATE: order validated for $target"
   # Duplicate allowance: "1" only for a one-playlist shuffle whose
   # dump itself repeats an ID (duplicate playlist entries, preserved
@@ -952,7 +1011,7 @@ apply_order() {
       allow_dupes="1"
     fi
   else
-    lib_songs="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")" || { log "GATE FAILED: could not count songs in dump"; exit 1; }
+    lib_songs="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")" || { log "GATE FAILED: could not count songs in dump"; return 1; }
   fi
   if [ "$mode" = "dedupe" ]; then
     allow_dupes="0"
@@ -1010,13 +1069,81 @@ apply_order() {
           log "restore from per-run snapshot failed while reading the playlist before any change (PLAYLIST_UNTOUCHED); playlist is untouched, NOT partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
         else
           log "CRITICAL: restore from per-run snapshot also failed; playlist may be partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+          APPLY_RESTORE_FAILED=1
         fi
       fi
     else
       log "no per-run snapshot was written, so the apply failed before any playlist change; playlist untouched and main backup at $backup untouched"
     fi
-    exit 1
+    if [ "${APPLY_RESTORE_FAILED:-0}" = "1" ]; then
+      return 2
+    fi
+    return 1
   fi
+  return 0
+}
+
+# Record a mapping verified by a trial-dedupe apply (v3.0.4).
+# This is NOT a probe result: no rotation was built, and the
+# mapping was proven by verify-after on the actual deduped
+# order. It is recorded in the same per-target file format so
+# the next build can reuse it directly, with a SORT label that
+# says exactly how it was obtained. Trial callers record ONLY
+# on success; a failed trial records nothing, so a total trial
+# failure leaves no mapping behind for a later build to trust.
+record_trial_mapping() {
+  local target="$1" mapping="$2" map_file
+  map_file="$(mapping_file_for "$target")"
+  {
+    printf 'MAPPING: %s\n' "$mapping"
+    printf 'THROWAWAY: %s\n' "$target"
+    printf 'TARGET: %s\n' "$target"
+    printf 'SORT: trial-dedupe: verified by dedupe apply\n'
+    printf 'TIMESTAMP: %s\n' "$(date +%s)"
+  } > "$map_file.tmp"
+  mv -f "$map_file.tmp" "$map_file"
+  log "GATE: trial-dedupe verified mapping $mapping recorded for target '$target' (verified by dedupe apply, not by a rotation probe)"
+}
+
+# Trial-dedupe (v3.0.4): the dedupe path when no fresh mapping
+# is recorded. The rotation probe cannot help here: it refuses
+# on duplicate entries, and a doubled playlist is exactly a
+# playlist with duplicate entries. So dedupe tries its known
+# desired order (first occurrence of each song, computed before
+# this function runs) under mapping forward, verifies the list
+# read against it inside the apply, and on failure restores
+# from the per-run snapshot and tries reversed. The first
+# mapping that verifies wins and is recorded (see
+# record_trial_mapping). If neither verifies (for example an
+# "other" sort like Title ascending, where neither forward nor
+# reversed can land the desired order), the playlist is left
+# at its pre-dedupe order, no mapping is recorded, and this
+# returns 1. If an attempt's restore itself fails critically
+# (playlist possibly partial), this returns 2 immediately and
+# does NOT try the other mapping on top of a partial state.
+# The probe is never involved: this function must not be
+# generalized into a probe bypass, because the probe's job is
+# to classify a sort from a rotation without changing the
+# target's intended order, while dedupe's job is to change
+# the target to a known order and check the result.
+dedupe_trial_apply() {
+  local target="$1" trial_mapping
+  for trial_mapping in forward reversed; do
+    log "STEP: trial-dedupe apply for '$target' with mapping $trial_mapping (verify-after on the deduped order is the mapping oracle)"
+    APPLY_RESTORE_FAILED=0
+    if apply_order_mapped "$target" "dedupe" "$trial_mapping"; then
+      record_trial_mapping "$target" "$trial_mapping"
+      log "dedupe trial succeeded with mapping $trial_mapping; playlist deduped and mapping recorded"
+      return 0
+    fi
+    if [ "${APPLY_RESTORE_FAILED:-0}" = "1" ]; then
+      log "CRITICAL: trial-dedupe apply with mapping $trial_mapping failed AND its restore failed; playlist may be partial; snapshot at $APPLY_LAST_RUN_BACKUP; not trying the other mapping"
+      return 2
+    fi
+    log "trial-dedupe apply with mapping $trial_mapping did not verify; playlist restored to its pre-dedupe order; trying the other mapping"
+  done
+  log "GATE FAILED: trial-dedupe for '$target': neither forward nor reversed mapping verified; playlist restored to its pre-dedupe order; change the sort to Playlist Order and re-run dedupe; no mapping was recorded"
+  return 1
 }
 
 case "$CMD" in
@@ -1090,14 +1217,19 @@ case "$CMD" in
     # gain, and on a sorted playlist it would also re-exercise the
     # delete/re-add loop for nothing. The order count equals the
     # dump count exactly when the playlist holds no duplicates.
+    # A clean playlist needs no mapping at all: nothing is built.
     dump_count="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")"
     order_count="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["count"])' "$ORDER")"
     if [ "$order_count" = "$dump_count" ]; then
       log "dedupe done: no duplicate entries in \"$TARGET_PLAYLIST\" ($dump_count songs); nothing was applied"
       notify "SeTeR Shuffle: $TARGET_PLAYLIST already clean, nothing applied"
-    else
-      log "dedupe: $dump_count entries, $order_count unique songs; applying unique order (first-occurrence order, NOT backup order)"
+    elif mapping_is_ready "$TARGET_PLAYLIST"; then
+      log "dedupe: $dump_count entries, $order_count unique songs; fresh mapping recorded, applying unique order under it (first-occurrence order, NOT backup order; no trial)"
       apply_order "$TARGET_PLAYLIST" "dedupe"
+      log "dedupe done"
+    else
+      log "dedupe: $dump_count entries, $order_count unique songs; no fresh mapping recorded, trial-dedupe will try forward then reversed (first-occurrence order, NOT backup order)"
+      dedupe_trial_apply "$TARGET_PLAYLIST" || exit 1
       log "dedupe done"
     fi
     ;;

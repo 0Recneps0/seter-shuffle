@@ -23,8 +23,9 @@ ensure_mapping_for, which auto self-probes on a missing or
 stale mapping and only loops back when the probe fails. The
 non-interactive dedupe refusal in the same paste (1612
 entries / 806 unique, then GATE FAILED on the missing
-mapping, no change) was correct and is unchanged, except
-that the probe is now attempted automatically first.
+mapping, no change) was correct at the time; v3.0.4
+supersedes it with trial-dedupe, which verifies its own
+mapping instead of probing (see test_trial_dedupe.py).
 """
 
 from __future__ import annotations
@@ -231,8 +232,12 @@ class MenuPrecheckTests(unittest.TestCase):
             '"SeTeR Flow"',
         ):
             self.assertIn(f"ensure_mapping_for {target}", menu)
-        # Dedupe and undo share the $pl branch.
-        self.assertGreaterEqual(menu.count('ensure_mapping_for "$pl"'), 2)
+        # v3.0.4: undo still pre-checks with $pl, but dedupe
+        # is exempt: it handles its own mapping via trial, so
+        # only one ensure_mapping_for "$pl" (undo) remains.
+        self.assertEqual(menu.count('ensure_mapping_for "$pl"'), 1)
+        dedupe_choice = menu.split("      3)")[1].split("      4)")[0]
+        self.assertNotIn("ensure_mapping_for", dedupe_choice)
         # No bare mapping_ready_for dispatch remains in the menu.
         self.assertNotIn("mapping_ready_for ", menu)
         # Each pre-check precedes its dispatch in the section.
