@@ -59,7 +59,7 @@ class OneClickTest(unittest.TestCase):
         self.old_plist.write_text("<plist>old</plist>", encoding="utf-8")
         result = run_oneclick(["--yes"], self.env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.1")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.2")
         self.assertTrue(self.new_plist.exists())
         self.assertFalse(self.old_plist.exists())
         disabled = list(self.agents.glob("com.seter.daily.plist.disabled-*"))
@@ -76,7 +76,7 @@ class OneClickTest(unittest.TestCase):
         )
         result = run_oneclick(["--yes", "--force"], self.env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.1")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.2")
         self.assertTrue(self.new_plist.exists())
         # The differing old run.sh must have been kept as a .bak.
         self.assertTrue(any(p.name.startswith("run.sh.bak-") for p in self.install.iterdir()))

@@ -1,33 +1,41 @@
-# SeTeR Shuffle, Python core (v3.0.1)
+# SeTeR Shuffle, Python core (v3.0.2)
 
-This tree is the v3.0.1 stable tree on the main branch. The v2.6
+This tree is the v3.0.2 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.1)
+## One-click install or update (v3.0.2)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.1, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.2, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
 v2.6 script and backups are never deleted or edited; rollback
 is `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
 
-IMPORTANT: the one-click tool does NOT auto-probe. The 8am daily
-run still refuses without a fresh (<48h) per-target mapping for
-both the daily playlist and "SeTeR Rediscover", so sortprobe
-each target on a clean throwaway set to that target's sort
-(never the main playlist itself as the throwaway) before the
-first scheduled run.
+NEW IN v3.0.2: the 8am daily run AUTO SELF-PROBES. Before it
+builds anything, it runs `./run.sh selfprobe` on the daily
+playlist and on "SeTeR Rediscover", measuring each mapping on
+the target itself under its own sort (Music remembers each
+playlist's own sort, so no throwaway sort needs matching and
+no mapping can transfer between targets). The 48-hour manual
+probe chore is gone; the mapping gate stays: a failed
+self-probe fails the whole daily run closed before any build,
+and an "other" mapping still aborts. A self-probe on a
+playlist with duplicate entries refuses and changes nothing,
+so a doubled playlist must be deduped by hand (or under a
+mapping obtained another way) before it can be auto-probed.
+You can also self-probe by hand any time:
+`./run.sh selfprobe "My New Sandwich Recipe"`.
 
-## Stable preparation (v3.0.1)
+## Stable preparation (v3.0.2)
 
-Stable name: v3.0.1. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.1`. No tag or release is created by
+Stable name: v3.0.2. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.2`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash
@@ -45,11 +53,11 @@ dir `~/Documents/SeTeRShufflePython`; new plist label
 `com.seter.python.daily`; the daily hour lives in exactly one place
 (`DAILY_HOUR`/`DAILY_MINUTE` at the top of `setup-python.sh`).
 Daily facts: `daily.sh` writes a daily library manifest (kept 14
-days), dedupes, shuffles, then refreshes "SeTeR Rediscover"; it
-REFUSES without fresh (<48h) per-target mappings for both targets
-and never auto-probes, so an evening sortprobe covers the next
-two mornings' 8am runs, and a run without a probe in the previous
-48 hours fails closed. The former stable-prep gaps are closed in
+days), auto self-probes both targets, then dedupes, shuffles,
+and refreshes "SeTeR Rediscover"; it still REFUSES without a
+fresh (<48h) per-target mapping for each target after the
+self-probes, and a failed self-probe fails the run closed
+before any build. The former stable-prep gaps are closed in
 the drop-in package: `./run.sh menu` (Terminal menu; it
 pre-checks the target's mapping and refuses before any dump
 when none is recorded, and a blank size no longer crashes on
@@ -357,13 +365,15 @@ BRIDGE-SAFETY.md mode 29):
 Suggested Mac verification order: `./check-python.sh` first, then
 the BRIDGE-SAFETY.md Stage 0 sequence: the read-only diagnostic on
 the target, the UI sort check in Music, then
-`./run.sh sortprobe "<throwaway>" "<target>" "<sort-label>"`
-on a throwaway set to the target's sort (Playlist Order
-descending for the 2026-10-28 failure), which must return a
-forward or reversed mapping and restore the throwaway; an
-"other" mapping aborts everything by design. The mapping is
-recorded for that target only; a build for any other target
-refuses until that target has its own sortprobe. The old `./run.sh probe` (fresh 3-song probe) is a
+`./run.sh selfprobe "<target>"` (v3.0.2, preferred: the target
+itself, under its own sort), or `./run.sh sortprobe
+"<throwaway>" "<target>" "<sort-label>"` on a throwaway set to
+the target's sort (Playlist Order descending for the 2026-10-28
+failure), which must return a forward or reversed mapping and
+restore the probed playlist; an "other" mapping aborts
+everything by design. The mapping is recorded for that target
+only; a build for any other target refuses until that target
+has its own probe. The old `./run.sh probe` (fresh 3-song probe) is a
 standalone sanity check only and does not substitute for the
 sort-matched probe. Then `./run.sh audit` (changes nothing, and
 answers whether BPM is truly missing or the dump is failing), then

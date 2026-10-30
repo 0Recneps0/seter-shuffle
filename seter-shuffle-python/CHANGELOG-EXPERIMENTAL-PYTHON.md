@@ -8,6 +8,51 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — v3.0.2: automatic self-probing (NOT yet a published release)
+
+Spencer's correction, which supersedes the throwaway-only
+rule for sortprobe: Apple Music remembers each playlist's
+own sort, so probe the actual target playlist itself, not a
+different throwaway. He is right, and the earlier ban was
+over-cautious for sortprobe specifically (it still holds for
+test shuffles: never shuffle a real playlist as a test). A
+mapping measured on the target under its own sort is, by
+construction, the mapping for that target and sort, so no
+throwaway sort needs matching and no mapping transfer is
+possible.
+
+**What changed.** `./run.sh selfprobe <playlist>` (and
+`sortprobe` with throwaway == target, which is the same
+self-probe) snapshots the target, builds a rotation, restores
+the snapshot under the measured mapping, and verifies the
+restore before returning OK; it records THROWAWAY as the
+target name and SORT as "self-probe: target's own sort".
+`daily.sh` now auto self-probes the daily playlist AND
+"SeTeR Rediscover" before the mapping check, so the 48-hour
+manual-probe chore is gone; the mapping gate is NOT dropped
+(a failed self-probe fails the whole daily run closed before
+any build, before probing the other target, because the two
+probes share one snapshot file; an "other" mapping still
+aborts). One deliberate exception to "a failed probe deletes
+the mapping": a probe that measured forward/reversed but
+could not verify its own restore RECORDS that mapping, so
+`./run.sh restore <target> <snapshot>` can run, while the
+probe still exits non-zero and no build follows until the
+target is restored and a clean probe passes. Every other
+probe failure still deletes the mapping.
+
+**Deadlock, stated plainly.** The duplicate-entry refusal is
+unchanged: a self-probe on a playlist with duplicate entries
+refuses and changes nothing. A currently doubled playlist
+(the main playlist was 1612 entries / 806 unique on
+2026-10-29) therefore cannot be auto-probed until it is
+deduped by hand, or under a mapping obtained another way.
+The refusal is NOT weakened to work around this. Version
+marker bumped to `3.0.2`; no v2.6 file was changed. UNPROVEN
+ON A MAC: the v3.0.2 one-click run, a self-probe on a real
+playlist, the daily auto-probe on a Mac, and the
+doubled-playlist dedupe deadlock path.
+
 ## 2026-10-29 — v3.0.1: one-click installer fix (NOT yet a published release)
 
 Proven on Spencer's Mac at ~17:32 PT, running the v3.0 one-click

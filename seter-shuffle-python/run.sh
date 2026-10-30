@@ -51,8 +51,35 @@
 #                                   throwaway, builds a rotation,
 #                                   reads it back, restores it, and
 #                                   records the mapping for that
-#                                   target's builds (fresh for 24
+#                                   target's builds (fresh for 48
 #                                   hours)
+#   ./run.sh selfprobe <playlist>   SELF-PROBE (v3.0.2): measure the
+#                                   mapping on the target playlist
+#                                   ITSELF, under its own sort.
+#                                   Music remembers each playlist's
+#                                   own sort, so a mapping measured
+#                                   on the target under its own sort
+#                                   is, by construction, the mapping
+#                                   for that target and sort: no
+#                                   throwaway sort to match, no
+#                                   mapping transfer possible. The
+#                                   probe snapshots the target,
+#                                   builds a rotation, restores the
+#                                   snapshot under the measured
+#                                   mapping, and verifies the
+#                                   restore before returning OK.
+#                                   A failed restore leaves the
+#                                   target holding the rotation
+#                                   order, with the snapshot file
+#                                   named in the log; recover with
+#                                   ./run.sh restore <target>
+#                                   <snapshot>. A self-probe on a
+#                                   playlist with duplicate entries
+#                                   refuses and changes nothing.
+#                                   sortprobe with throwaway ==
+#                                   target is the same self-probe
+#                                   (the sort label is replaced by
+#                                   the self-probe label).
 #   ./run.sh probe-keep             like probe, but LEAVE the probe
 #                                   playlist in place so its on-screen
 #                                   order in Music can be eyeballed
@@ -68,8 +95,11 @@
 # killed track index as a manual-order reference (list read
 # reversed against the backup, yet the list's first track carries
 # index 1). So builds below NEVER consult a fresh probe and NEVER
-# use track index. Instead, the user first runs ./run.sh sortprobe
-# on a throwaway set to the SAME sort as the target; sort-probe
+# use track index. Instead, the mapping is measured either with
+# ./run.sh sortprobe on a throwaway set to the SAME sort as the
+# target, or (v3.0.2, preferred) with ./run.sh selfprobe on the
+# target itself: Music remembers each playlist's own sort, so the
+# target's own sort needs no throwaway to imitate it. sort-probe
 # builds a rotation on it, reads it back, restores it, and records
 # the end-to-end mapping (forward: building X lands list read X;
 # reversed: building X lands list read reverse(X)). Apply and undo
@@ -205,9 +235,9 @@ log "python: $CHECK_OUT"
 
 CMD="${1:-}"
 case "$CMD" in
-  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|menu) ;;
+  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|selfprobe|menu) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|menu}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|selfprobe <playlist>|menu}" >&2
     exit 2
     ;;
 esac
@@ -527,35 +557,89 @@ if [ "$CMD" = "menu" ]; then
   done
 fi
 
-# Sort-probe command: measure the mapping on a user-sorted throwaway
-# FOR ONE TARGET. Since .5 the target and the sort label are
-# required arguments, and the mapping is recorded per-target
-# (mapping_file_for): a mapping measured for target X can never
-# authorize a build on target Y. The user MUST set the throwaway's
-# sort in Music to the target's sort before running this; run.sh
-# cannot set or verify a playlist's UI sort, so a throwaway with
-# the wrong sort measures the wrong mapping, and the STEP line
-# below records exactly what was declared. Worked example of why
-# this matters (2026-10-29, mode 35): the main playlist sorts
-# Playlist Order descending (mapping reversed), while a brand-new
-# "SeTeR Flow" playlist sorts default/manual (mapping forward);
-# reusing the main playlist's mapping for Flow landed backwards
-# and verify correctly refused it. Flow therefore needs its OWN
-# sortprobe, on a throwaway set to SeTeR Flow's sort, before any
-# Flow build, even when a main-playlist mapping already exists.
-if [ "$CMD" = "sortprobe" ]; then
-  THROWAWAY="${2:-}"
-  PROBE_TARGET="${3:-}"
-  PROBE_SORT="${4:-}"
-  if [ -z "$THROWAWAY" ] || [ -z "$PROBE_TARGET" ] || [ -z "$PROBE_SORT" ]; then
-    echo "usage: $0 sortprobe <throwaway-playlist> <target-playlist> <sort-label>" >&2
-    echo "  example: $0 sortprobe 'Throwaway' 'My New Sandwich Recipe' 'Playlist Order descending'" >&2
-    echo "  the throwaway must be set in Music to the target's sort BEFORE running; the sort label is your declaration of that sort, e.g. 'Playlist Order descending', 'Playlist Order ascending', or 'Manual (default)'" >&2
-    exit 2
+# Sort-probe command: measure the mapping FOR ONE TARGET. Since .5
+# the target and the sort label are required arguments, and the
+# mapping is recorded per-target (mapping_file_for): a mapping
+# measured for target X can never authorize a build on target Y.
+# Two forms, same probe script, same safety:
+#   * sortprobe <throwaway> <target> <sort-label>: the user MUST
+#     set the throwaway's sort in Music to the target's sort before
+#     running this; run.sh cannot set or verify a playlist's UI
+#     sort, so a throwaway with the wrong sort measures the wrong
+#     mapping, and the STEP line below records exactly what was
+#     declared. Worked example of why this matters (2026-10-29,
+#     mode 35): the main playlist sorts Playlist Order descending
+#     (mapping reversed), while a brand-new "SeTeR Flow" playlist
+#     sorts default/manual (mapping forward); reusing the main
+#     playlist's mapping for Flow landed backwards and verify
+#     correctly refused it. Flow therefore needs its OWN
+#     sortprobe, on a throwaway set to SeTeR Flow's sort, before
+#     any Flow build, even when a main-playlist mapping already
+#     exists.
+#   * selfprobe <target> (v3.0.2, preferred): the probe runs on
+#     the target itself, under the target's own sort, which Music
+#     remembers per playlist. There is no throwaway sort to match
+#     and no mapping transfer is possible: the measured mapping is
+#     the target's own. sortprobe with throwaway == target is the
+#     same self-probe; its sort label is replaced by the
+#     self-probe label below, and mapping_for_build accepts that
+#     label like any other non-empty sort label (it is the
+#     THROWAWAY field, equal to the target, that marks it).
+# In both forms the probe snapshots first, builds a rotation,
+# restores the snapshot under the measured mapping, and verifies
+# the restore before returning OK. The duplicate-entry refusal
+# is unchanged: a probe on a playlist with duplicate entries
+# refuses and changes nothing, so a doubled playlist cannot be
+# probed (self or throwaway) until it is deduped by hand or
+# under a mapping obtained another way; the refusal is NOT
+# weakened to work around that deadlock.
+# Failure handling, and the ONE exception to "a failed probe
+# deletes the mapping": a probe that measured forward/reversed
+# but could not verify its own restore leaves the probed
+# playlist holding the rotation order. Deleting the mapping
+# there would block the only recovery path (./run.sh restore
+# needs a fresh mapping), so that case RECORDS the measured
+# mapping and logs a loud warning naming the snapshot, and the
+# caller (daily.sh included) still exits non-zero: no build
+# runs until the playlist is restored from the snapshot and a
+# clean probe passes. Every other failure (other mapping,
+# duplicate refusal, unreadable playlist, pre-build failure)
+# deletes the per-target mapping as before, because the sort
+# is then unknown and a stale mapping must never authorize a
+# build. Other targets' mappings are untouched in all cases.
+if [ "$CMD" = "sortprobe" ] || [ "$CMD" = "selfprobe" ]; then
+  SELF_PROBE_LABEL="self-probe: target's own sort"
+  if [ "$CMD" = "selfprobe" ]; then
+    THROWAWAY="${2:-}"
+    PROBE_TARGET="${2:-}"
+    PROBE_SORT="$SELF_PROBE_LABEL"
+    if [ -z "$THROWAWAY" ]; then
+      echo "usage: $0 selfprobe <playlist>" >&2
+      echo "  example: $0 selfprobe 'My New Sandwich Recipe'" >&2
+      exit 2
+    fi
+  else
+    THROWAWAY="${2:-}"
+    PROBE_TARGET="${3:-}"
+    PROBE_SORT="${4:-}"
+    if [ -z "$THROWAWAY" ] || [ -z "$PROBE_TARGET" ] || [ -z "$PROBE_SORT" ]; then
+      echo "usage: $0 sortprobe <throwaway-playlist> <target-playlist> <sort-label>" >&2
+      echo "  example: $0 sortprobe 'Throwaway' 'My New Sandwich Recipe' 'Playlist Order descending'" >&2
+      echo "  the throwaway must be set in Music to the target's sort BEFORE running; the sort label is your declaration of that sort, e.g. 'Playlist Order descending', 'Playlist Order ascending', or 'Manual (default)'" >&2
+      echo "  or run: $0 selfprobe 'My New Sandwich Recipe' (probe the target itself under its own sort)" >&2
+      exit 2
+    fi
+    if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+      PROBE_SORT="$SELF_PROBE_LABEL"
+    fi
   fi
   SNAPSHOT="$STATE/sort-probe-snapshot.txt"
   MAP_FILE="$(mapping_file_for "$PROBE_TARGET")"
-  log "STEP: sort-probe mapping on throwaway '$THROWAWAY' for target '$PROBE_TARGET' (declared sort: '$PROBE_SORT'; set the throwaway to this sort in Music before running)"
+  if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+    log "STEP: self-probe mapping on target '$PROBE_TARGET' itself (its own sort, as Music remembers it; snapshot at $SNAPSHOT; the probe restores the target to its snapshot and verifies before returning OK)"
+  else
+    log "STEP: sort-probe mapping on throwaway '$THROWAWAY' for target '$PROBE_TARGET' (declared sort: '$PROBE_SORT'; set the throwaway to this sort in Music before running)"
+  fi
   if osascript "$BRIDGE/sort-probe.applescript" "$THROWAWAY" "$SNAPSHOT" 2>&1 | tee -a "$LOG" "$WORK/sortprobe.out"; then
     mapping="$(grep '^MAPPING: ' "$WORK/sortprobe.out" | head -n 1 | sed 's/^MAPPING: //')"
     if [ "$mapping" = "forward" ] || [ "$mapping" = "reversed" ]; then
@@ -568,8 +652,33 @@ if [ "$CMD" = "sortprobe" ]; then
       } > "$MAP_FILE.tmp"
       mv -f "$MAP_FILE.tmp" "$MAP_FILE"
       log "GATE OK: sort-probe mapping $mapping recorded for target '$PROBE_TARGET' (valid 48 hours; throwaway '$THROWAWAY', sort '$PROBE_SORT')"
-      log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build for '$PROBE_TARGET'"
+      if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+        log "self-probe done; target '$PROBE_TARGET' restored to its snapshot and verified; then run the build for '$PROBE_TARGET'"
+      else
+        log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build for '$PROBE_TARGET'"
+      fi
       exit 0
+    fi
+  fi
+  # Measured-mapping-but-restore-failed exception (see the header
+  # above): the probe output names a forward/reversed mapping and
+  # a restore that could not be verified. Record that mapping so
+  # ./run.sh restore can run, warn loudly, and still exit
+  # non-zero so no build follows a half-restored probe.
+  if grep -q 'MAPPING: reversed' "$WORK/sortprobe.out" 2>/dev/null || grep -q 'MAPPING: forward' "$WORK/sortprobe.out" 2>/dev/null; then
+    if grep -qi 'restore.*could not be verified\|restore to its snapshot could not be verified' "$WORK/sortprobe.out" 2>/dev/null; then
+      if grep -q 'MAPPING: reversed' "$WORK/sortprobe.out" 2>/dev/null; then mapping="reversed"; else mapping="forward"; fi
+      {
+        printf 'MAPPING: %s\n' "$mapping"
+        printf 'THROWAWAY: %s\n' "$THROWAWAY"
+        printf 'TARGET: %s\n' "$PROBE_TARGET"
+        printf 'SORT: %s\n' "$PROBE_SORT"
+        printf 'TIMESTAMP: %s\n' "$(date +%s)"
+      } > "$MAP_FILE.tmp"
+      mv -f "$MAP_FILE.tmp" "$MAP_FILE"
+      log "GATE FAILED: sort-probe measured mapping $mapping for target '$PROBE_TARGET' but could not verify restoring it to its snapshot; the probed playlist may still hold the rotation order. Its snapshot is at $SNAPSHOT: restore it first with ./run.sh restore '$PROBE_TARGET' '$SNAPSHOT', then re-run the probe. No build will run until a clean probe passes."
+      notify "SeTeR Shuffle: sortprobe restore failed for $PROBE_TARGET"
+      exit 1
     fi
   fi
   # Fail-closed on the mapping itself: a failed re-probe must not
@@ -580,7 +689,11 @@ if [ "$CMD" = "sortprobe" ]; then
   # failed probe for one target never invalidates another's.
   rm -f "$MAP_FILE"
   log "GATE FAILED: sort-probe did not return a usable mapping; any previously recorded mapping for target '$PROBE_TARGET' was deleted, no build for that target will run until a clean sort-probe passes"
-  log "check the throwaway '$THROWAWAY' in Music: if the probe could not restore it, its snapshot is at $SNAPSHOT"
+  if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+    log "self-probe on '$PROBE_TARGET': if the probe returned 'other', the target's own sort is not one the bridge can build into, so no build will run for it until its sort changes and a clean self-probe passes; if it refused on duplicate entries, the target is unchanged, dedupe it first. Snapshot (when written) is at $SNAPSHOT"
+  else
+    log "check the throwaway '$THROWAWAY' in Music: if the probe could not restore it, its snapshot is at $SNAPSHOT"
+  fi
   notify "SeTeR Shuffle: sortprobe failed for $PROBE_TARGET"
   exit 1
 fi
@@ -617,7 +730,8 @@ fi
 # osascript call to it bypasses the freshness check (the script
 # cannot know when the mapping was measured), so direct calls are
 # expert-only and must be given a mapping measured within 48 hours
-# on a throwaway carrying the target's sort.
+# on a throwaway carrying the target's sort, or by a self-probe
+# on the target itself.
 if [ "$CMD" = "restore" ]; then
   PLAYLIST="${2:-}"
   BACKUP="${3:-}"

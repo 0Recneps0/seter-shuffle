@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.1)
+# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.2)
 #
-# Installs the Python build for macOS. This is the v3.0.1 stable
-# tree: the installer records version "3.0.1". The one-click
+# Installs the Python build for macOS. This is the v3.0.2 stable
+# tree: the installer records version "3.0.2". The one-click
 # install-or-update.sh always calls this script with --force
 # (the user already confirmed once there), so an update from a
 # 3.0-proposed or 3.0 install is allowed (differing files
@@ -56,8 +56,8 @@ set -euo pipefail
 DAILY_HOUR=8
 DAILY_MINUTE=0
 DAILY_PLAYLIST_DEFAULT="My New Sandwich Recipe"
-PROPOSED_VERSION="3.0.1"
-VERSION_MARKER="3.0.1"
+PROPOSED_VERSION="3.0.2"
+VERSION_MARKER="3.0.2"
 PLIST_LABEL="com.seter.python.daily"
 
 INSTALL_DIR="${SETER_PYTHON_INSTALL_DIR:-$HOME/Documents/SeTeRShufflePython}"
@@ -77,7 +77,7 @@ UNINSTALL=0
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle (Python) setup -- stable v3.0.1
+SeTeR Shuffle (Python) setup -- stable v3.0.2
 
 Usage: bash setup-python.sh [options]
 
@@ -212,7 +212,7 @@ if [ -z "${SETER_TEST_MODE:-}" ]; then
   bash "$SCRIPT_DIR/check-python.sh" >/dev/null || die "No usable python3 (3.9+) found; install real Python first, then re-run setup."
 fi
 
-say "SeTeR Shuffle (Python) setup -- stable v3.0.1"
+say "SeTeR Shuffle (Python) setup -- stable v3.0.2"
 say ""
 
 # Version refusal: an existing install with a different marker is
@@ -264,14 +264,15 @@ else
   else
     warn "Couldn't load the schedule. Try: launchctl load \"$PLIST_PATH\""
   fi
-  say "   NOTE: the daily run refuses without a fresh (<48h) per-target mapping for both"
-  say "   \"$PLAYLIST\" and \"SeTeR Rediscover\". Run sortprobe by hand for each target"
-  say "   before the first scheduled run, and again whenever a mapping goes stale."
-  say "   The daily run never auto-probes and never borrows another target's mapping."
+  say "   NOTE: the daily run auto self-probes \"$PLAYLIST\" and \"SeTeR Rediscover\""
+  say "   itself each morning (v3.0.2), measuring each mapping on the target"
+  say "   under its own sort, and still refuses without a fresh (<48h)"
+  say "   per-target mapping after those probes. It never borrows another"
+  say "   target's mapping, and it never auto-probes a throwaway."
 fi
 
 say ""
-say "All set (v3.0.1 installed)."
+say "All set (v3.0.2 installed)."
 say "  Install:   $INSTALL_DIR"
 say "  Daily log: $LOG_FILE"
 say "  Manual:    cd $INSTALL_DIR && ./run.sh audit"

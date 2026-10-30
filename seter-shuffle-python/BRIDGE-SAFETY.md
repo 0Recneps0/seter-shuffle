@@ -489,13 +489,81 @@ sortprobe in the previous 48 hours, it refuses before touching
 Music and logs which sortprobe to run by hand. That refusal is
 correct under the current rules, but it means the Python daily
 job is NOT yet a drop-in replacement for v2.6's daily job.
-`daily.sh` deliberately never auto-probes: an automated probe
-would measure a throwaway whose sort nobody just verified, which
-is exactly the mapping-transfer failure of 2026-10-29 (mode 35).
-Do not "fix" this gap by auto-probing or by borrowing another
-target's mapping; settling the mapping rule is a decision for
-Spencer before any stable publish, and the daily job must keep
-failing closed until then.
+`daily.sh` deliberately never auto-probed a throwaway: an
+automated probe would measure a throwaway whose sort nobody
+just verified, which is exactly the mapping-transfer failure
+of 2026-10-29 (mode 35). Do not "fix" this gap by
+auto-probing a throwaway or by borrowing another target's
+mapping. SUPERSEDED 2026-10-29 by mode 39: Spencer settled
+the mapping rule himself (probe the target itself), and the
+daily job now auto self-probes; the throwaway auto-probe ban
+stands.
+
+## Failure mode 39: automatic self-probing (2026-10-29, Spencer's correction)
+
+Spencer corrected the throwaway-only rule: Apple Music
+remembers each playlist's own sort, so probe the actual
+target playlist itself, not a different throwaway. The
+earlier ban on using the target as the throwaway was
+over-cautious for sortprobe specifically (it still holds
+for test shuffles: never shuffle a real playlist as a test).
+A mapping measured on the target under its own sort is, by
+construction, the mapping for that target and sort, so no
+throwaway sort needs matching and no mapping transfer is
+possible. That is also why an automated probe is safe in
+this form when it was not as a throwaway probe (mode 37):
+the self-probe's sort is the target's own, not an
+unverified imitation of it.
+
+Safety properties, unchanged except as noted:
+- The probe snapshots the target first, builds a rotation
+  (never the snapshot order nor its reverse, for 5+
+  distinct songs), restores the snapshot under the measured
+  mapping, and verifies the restore before returning OK.
+  A failed restore leaves the target holding the rotation
+  order, with the snapshot file named in the log,
+  recoverable via `./run.sh restore <target> <snapshot>`.
+- An "other" mapping is still an abort, never a build, and
+  still deletes the target's mapping (the sort is then
+  unknown). For a self-probe, "other" means the target's
+  own sort is not one the bridge can build into.
+- The duplicate-entry refusal is unchanged: a self-probe on
+  a playlist with duplicate entries refuses and changes
+  nothing. A currently doubled playlist (the main playlist
+  was 1612 entries / 806 unique on 2026-10-29) therefore
+  cannot be auto-probed until it is deduped by hand, or
+  under a mapping obtained another way. The refusal is NOT
+  weakened to work around that deadlock.
+- One deliberate exception to "a failed probe deletes the
+  mapping": a probe that measured forward/reversed but
+  could not verify its own restore RECORDS that mapping,
+  so `./run.sh restore` (which needs a fresh mapping) can
+  run, while the probe still exits non-zero and no build
+  follows until the target is restored and a clean probe
+  passes. Every other probe failure still deletes it.
+- `daily.sh` auto self-probes the daily playlist AND
+  "SeTeR Rediscover" before the mapping check and before
+  any build, in that order. A first-target probe failure
+  stops the run before the second probe (the two probes
+  share one snapshot file, `$STATE/sort-probe-snapshot.txt`,
+  so a second probe would overwrite the snapshot needed
+  to restore the first target) and before any build. The
+  mapping gate itself is not dropped: after the probes,
+  each target still needs a fresh, correctly-targeted,
+  forward/reversed mapping.
+- `run.sh` records a self-probe as THROWAWAY == target and
+  SORT == "self-probe: target's own sort". A throwaway
+  sortprobe with throwaway == target is the same self-probe
+  (its sort label is replaced). The old throwaway form
+  keeps working exactly as before, and a fresh throwaway
+  probe is never used by any build or by the daily run.
+
+UNPROVEN ON A MAC: a self-probe on a real playlist, the
+daily auto-probe on a Mac, and the doubled-playlist dedupe
+deadlock path. The sort-probe AppleScript's own "other"
+error text still says to set "the throwaway sort"; for a
+self-probe that wording is stale (there is no throwaway),
+and run.sh's failure log carries the corrected meaning.
 
 ## Failure mode 38: drop-in gaps closed, and the one left open (2026-10-29)
 

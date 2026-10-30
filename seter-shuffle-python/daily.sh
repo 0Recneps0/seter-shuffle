@@ -15,22 +15,53 @@
 #   ./daily.sh                      # default playlist, same name
 #
 # HARD RULES (do not weaken these for convenience):
-# - This script NEVER probes. A daily run needs a fresh (<48h)
-#   per-target mapping for EACH target it touches (the daily
-#   playlist AND "SeTeR Rediscover"), recorded by a manual
-#   ./run.sh sortprobe on a throwaway set to that target's sort.
-#   If either mapping is missing, stale, or for another target,
-#   the run stops BEFORE touching Music and says exactly which
-#   sortprobe to run. It never falls back to another target's
-#   mapping, and it never auto-probes: an automated probe would
-#   measure a throwaway whose sort nobody just verified, which is
-#   exactly how the 2026-10-29 mapping-transfer failure happened.
-#   Practical consequence, stated plainly: an evening sortprobe
-#   now covers the next TWO mornings' 8am runs (48h window), but
-#   a run still fails closed on any morning without a probe in
-#   the previous 48 hours. Verify-after still fails closed if
-#   the sort actually changed in the window, so a stale mapping
-#   costs a refused run, never a corrupted playlist.
+# - This script AUTO SELF-PROBES (v3.0.2). Before the mapping
+#   check, it runs ./run.sh selfprobe on EACH target it touches
+#   (the daily playlist AND "SeTeR Rediscover"), refreshing that
+#   target's per-target mapping from the target itself, under
+#   the target's own sort, which Music remembers per playlist.
+#   That is why an automated probe is safe here when it was not
+#   before: the old ban was on auto-probing a THROWAWAY, whose
+#   sort nobody just verified, which is exactly how the
+#   2026-10-29 mapping-transfer failure happened (a mapping
+#   measured on one playlist's sort used for another's). A
+#   self-probe cannot transfer: the mapping it measures is the
+#   target's own, by construction. The 48-hour manual-probe
+#   chore is gone, but the mapping gate is NOT dropped: after
+#   the self-probes, the run still refuses unless each target
+#   has a fresh, correctly-targeted, forward/reversed mapping,
+#   and verify-after still fails closed if a sort changed
+#   mid-run, so a stale mapping costs a refused run, never a
+#   corrupted playlist. It never falls back to another target's
+#   mapping, and it never uses a fresh throwaway probe.
+# - If a self-probe fails for either target, the daily run
+#   fails closed BEFORE any build, dedupe, or Rediscover step,
+#   and BEFORE probing the other target (the two probes share
+#   one snapshot file, $STATE/sort-probe-snapshot.txt, so a
+#   second probe would overwrite the snapshot needed to
+#   restore the first target). The failure log names the
+#   target and the snapshot path, and the restore command.
+#   A self-probe snapshots the target first, builds a
+#   rotation, restores the snapshot under the measured mapping,
+#   and verifies the restore before returning OK; a failed
+#   restore leaves the target holding the rotation order, with
+#   the snapshot named, recoverable via
+#   ./run.sh restore <target> <snapshot>. An "other" mapping
+#   is still an abort, never a build.
+# - DEADLOCK, STATED PLAINLY: the duplicate-entry refusal is
+#   unchanged, so a self-probe on a playlist with duplicate
+#   entries refuses and changes nothing. A currently doubled
+#   playlist (the main playlist was 1612 entries / 806 unique
+#   on 2026-10-29) therefore cannot be auto-probed until it is
+#   deduped by hand, or under a mapping obtained another way
+#   (a throwaway sortprobe, or a self-probe after a manual
+#   dedupe). The refusal is NOT weakened to work around this:
+#   a doubled playlist auto-probing itself into a dedupe would
+#   be exactly the unproven path that doubled it before.
+# - Dry runs (SETER_DAILY_DRY_RUN=1, a test hook never used by
+#   launchd) do NOT run the self-probes, because a dry run
+#   changes nothing; they log the planned probes instead and
+#   then run the mapping check on the recorded mappings.
 # - This script NEVER touches the v2.6 install
 #   (~/Documents/SeTeRShuffle) or its launchd job (com.seter.daily).
 #   Migration disables that job only when migrate-to-python.sh is
@@ -43,7 +74,8 @@
 #   SETER_STATE_DIR       override the state directory
 #   SETER_DAILY_DRY_RUN=1 pass the mapping pre-check, print the
 #                         planned steps, and exit 0 without
-#                         calling run.sh or Music at all.
+#                         calling run.sh or Music at all (the auto
+#                         self-probes are logged as planned, not run).
 
 set -uo pipefail
 
@@ -90,15 +122,35 @@ mapping_file_for() {
   printf '%s/sort-mapping-%s-%s.txt' "$STATE" "$safe" "$hash"
 }
 
+# Auto self-probe one target before the mapping check. On
+# failure, stop the whole daily run here: do not probe the
+# other target (shared snapshot file), do not build anything.
+auto_self_probe() {
+  local target="$1" snapshot
+  snapshot="$STATE/sort-probe-snapshot.txt"
+  log "daily auto self-probe for '$target' (probing the target itself under its own sort)"
+  if "$ROOT/run.sh" selfprobe "$target" >> "$LOG" 2>&1; then
+    log "daily auto self-probe OK for '$target'"
+    return 0
+  fi
+  log "DAILY FAILED: auto self-probe failed for '$target'; daily stopped before any build, dedupe, or rediscover, and before probing the other target."
+  log "DAILY FAILED: if the probe could not restore '$target', it may hold the rotation order; its snapshot is at $snapshot; restore it with ./run.sh restore '$target' '$snapshot', then re-run the daily run (it will self-probe again)."
+  return 1
+}
+
 # Refuse unless TARGET has a fresh, correctly-targeted mapping.
-# Prints the exact manual sortprobe command on failure.
+# Prints the manual self-probe command on failure (the daily run
+# already auto self-probed by the time this runs, so reaching
+# here means the probe passed but the recorded mapping is still
+# not usable, which should not happen; the manual command is
+# the fallback, not the normal path).
 check_mapping() {
   local target="$1" map_file mapping recorded_target sort_label ts now
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
     log "DAILY FAILED: no per-target sort mapping recorded for '$target'."
-    log "Run this by hand first (throwaway set to '$target' sort in Music):"
-    log "  ./run.sh sortprobe <throwaway> '$target' '<sort-label>'"
+    log "Run this by hand first (probe the target itself under its own sort):"
+    log "  ./run.sh selfprobe '$target'"
     return 1
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
@@ -107,25 +159,25 @@ check_mapping() {
   ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
   now="$(date +%s)"
   if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
-    log "DAILY FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe."
+    log "DAILY FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run ./run.sh selfprobe '$target'."
     return 1
   fi
   if [ "$recorded_target" != "$target" ]; then
-    log "DAILY FAILED: mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; re-run sortprobe for '$target'."
+    log "DAILY FAILED: mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; re-run ./run.sh selfprobe '$target'."
     return 1
   fi
   if [ -z "$sort_label" ]; then
-    log "DAILY FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label."
+    log "DAILY FAILED: recorded mapping for '$target' has no sort label; re-run ./run.sh selfprobe '$target'."
     return 1
   fi
   case "$ts" in
     ''|*[!0-9]*)
-      log "DAILY FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe."
+      log "DAILY FAILED: recorded mapping for '$target' has no valid timestamp; re-run ./run.sh selfprobe '$target'."
       return 1
       ;;
   esac
   if [ $((now - ts)) -gt 172800 ]; then
-    log "DAILY FAILED: recorded mapping for '$target' is older than 48 hours; re-run sortprobe so the mapping matches the target's current sort."
+    log "DAILY FAILED: recorded mapping for '$target' is older than 48 hours; re-run ./run.sh selfprobe '$target'."
     return 1
   fi
   log "daily mapping OK for '$target': $mapping (sort '$sort_label')"
@@ -138,6 +190,17 @@ log "daily run starting for playlist '$PLAYLIST'"
 if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then
   CHECK_OUT="$(bash "$ROOT/check-python.sh")" || die "no usable python3: $CHECK_OUT"
   log "python: $CHECK_OUT"
+fi
+
+# Auto self-probe each target, in order, BEFORE the mapping
+# check and before any build. A failure in the first probe
+# stops the run before the second probe (shared snapshot file)
+# and before anything else is touched.
+if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
+  log "dry run: auto self-probes skipped (dry runs change nothing); planned probes: '$PLAYLIST', '$REDISCOVER_PLAYLIST'"
+else
+  auto_self_probe "$PLAYLIST" || exit 1
+  auto_self_probe "$REDISCOVER_PLAYLIST" || exit 1
 fi
 
 check_mapping "$PLAYLIST" || exit 1

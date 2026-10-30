@@ -1,4 +1,4 @@
-"""Regression tests for the v3.0.1 one-click installer fix.
+"""Regression tests for the v3.0.2 one-click installer fix.
 
 The v3.0 one-click run died on a Mac at Step 1 with
 "SETUP_ARGS[@]: unbound variable": macOS ships bash 3.2, where
@@ -84,7 +84,7 @@ class OneClickFixTest(unittest.TestCase):
             self.assertIn("ok install/update done", result.stdout)
             self.assertFalse((agents / "com.seter.daily.plist").exists())
             self.assertEqual(
-                (install / "installed-version.txt").read_text().strip(), "3.0.1"
+                (install / "installed-version.txt").read_text().strip(), "3.0.2"
             )
 
     def test_chmod_self_restores_execute_bits(self):

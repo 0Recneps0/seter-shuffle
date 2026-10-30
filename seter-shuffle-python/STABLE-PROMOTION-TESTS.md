@@ -289,8 +289,9 @@ until Spencer approves the exact change list.
   `setup-python.sh`). UNPROVEN: no launchd daily run on a Mac
   yet, and the daily run refuses without fresh (<48h)
   per-target mappings for both the daily playlist and "SeTeR
-  Rediscover" (it never auto-probes). That mapping-freshness
-  requirement is a real stable gap: v2.6 daily needed no probe.
+  Rediscover". v3.0.2 closes the manual-probe part of that gap
+  with daily auto self-probes (see the v3.0.2 steps below);
+  the mapping gate itself stays.
 - Version naming: PROPOSED v3.0 (major bump: AppleScript to
   Python, and the mapping model changed). Recorded as a
   proposal in the installer (`3.0-proposed`); no v3.0 tag or
@@ -319,13 +320,12 @@ until Spencer approves the exact change list.
    marker, no error). Then schedule: `bash setup-python.sh`
    (8:00 AM). Pass: `com.seter.python.daily.plist` exists with
    Hour 8, and `com.seter.daily.plist` still exists untouched.
-3. Daily dry check: `bash daily.sh "My New Sandwich Recipe"`
-   with no fresh mappings must refuse with a sortprobe
-   instruction and change nothing. Then sortprobe both targets
-   (daily playlist and "SeTeR Rediscover") on throwaways set
-   to each target's sort, and run `daily.sh` by hand once:
-   pass is manifest written, dedupe no-op or clean, shuffle
-   APPLY OK, rediscover APPLY OK, history recorded.
+3. Daily dry check (v3.0.2): `bash daily.sh "My New Sandwich Recipe"`
+   with no fresh mappings must auto self-probe both targets
+   first and then proceed: pass is manifest written, dedupe
+   no-op or clean, shuffle APPLY OK, rediscover APPLY OK,
+   history recorded. A daily run whose self-probe fails must
+   refuse before any build and change nothing.
 4. Migration dry-run: `bash migrate-to-python.sh --dry-run`
    must change nothing. Only with Spencer's explicit approval:
    `--confirm`, then verify the v2.6 job is disabled (plist
@@ -366,11 +366,13 @@ until Spencer approves the exact change list.
    must refuse before any dump.
 5. Dedupe names: dedupe a doubled throwaway. Pass: the log
    names every removed duplicate by artist and title.
-6. 48h daily precondition: sortprobe both daily targets one
-   evening, then confirm the next two mornings' 8am runs
-   would pass the mapping check (a 47h-old mapping passes,
-   a 49h-old one refuses; test by hand with the recorded
-   timestamps, do not wait two days if a faster check works).
+6. 48h daily precondition (v3.0.2 superseded): the daily run
+   now auto self-probes each morning, so no evening probe is
+   needed. The 48h mapping freshness gate still applies at
+   build time: a 47h-old mapping passes, a 49h-old one
+   refuses (test by hand with the recorded timestamps, do not
+   wait two days if a faster check works); in normal daily
+   operation the fresh self-probe mapping makes this moot.
 
 ## One-click Mac steps (v3.0.1)
 
@@ -395,10 +397,48 @@ until Spencer approves the exact change list.
 3. Rollback: `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
    Pass: the v2.6 plist is restored and loaded, the Python
    install stays in place.
-4. First scheduled run: sortprobe both daily targets on clean
-   throwaways (never the main playlist itself) within 48 hours
-   before 8am. Pass: the daily run proceeds; without those
-   mappings it must refuse, never shuffle blind.
+4. First scheduled run (v3.0.2 supersedes the throwaway
+   precondition): the daily run now auto self-probes both
+   daily targets itself. Pass: the daily run proceeds with no
+   manual probe in the previous 48 hours; a run whose
+   self-probe fails must refuse before any build, never
+   shuffle blind.
+
+## Self-probe and daily auto-probe Mac steps (v3.0.2)
+
+1. Self-probe on a clean target: `./run.sh selfprobe
+   "<target>"` on a playlist with distinct entries. Pass: it
+   returns a forward or reversed mapping, records THROWAWAY as
+   the target name and SORT as "self-probe: target's own
+   sort", and the target's order in Music is unchanged
+   afterwards (snapshot restored and verified). A following
+   build on that target must apply under the self-probe
+   mapping with no throwaway involved.
+2. Daily auto-probe: run `daily.sh` by hand with no manual
+   probe in the previous 48 hours. Pass: the log shows an
+   auto self-probe OK for the daily playlist AND for "SeTeR
+   Rediscover" before the mapping check, then manifest,
+   dedupe, shuffle APPLY OK, rediscover APPLY OK.
+3. Other-mapping abort: self-probe a target whose sort is not
+   buildable (e.g. a title-sorted playlist, if Music lets
+   the probe run on it). Pass: the probe returns "other",
+   deletes that target's mapping, changes nothing else, and
+   no build runs for the target until its sort changes and a
+   clean self-probe passes.
+4. Restore from snapshot after a failed probe restore: this
+   is hard to stage deliberately; if a self-probe ever
+   reports that its restore could not be verified, pass is:
+   the target's snapshot path is named in the log, the
+   measured mapping is still recorded, `./run.sh restore
+   "<target>" "<snapshot>"` returns the target to its
+   pre-probe order, and no build runs until a clean
+   self-probe passes afterwards.
+5. Doubled-playlist deadlock (expected failure, not a bug):
+   self-probe a doubled playlist. Pass: it refuses on
+   duplicate entries, changes nothing, and the daily run
+   fails closed on that target. Dedupe it by hand (or under
+   a mapping obtained another way) before it can be
+   auto-probed; do not weaken the refusal to get past this.
 
 ## Stable-promotion gaps STILL open (not fixed by this prep package)
 

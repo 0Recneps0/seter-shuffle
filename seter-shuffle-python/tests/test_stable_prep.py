@@ -84,7 +84,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.install / "daily.sh").exists())
         self.assertTrue((self.install / "bridge" / "apply-order.applescript").exists())
         self.assertTrue((self.install / "seter_shuffle" / "cli.py").exists())
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.1")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.2")
         self.assertFalse((self.agents / "com.seter.python.daily.plist").exists())
 
     def test_install_is_idempotent_for_same_version(self) -> None:
@@ -92,7 +92,7 @@ class InstallerTests(unittest.TestCase):
         second = run_script("setup-python.sh", ["--no-daily", "-y"], self.env)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.1")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.2")
 
     def test_install_refuses_different_version_without_force(self) -> None:
         run_script("setup-python.sh", ["--no-daily", "-y"], self.env)
@@ -102,7 +102,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("already holds version", refused.stderr + refused.stdout)
         forced = run_script("setup-python.sh", ["--no-daily", "-y", "--force"], self.env)
         self.assertEqual(forced.returncode, 0, forced.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.1")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.2")
 
     def test_daily_plist_uses_single_hour_variable_and_new_label(self) -> None:
         result = run_script("setup-python.sh", ["-y"], self.env)
@@ -194,22 +194,35 @@ class DailyTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_daily_refuses_without_mappings_and_never_probes(self) -> None:
+    def test_daily_without_mappings_attempts_selfprobe_and_fails_closed(self) -> None:
+        # v3.0.2: daily.sh no longer refuses for lack of a mapping
+        # without trying; it auto self-probes first. On this
+        # machine there is no osascript, so the probe fails, and
+        # the run must fail closed naming the target and snapshot,
+        # before any build step.
         result = run_script("daily.sh", ["My New Sandwich Recipe"], self.env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("sortprobe", result.stdout + result.stderr)
-        # No auto-probe: daily.sh must not contain a sortprobe call
-        # to run.sh at all; it only prints the manual command.
+        combined = result.stdout + result.stderr
+        self.assertIn("auto self-probe failed for 'My New Sandwich Recipe'", combined)
+        self.assertIn("sort-probe-snapshot.txt", combined)
+        self.assertNotIn("daily dedupe done", combined)
+        # And it never invokes a throwaway sortprobe: only selfprobe.
         text = (ROOT / "daily.sh").read_text()
-        self.assertNotIn("sortprobe \"$", text)
         self.assertNotIn("run.sh\" sortprobe", text)
 
-    def test_daily_refuses_stale_mapping(self) -> None:
+    def test_daily_stale_mapping_is_refreshed_by_probe_or_fails_closed(self) -> None:
+        # v3.0.2: a stale mapping is no longer the refusal itself;
+        # the auto self-probe refreshes it. On this machine the
+        # probe cannot run (no osascript), so the run fails at
+        # the probe, not at a stale-mapping check, and still
+        # changes nothing.
         write_mapping(self.state, "My New Sandwich Recipe", age_seconds=180000)
         write_mapping(self.state, "SeTeR Rediscover")
         result = run_script("daily.sh", ["My New Sandwich Recipe"], self.env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("older than 48 hours", result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("auto self-probe failed for 'My New Sandwich Recipe'", combined)
+        self.assertNotIn("daily dedupe done", combined)
 
     def test_daily_dry_run_passes_with_fresh_mappings(self) -> None:
         write_mapping(self.state, "My New Sandwich Recipe")
