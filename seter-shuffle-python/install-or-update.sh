@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-or-update.sh (SeTeR Shuffle v3.0.5, one-click install or update)
+# install-or-update.sh (SeTeR Shuffle v3.0.6, one-click install or update)
 #
 # Bash 3.2 note (macOS ships bash 3.2): this script contains NO
 # array expansions at all. The v3.0 build died on a default run
@@ -21,7 +21,7 @@
 #
 # One confirmation, then everything in order:
 #   1. Verify a real python3 (3.9+) exists.
-#   2. Install or update ~/Documents/SeTeRShufflePython to v3.0.5
+#   2. Install or update ~/Documents/SeTeRShufflePython to v3.0.6
 #      (differing files get a timestamped .bak first; backups, logs,
 #      and Rediscover history are never deleted).
 #   3. Write and load the 8:00 AM com.seter.python.daily plist.
@@ -84,14 +84,14 @@ for helper in setup-python.sh check-python.sh daily.sh run.sh migrate-to-python.
 done
 
 ASSUME_YES=0
-FORCE=0
+FORCE=0 # shellcheck disable=SC2034
 PLAYLIST=""
 HOUR=""
 MINUTE=""
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle v3.0.5 -- one-click install or update
+SeTeR Shuffle v3.0.6 -- one-click install or update
 
 Usage: bash install-or-update.sh [--yes] [--playlist NAME] [--hour H] [--minute M] [--force]
 
@@ -110,7 +110,7 @@ die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) ASSUME_YES=1; shift ;;
-    --force) FORCE=1; shift ;;
+    --force) FORCE=1; shift ;; # accepted; --force is always passed to setup below
     --playlist) [ $# -ge 2 ] || die "--playlist needs a playlist name"; PLAYLIST="$2"; shift 2 ;;
     --playlist=*) PLAYLIST="${1#*=}"; shift ;;
     --hour) [ $# -ge 2 ] || die "--hour needs a number from 0 to 23"; HOUR="$2"; shift 2 ;;
@@ -135,7 +135,7 @@ OLD_PLIST="$PLIST_DIR/com.seter.daily.plist"
 NEW_PLIST="$PLIST_DIR/com.seter.python.daily.plist"
 MARKER_FILE="$INSTALL_DIR/installed-version.txt"
 
-say "SeTeR Shuffle v3.0.5 -- one-click install or update"
+say "SeTeR Shuffle v3.0.6 -- one-click install or update"
 say ""
 if [ -f "$MARKER_FILE" ]; then
   say "Existing install found at $INSTALL_DIR (version: $(cat "$MARKER_FILE" 2>/dev/null || echo unknown)). This will update it in place."
@@ -207,16 +207,12 @@ if [ -f "$OLD_PLIST" ]; then
   die "Final check failed: v2.6 daily plist is still present; migration did not take effect. Rollback is available: bash $INSTALL_DIR/migrate-to-python.sh --rollback"
 fi
 say ""
-say "Done. SeTeR Shuffle v3.0.5 is installed and scheduled for 8:00 AM."
+say "Done. SeTeR Shuffle v3.0.6 is installed and scheduled for 8:00 AM."
 say "  Install: $INSTALL_DIR"
 say "  Daily job: com.seter.python.daily (8:00 AM)"
 say "  v2.6 daily job: disabled (script and backups kept; rollback: bash $INSTALL_DIR/migrate-to-python.sh --rollback)"
 say ""
-say "IMPORTANT, before the first scheduled run: the 8am daily run"
-say "still refuses without a fresh (<48h) per-target mapping for"
-say "both the daily playlist and \"SeTeR Rediscover\". It never"
-say "auto-probes. Sortprobe each target on a clean throwaway set"
-say "to that target's sort (never the main playlist itself as"
-say "the throwaway) before the first scheduled run, for example:"
-say "  ./run.sh sortprobe \"Throwaway\" \"My New Sandwich Recipe\" \"Playlist Order descending\""
-say "with the sort label matching the playlist's actual sort in Music."
+say "NOTE: the daily run self-probes \"the daily playlist\" and \"SeTeR Rediscover\""
+say "itself each morning (since v3.0.2) and refuses to change anything if"
+say "a fresh per-target mapping can't be measured. To check it now:"
+say "  cd $INSTALL_DIR && ./run.sh audit"

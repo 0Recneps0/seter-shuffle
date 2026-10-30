@@ -40,7 +40,7 @@ from typing import Iterable, Sequence
 from .artists import artist_key
 from .settings import Settings
 from .shuffle import fisher_yates, spread_artists
-from .tracks import Track
+from .tracks import Track, split_duplicates
 
 
 def rediscover_target(library_count: int, settings: Settings) -> int:
@@ -171,6 +171,16 @@ def pick_rediscover(
     target = rediscover_target(len(tracks), settings)
     if not candidates:
         return [], 0, target
+    # One song stored as two library tracks must not take two slots. Of
+    # each same-song group the highest-weight copy stays; ties keep the
+    # earlier one. The survivors keep their original relative order.
+    by_weight = sorted(range(len(candidates)), key=lambda i: (-weights[i], i))
+    survivors, _dropped = split_duplicates([candidates[i] for i in by_weight], "song")
+    survivor_ids = {id(track) for track in survivors}
+    if len(survivor_ids) != len(candidates):
+        pairs = [(c, w) for c, w in zip(candidates, weights) if id(c) in survivor_ids]
+        candidates = [c for c, _w in pairs]
+        weights = [w for _c, w in pairs]
     if len(candidates) <= target:
         picked_idx = list(range(len(candidates)))
     else:

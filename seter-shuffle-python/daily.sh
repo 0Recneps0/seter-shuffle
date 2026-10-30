@@ -88,7 +88,6 @@ PLAYLIST="${1:-My New Sandwich Recipe}"
 STATE="${SETER_STATE_DIR:-$HOME/Library/Logs/seter-shuffle-python}"
 LOG="$STATE/daily.log"
 BACKUP_DIR="${SETER_BACKUP_DIR:-$ROOT/backups}"
-HISTORY="$HOME/Documents/SeTeRShuffle/rediscover-history.tsv"
 REDISCOVER_PLAYLIST="SeTeR Rediscover"
 
 mkdir -p "$STATE" "$BACKUP_DIR" 2>/dev/null || true

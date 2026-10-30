@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from .audit import audit_library, format_audit
-from .flow import flow_energy, prepare_flow
+from .flow import prepare_flow
 from .manifest import write_library_manifest
 from .rediscover import (
     load_rediscover_history,
@@ -69,7 +69,7 @@ from .rediscover import (
 )
 from .settings import Settings
 from .shuffle import shuffle_tracks
-from .tracks import Track, load_library
+from .tracks import Track, load_library, split_duplicates
 from .validate import validate_backup_file, validate_order_file
 
 
@@ -194,6 +194,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     _add_settings(p)
     p.add_argument("--playlist", default=None)
+    p.add_argument(
+        "--match",
+        choices=["id", "song"],
+        default="song",
+        help="what counts as a duplicate: 'song' (default) = same track ID, or "
+        "same artist + title (and length, when known); 'id' = same track ID only",
+    )
 
     p = sub.add_parser(
         "audit", help="tag-coverage audit of a library dump (changes nothing)"
@@ -215,6 +222,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["shuffle", "shuffle-size", "flow", "rediscover", "dedupe"],
     )
     p.add_argument("--expected-count", type=int, default=None)
+    p.add_argument(
+        "--dedupe-match",
+        choices=["id", "song"],
+        default="song",
+        help="for --mode dedupe: the match rule the order was computed with",
+    )
 
     p = sub.add_parser(
         "validate-backup",
@@ -257,6 +270,7 @@ def _run(args: argparse.Namespace) -> int:
             order_json_path=args.order_json,
             mode=args.mode,
             expected_count=args.expected_count,
+            dedupe_match=args.dedupe_match,
         )
         print(f"Order valid: {len(ids)} IDs (mode: {args.mode or 'any'}).")
         return 0
@@ -324,21 +338,15 @@ def _run(args: argparse.Namespace) -> int:
         # (v2.6 parity), not counts only: the names come from the
         # dump itself, so a removed entry is always identifiable
         # in the run log.
-        seen: set[str] = set()
-        ordered = []
-        removed_tracks: list[Track] = []
-        for track in tracks:
-            if track.persistent_id not in seen:
-                seen.add(track.persistent_id)
-                ordered.append(track)
-            else:
-                removed_tracks.append(track)
+        ordered, removed_pairs = split_duplicates(tracks, args.match)
+        removed_tracks = [entry for entry, _kept, _why in removed_pairs]
         removed = len(removed_tracks)
         energies = None
         eligible = len(tracks)
         header = (
             f"Dedupe: {len(ordered)} unique songs from {len(tracks)} "
-            f"input tracks ({removed} duplicate entr{'y' if removed == 1 else 'ies'} removed)."
+            f"input tracks ({removed} duplicate entr{'y' if removed == 1 else 'ies'} removed; "
+            f"matching by {'exact track ID and same artist + title' if args.match == 'song' else 'exact track ID only'})."
         )
     elif command == "shuffle":
         ordered = shuffle_tracks(
@@ -395,8 +403,17 @@ def _run(args: argparse.Namespace) -> int:
     if not args.quiet:
         print(header)
         if command == "dedupe":
-            for track in removed_tracks:
-                print(f"Removed duplicate: {track.artist} - {track.name}")
+            for track, kept_track, why in removed_pairs:
+                print(f"Removed duplicate: {track.artist} - {track.name} ({why})")
+            if args.match == "id":
+                _kept, would_remove = split_duplicates(tracks, "song")
+                extra = len(would_remove) - len(removed_pairs)
+                if extra > 0:
+                    print(
+                        f"Note: {extra} more entr{'y looks' if extra == 1 else 'ies look'} like the "
+                        "same song stored as a different library track; "
+                        "re-run with --match song to remove them."
+                    )
         for line in _preview_lines(ordered, energies, settings.preview_show):
             print(line)
     return 0

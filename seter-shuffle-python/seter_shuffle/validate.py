@@ -83,7 +83,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .tracks import Track, load_library
+from .tracks import Track, load_library, split_duplicates
 
 # An ID with whitespace or a control character in it cannot be a real
 # persistent ID, and passing one to Music would fail the lookup in a
@@ -152,6 +152,7 @@ def validate_order_file(
     order_json_path: str | Path | None = None,
     mode: str | None = None,
     expected_count: int | None = None,
+    dedupe_match: str = "song",
 ) -> list[str]:
     """Validate an order file against a library dump.
 
@@ -237,11 +238,17 @@ def validate_order_file(
         # order must neither drop a distinct song nor keep a
         # second copy of one, and (via the multiplicity/missing
         # checks above) it cannot invent an ID either.
-        if Counter(ids) != Counter({pid: 1 for pid in library_ids}):
+        # The expected order is recomputed here from the dump with the
+        # same rule the core used, and compared EXACTLY (same IDs, same
+        # order): a validator that merely checked "some subset" would
+        # let a buggy order silently drop a distinct song.
+        expected_ids = [t.persistent_id for t in split_duplicates(tracks, dedupe_match)[0]]
+        if ids != expected_ids:
             errors.append(
-                f"dedupe order must be exactly the dump's unique songs "
-                f"(each once): order has {len(ids)} IDs, dump has "
-                f"{len(tracks)} entries and {len(library_ids)} unique songs"
+                f"dedupe order must be exactly the dump's distinct songs, "
+                f"first occurrence of each, in dump order (match={dedupe_match}): "
+                f"order has {len(ids)} IDs, expected {len(expected_ids)} from "
+                f"{len(tracks)} entries ({len(library_ids)} unique IDs)"
             )
     elif mode == "shuffle-size":
         # A size-capped whole-library shuffle into a generated

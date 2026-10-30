@@ -8,6 +8,42 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — v3.0.6: same-song dedupe by default, plus setup fixes
+
+Dedupe now removes a song stored as a different library
+track, not just an exact-ID repeat: same artist + title
+after case/accent/space normalisation, and within 3 seconds
+of length when both lengths are known. The bridge dump now
+carries duration in integer milliseconds, so the length
+check has data. Titles are never trimmed, so "Song (Live)"
+or "Song - Remastered" are different songs, and a track
+with no artist or no title is matched by ID only. The
+first copy in the playlist stays, and only playlist
+entries are removed; nothing leaves the library. To go
+back to exact-ID matching only:
+`SETER_DEDUPE_MATCH=id ./run.sh dedupe "Playlist"` (for
+the daily run, add it to the launchd plist's
+EnvironmentVariables). The Rediscover picker also gives
+one slot to a song that exists twice in the library.
+Tradeoff, stated plainly: same artist + title within 3
+seconds merges, first copy stays, and a dump with unknown
+durations merges on names alone.
+
+Also in v3.0.6: setup fixes (warn() prints its message;
+re-running setup from the installed copy no longer hits a
+same-file copy error; uninstall refuses a directory that
+is not a SeTeR install); the installer final note now
+states the daily self-probe behaviour instead of the stale
+manual sortprobe instruction; daily.sh drops an unused
+history variable.
+
+Version marker bumped to `3.0.6`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.6 one-click run, same-song
+dedupe on a real playlist, trial-dedupe completing on the
+real doubled playlist, the mapping recorded by a
+successful trial, and a subsequent shuffle after
+trial-dedupe.
+
 ## 2026-10-29 — v3.0.5: restores try both mappings before declaring CRITICAL (NOT yet a published release)
 
 On 2026-10-29 18:59-19:05 PT Spencer ran trial-dedupe

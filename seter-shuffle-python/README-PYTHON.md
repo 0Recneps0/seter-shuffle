@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0.5)
+# SeTeR Shuffle, Python core (v3.0.6)
 
-This tree is the v3.0.5 stable tree on the main branch. The v2.6
+This tree is the v3.0.6 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.5)
+## One-click install or update (v3.0.6)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.5, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.6, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -87,10 +87,30 @@ mappings stops critical with the snapshot named and does
 not try the other trial mapping on top of a possibly
 partial state.
 
-## Stable preparation (v3.0.5)
+NEW IN v3.0.6: same-song dedupe, plus setup fixes. Dedupe now
+removes a song stored as a different library track, not just an
+exact-ID repeat: same artist + title after case/accent/space
+normalisation, and within 3 seconds of length when both lengths
+are known (the dump now carries duration). Titles are never
+trimmed, so a live or remastered version is a different song,
+and a track with no artist or no title is matched by ID only.
+The first copy in the playlist stays. To go back to exact-ID
+matching only: `SETER_DEDUPE_MATCH=id ./run.sh dedupe
+"Playlist"`. The Rediscover picker also gives one slot to a
+song that exists twice in the library. Tradeoff, stated
+plainly: same artist + title within 3 seconds merges, first
+copy stays, and a dump with unknown durations merges on
+names alone. Setup fixes: warn() actually prints its
+message, re-running setup from the installed copy no longer
+hits a same-file copy error, uninstall refuses a directory
+that is not a SeTeR install, and the installer note now
+states the daily self-probe behaviour instead of the stale
+manual sortprobe instruction.
 
-Stable name: v3.0.5. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.5`. No tag or release is created by
+## Stable preparation (v3.0.6)
+
+Stable name: v3.0.6. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.6`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash
@@ -451,3 +471,26 @@ this procedure runs on a real playlist first, and nothing runs on
 - Artist spacing is best effort. With spacing=2, at least 2 songs must
   sit between repeats, so a library dominated by one or two artists
   cannot be fully separated, and the pass gives up rather than looping.
+
+
+## What counts as a duplicate (dedupe)
+
+`./run.sh dedupe <playlist>` and the daily dedupe step remove a playlist
+entry when it is
+
+- the same Music track as an earlier entry (same persistent ID), or
+- the same song stored as a different library track: same artist and
+  title after ignoring case, accents-as-written and extra spaces, and,
+  when the dump knows both lengths, within 3 seconds of each other.
+
+The first copy in the playlist stays. Titles are never trimmed, so
+"Song (Live)" or "Song - Remastered" are different songs, and a live or
+radio-edit version with a clearly different length is kept. Tracks with
+no artist or no title are matched by ID only. Only playlist entries are
+removed; nothing leaves your library, and the usual backup / verify /
+restore gates apply.
+
+To go back to exact-ID matching only: `SETER_DEDUPE_MATCH=id ./run.sh dedupe "Playlist"`
+(for the daily run, add `SETER_DEDUPE_MATCH=id` to the launchd plist's
+`EnvironmentVariables`). The Rediscover picker also gives one slot to a
+song that exists twice in the library.

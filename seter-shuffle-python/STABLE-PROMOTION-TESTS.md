@@ -543,3 +543,20 @@ repeats the forward-then-restore trap below.
   was still unconfirmed when this package was built; a daily
   auto run needs a clean per-target mapping for the main
   playlist, and sortprobe refuses a doubled playlist.
+
+## Same-song dedupe Mac steps (v3.0.6)
+
+1. After the v3.0.6 one-click install, run
+   `./run.sh dedupe "My New Sandwich Recipe"` on the real
+   doubled playlist. Pass: trial-dedupe completes (forward
+   trial restores under reversed, reversed trial applies),
+   exact-ID duplicates are removed, and any same-song
+   entries (same artist + title, within 3 seconds when
+   lengths are known) are also removed, first copy kept,
+   with a "(same song)" reason in the log.
+2. Re-run dedupe: pass, it applies nothing (already clean
+   under the song rule).
+3. If a same-song removal was wrong (two versions the user
+   wants to keep), re-run with `SETER_DEDUPE_MATCH=id`:
+   pass, only exact-ID duplicates are removed, and the
+   log notes how many same-song entries id mode left.

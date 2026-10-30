@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.5)
+# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.6)
 #
-# Installs the Python build for macOS. This is the v3.0.5 stable
-# tree: the installer records version "3.0.5". The one-click
+# Installs the Python build for macOS. This is the v3.0.6 stable
+# tree: the installer records version "3.0.6". The one-click
 # install-or-update.sh always calls this script with --force
 # (the user already confirmed once there), so an update from a
 # 3.0-proposed or 3.0 install is allowed (differing files
@@ -56,8 +56,7 @@ set -euo pipefail
 DAILY_HOUR=8
 DAILY_MINUTE=0
 DAILY_PLAYLIST_DEFAULT="My New Sandwich Recipe"
-PROPOSED_VERSION="3.0.5"
-VERSION_MARKER="3.0.5"
+VERSION_MARKER="3.0.6"
 PLIST_LABEL="com.seter.python.daily"
 
 INSTALL_DIR="${SETER_PYTHON_INSTALL_DIR:-$HOME/Documents/SeTeRShufflePython}"
@@ -72,12 +71,12 @@ HOUR=""
 MINUTE=""
 NO_DAILY=0
 FORCE=0
-ASSUME_YES=0
+ASSUME_YES=0 # accepted for symmetry with install-or-update.sh; this script never prompts
 UNINSTALL=0
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle (Python) setup -- stable v3.0.5
+SeTeR Shuffle (Python) setup -- stable v3.0.6
 
 Usage: bash setup-python.sh [options]
 
@@ -99,7 +98,7 @@ EOF
 
 say() { printf '%s\n' "$*"; }
 ok() { printf '  ok %s\n' "$*"; }
-warn() { printf '  ! %s\n' >&2; }
+warn() { printf '  ! %s\n' "$*" >&2; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
@@ -112,7 +111,7 @@ while [ $# -gt 0 ]; do
     --minute=*) MINUTE="${1#*=}"; shift ;;
     --no-daily) NO_DAILY=1; shift ;;
     --force) FORCE=1; shift ;;
-    -y|--yes) ASSUME_YES=1; shift ;;
+    -y|--yes) ASSUME_YES=1; shift ;; # shellcheck disable=SC2034
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown option: $1 (try --help)" ;;
@@ -186,6 +185,12 @@ do_uninstall() {
     ok "removed the Python daily schedule ($PLIST_LABEL)"
   fi
   if [ -d "$INSTALL_DIR" ]; then
+    case "$INSTALL_DIR" in
+      ""|/|"$HOME"|"$HOME"/) die "Refusing to remove '$INSTALL_DIR': not a dedicated install directory." ;;
+    esac
+    if [ ! -f "$INSTALL_DIR/installed-version.txt" ]; then
+      die "Refusing to remove $INSTALL_DIR: no installed-version.txt, so it doesn't look like a SeTeR install."
+    fi
     rm -rf "$INSTALL_DIR"
     ok "removed $INSTALL_DIR"
   fi
@@ -212,7 +217,7 @@ if [ -z "${SETER_TEST_MODE:-}" ]; then
   bash "$SCRIPT_DIR/check-python.sh" >/dev/null || die "No usable python3 (3.9+) found; install real Python first, then re-run setup."
 fi
 
-say "SeTeR Shuffle (Python) setup -- stable v3.0.5"
+say "SeTeR Shuffle (Python) setup -- stable v3.0.6"
 say ""
 
 # Version refusal: an existing install with a different marker is
@@ -230,6 +235,8 @@ mkdir -p "$INSTALL_DIR/bridge" "$INSTALL_DIR/seter_shuffle"
 install_file() {
   local src="$1" dest="$2"
   [ -f "$src" ] || die "Missing source file: $src (run setup from the unzipped build folder)"
+  # Re-running setup from the installed copy: source and destination are the same file.
+  if [ -f "$dest" ] && [ "$src" -ef "$dest" ]; then return 0; fi
   if [ -f "$dest" ] && ! cmp -s "$src" "$dest"; then
     local backup
     backup="$dest.bak-$(date +%Y%m%d-%H%M%S)"
@@ -272,7 +279,7 @@ else
 fi
 
 say ""
-say "All set (v3.0.5 installed)."
+say "All set (v3.0.6 installed)."
 say "  Install:   $INSTALL_DIR"
 say "  Daily log: $LOG_FILE"
 say "  Manual:    cd $INSTALL_DIR && ./run.sh audit"

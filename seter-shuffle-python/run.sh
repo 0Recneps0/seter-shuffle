@@ -196,6 +196,17 @@ BRIDGE="$ROOT/bridge"
 STATE="$HOME/Library/Logs/seter-shuffle-python"
 LOG="$STATE/run.log"
 HISTORY="$HOME/Documents/SeTeRShuffle/rediscover-history.tsv"
+# What counts as a duplicate for `dedupe` (and the daily dedupe step):
+#   song (default) = same Music track ID, OR same artist + title (and
+#                    length, when known), so one song stored as two
+#                    library tracks is removed too
+#   id             = same Music track ID only (the pre-3.0.6 behaviour)
+# Set SETER_DEDUPE_MATCH=id to turn the same-song matching off.
+DEDUPE_MATCH="${SETER_DEDUPE_MATCH:-song}"
+case "$DEDUPE_MATCH" in
+  id|song) ;;
+  *) echo "SETER_DEDUPE_MATCH must be 'id' or 'song' (got '$DEDUPE_MATCH')" >&2; exit 2 ;;
+esac
 
 mkdir -p "$STATE"
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
@@ -995,7 +1006,7 @@ apply_order_mapped() {
   if [ "$mode" = "shuffle" ] && [ -z "${SOURCE_PLAYLIST:-}" ] && [ -n "${SHUFFLE_SIZE:-}" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
     validate_mode="shuffle-size"
   fi
-  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" || return 1
+  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" --dedupe-match "$DEDUPE_MATCH" || return 1
   log "GATE: order validated for $target"
   # Duplicate allowance: "1" only for a one-playlist shuffle whose
   # dump itself repeats an ID (duplicate playlist entries, preserved
@@ -1222,7 +1233,7 @@ case "$CMD" in
     ;;
   dedupe)
     TARGET_PLAYLIST="${TARGET_PLAYLIST:-}"
-    step "compute dedupe order" "$PY" -m seter_shuffle.cli dedupe --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" || exit 1
+    step "compute dedupe order" "$PY" -m seter_shuffle.cli dedupe --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --match "$DEDUPE_MATCH" || exit 1
     # Skip the apply entirely when there is nothing to remove: a
     # rebuild of an already-clean playlist is pure risk for zero
     # gain, and on a sorted playlist it would also re-exercise the

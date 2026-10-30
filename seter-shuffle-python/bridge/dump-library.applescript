@@ -99,6 +99,13 @@ on run argv
 	if libBPMs is missing value then
 		set libBPMs to my repeatValue(n, missing value)
 	end if
+	-- Length, used only by same-song dedupe to tell a live version or radio
+	-- edit from a true duplicate. Unknown (read failed) becomes null for
+	-- every track, and the Python side then matches on artist + title alone.
+	set libDurations to my bulkListOrMissing("duration", sourcePl, n)
+	if libDurations is missing value then
+		set libDurations to my repeatValue(n, missing value)
+	end if
 	set libYears to my bulkListOrMissing("year", sourcePl, n)
 	if libYears is missing value then
 		set libYears to my repeatValue(n, missing value)
@@ -136,6 +143,7 @@ on run argv
 		set genreText to my jsonText(my safeText(item i of libGenres))
 		set bpmText to my jsonNumber(item i of libBPMs)
 		set yearText to my jsonNumber(item i of libYears)
+		set durText to my jsonDurationMs(item i of libDurations)
 		set pcText to my jsonInt(item i of libPlayCounts, 0)
 		set skText to my jsonInt(item i of libSkipCounts, 0)
 		set rtText to my jsonInt(item i of libRatings, 0)
@@ -144,7 +152,7 @@ on run argv
 		set enText to my jsonBool(item i of libEnabledFlags, true)
 		set playedText to my jsonDate(item i of libPlayDates)
 		set addedText to my jsonDate(item i of libAddedDates)
-		set lineText to "  {\"persistent_id\": " & pidText & ", \"name\": " & nameText & ", \"artist\": " & artistText & ", \"album\": " & albumText & ", \"genre\": " & genreText & ", \"bpm\": " & bpmText & ", \"year\": " & yearText & ", \"played_count\": " & pcText & ", \"skipped_count\": " & skText & ", \"rating\": " & rtText & ", \"favorited\": " & favText & ", \"disliked\": " & disText & ", \"enabled\": " & enText & ", \"played_date\": " & playedText & ", \"date_added\": " & addedText & "}"
+		set lineText to "  {\"persistent_id\": " & pidText & ", \"name\": " & nameText & ", \"artist\": " & artistText & ", \"album\": " & albumText & ", \"genre\": " & genreText & ", \"bpm\": " & bpmText & ", \"year\": " & yearText & ", \"duration_ms\": " & durText & ", \"played_count\": " & pcText & ", \"skipped_count\": " & skText & ", \"rating\": " & rtText & ", \"favorited\": " & favText & ", \"disliked\": " & disText & ", \"enabled\": " & enText & ", \"played_date\": " & playedText & ", \"date_added\": " & addedText & "}"
 		if i < n then set lineText to lineText & ","
 		set end of outLines to lineText
 	end repeat
@@ -201,6 +209,8 @@ on bulkListOrMissing(propName, sourcePl, n)
 		tell application "Music"
 			if propName is "bpm" then
 				set vals to bpm of every track of sourcePl whose media kind is song
+			else if propName is "duration" then
+				set vals to duration of every track of sourcePl whose media kind is song
 			else if propName is "year" then
 				set vals to year of every track of sourcePl whose media kind is song
 			else if propName is "skipped count" then
@@ -279,6 +289,20 @@ on jsonNumber(x)
 	if x is missing value then return "null"
 	return x as text
 end jsonNumber
+
+-- Whole milliseconds as an INTEGER, so no locale can render a decimal
+-- comma and no large real can print in E-notation. Anything that is not
+-- a positive number becomes null (unknown).
+on jsonDurationMs(x)
+	if x is missing value then return "null"
+	try
+		set ms to (round (x * 1000) rounding to nearest) as integer
+		if ms < 1 then return "null"
+		return ms as text
+	on error
+		return "null"
+	end try
+end jsonDurationMs
 
 on jsonInt(x, defaultVal)
 	if x is missing value then return defaultVal as text

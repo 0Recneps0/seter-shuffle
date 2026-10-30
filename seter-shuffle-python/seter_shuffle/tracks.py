@@ -19,7 +19,7 @@ recent, and it simply gets no "time forgotten" multiplier.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -42,6 +42,7 @@ class Track:
     enabled: bool = True  # Music "checked" state; False = unchecked
     played_date: Optional[datetime] = None
     date_added: Optional[datetime] = None
+    duration_seconds: Optional[float] = None  # None when the dump could not read it
 
     @property
     def is_song(self) -> bool:
@@ -111,6 +112,19 @@ def _first(mapping: dict, *names: str) -> Any:
     return None
 
 
+def _duration_seconds(data: dict) -> Optional[float]:
+    """Duration in seconds from `duration_ms` (the bridge writes integer
+    milliseconds, so no locale can turn a decimal point into a comma) or
+    `duration` in seconds. Missing, zero, or negative means unknown."""
+    ms = _as_float(_first(data, "duration_ms", "durationMs"))
+    if ms is not None and ms > 0:
+        return ms / 1000.0
+    secs = _as_float(_first(data, "duration"))
+    if secs is not None and secs > 0:
+        return secs
+    return None
+
+
 def track_from_dict(data: dict) -> Track:
     """Build a Track, applying v2.6's neutral defaults for missing signals."""
     pid = _first(data, "persistent_id", "persistentId", "id")
@@ -141,6 +155,7 @@ def track_from_dict(data: dict) -> Track:
         enabled=enabled,
         played_date=parse_date(_first(data, "played_date", "playedDate")),
         date_added=parse_date(_first(data, "date_added", "dateAdded")),
+        duration_seconds=_duration_seconds(data),
     )
 
 
@@ -204,4 +219,94 @@ def track_to_dict(track: Track) -> dict:
         "enabled": track.enabled,
         "played_date": track.played_date.isoformat() if track.played_date else None,
         "date_added": track.date_added.isoformat() if track.date_added else None,
+        "duration_ms": (
+            int(round(track.duration_seconds * 1000))
+            if track.duration_seconds is not None
+            else None
+        ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Same-song matching (dedupe --match song)
+# ---------------------------------------------------------------------------
+# Music gives every library track its own persistent ID, so the same
+# recording added twice (single + album, a matched + an uploaded copy,
+# two imports) is two IDs and an ID-only dedupe leaves both. "Same
+# song" here is deliberately conservative: same artist and same title
+# after unicode / case / whitespace normalisation, and, when the dump
+# knows both lengths, within DURATION_TOLERANCE_SECONDS of each other,
+# so a live version or a radio edit that happens to share a title is
+# NOT merged. Titles are never trimmed of "(Live)", "- Remastered" and
+# similar suffixes: those are different titles on purpose. A track with
+# no artist or no title is never matched by name, only by its own ID.
+
+DURATION_TOLERANCE_SECONDS = 3.0
+
+
+def _norm_text(value: str) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", value or "").casefold()
+    return " ".join(text.split())
+
+
+def song_key(track: Track) -> Optional[tuple[str, str]]:
+    """(artist, title) normalised, or None when the track can't be matched by name."""
+    artist = _norm_text(track.artist)
+    title = _norm_text(track.name)
+    if not artist or not title:
+        return None
+    return (artist, title)
+
+
+def _same_length(a: Optional[float], b: Optional[float]) -> bool:
+    if a is None or b is None:
+        return True  # unknown length: the title and artist match is all there is
+    return abs(a - b) <= DURATION_TOLERANCE_SECONDS
+
+
+def split_duplicates(
+    tracks: list[Track], match: str = "song"
+) -> tuple[list[Track], list[tuple[Track, Track, str]]]:
+    """Split playlist entries into (kept, removed).
+
+    kept: first occurrence of every distinct song, in input order.
+    removed: (entry, the kept entry it duplicates, reason) for each drop,
+    where reason is "same ID" or "same song".
+
+    match="id" is exact persistent-ID identity only; match="song" also
+    merges different IDs that are the same song (see above). The input
+    is never mutated; every output entry is an element of the input.
+    """
+    if match not in ("id", "song"):
+        raise ValueError(f"unknown dedupe match mode {match!r} (use 'id' or 'song')")
+    kept: list[Track] = []
+    removed: list[tuple[Track, Track, str]] = []
+    by_id: dict[str, Track] = {}
+    by_song: dict[tuple[str, str], list[Track]] = {}
+    for track in tracks:
+        first = by_id.get(track.persistent_id)
+        if first is not None:
+            removed.append((track, first, "same ID"))
+            continue
+        if match == "song":
+            key = song_key(track)
+            if key is not None:
+                twin = next(
+                    (
+                        k
+                        for k in by_song.get(key, [])
+                        if _same_length(k.duration_seconds, track.duration_seconds)
+                    ),
+                    None,
+                )
+                if twin is not None:
+                    removed.append((track, twin, "same song"))
+                    # A later entry with this same ID is the same removed track.
+                    by_id[track.persistent_id] = twin
+                    continue
+                by_song.setdefault(key, []).append(track)
+        by_id[track.persistent_id] = track
+        kept.append(track)
+    return kept, removed

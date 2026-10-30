@@ -67,7 +67,6 @@ def _local_clashes(
     i and j, plus each position itself. Positions outside the list do
     not clash (matching v2.6's clashesAt guard).
     """
-    n = len(order)
     count = 0
     for p in range(i - spacing, i + 1):
         if _clashes_at(order, keys, p, spacing):
