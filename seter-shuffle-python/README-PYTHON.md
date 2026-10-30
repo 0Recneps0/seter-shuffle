@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0.6)
+# SeTeR Shuffle, Python core (v3.0.7)
 
-This tree is the v3.0.6 stable tree on the main branch. The v2.6
+This tree is the v3.0.7 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.6)
+## One-click install or update (v3.0.7)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.6, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.7, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -107,10 +107,22 @@ that is not a SeTeR install, and the installer note now
 states the daily self-probe behaviour instead of the stale
 manual sortprobe instruction.
 
-## Stable preparation (v3.0.6)
+NEW IN v3.0.7: no more redundant undo restore. When an apply
+fails but apply-order's own error says it already restored the
+playlist from its per-run snapshot, run.sh now skips the undo
+restore and returns to the caller, so a trial-dedupe moves
+straight to the other mapping instead of rebuilding the same
+snapshot 3 more times and then stopping on undo's "restored to
+pre-undo state" exit. A CRITICAL apply, where the internal
+restore failed under both mappings, still runs undo as before.
+This fixes the 2026-10-29 21:01 trial-dedupe, which rebuilt
+the playlist 5 times and stopped at 1612 without ever trying
+reversed, even though both restores had succeeded.
 
-Stable name: v3.0.6. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.6`. No tag or release is created by
+## Stable preparation (v3.0.7)
+
+Stable name: v3.0.7. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.7`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash

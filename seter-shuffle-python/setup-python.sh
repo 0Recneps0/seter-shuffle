@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.6)
+# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.7)
 #
-# Installs the Python build for macOS. This is the v3.0.6 stable
-# tree: the installer records version "3.0.6". The one-click
+# Installs the Python build for macOS. This is the v3.0.7 stable
+# tree: the installer records version "3.0.7". The one-click
 # install-or-update.sh always calls this script with --force
 # (the user already confirmed once there), so an update from a
 # 3.0-proposed or 3.0 install is allowed (differing files
@@ -56,7 +56,7 @@ set -euo pipefail
 DAILY_HOUR=8
 DAILY_MINUTE=0
 DAILY_PLAYLIST_DEFAULT="My New Sandwich Recipe"
-VERSION_MARKER="3.0.6"
+VERSION_MARKER="3.0.7"
 PLIST_LABEL="com.seter.python.daily"
 
 INSTALL_DIR="${SETER_PYTHON_INSTALL_DIR:-$HOME/Documents/SeTeRShufflePython}"
@@ -76,7 +76,7 @@ UNINSTALL=0
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle (Python) setup -- stable v3.0.6
+SeTeR Shuffle (Python) setup -- stable v3.0.7
 
 Usage: bash setup-python.sh [options]
 
@@ -217,7 +217,7 @@ if [ -z "${SETER_TEST_MODE:-}" ]; then
   bash "$SCRIPT_DIR/check-python.sh" >/dev/null || die "No usable python3 (3.9+) found; install real Python first, then re-run setup."
 fi
 
-say "SeTeR Shuffle (Python) setup -- stable v3.0.6"
+say "SeTeR Shuffle (Python) setup -- stable v3.0.7"
 say ""
 
 # Version refusal: an existing install with a different marker is
@@ -279,7 +279,7 @@ else
 fi
 
 say ""
-say "All set (v3.0.6 installed)."
+say "All set (v3.0.7 installed)."
 say "  Install:   $INSTALL_DIR"
 say "  Daily log: $LOG_FILE"
 say "  Manual:    cd $INSTALL_DIR && ./run.sh audit"

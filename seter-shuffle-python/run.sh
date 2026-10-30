@@ -1067,6 +1067,26 @@ apply_order_mapped() {
   else
     log "GATE FAILED: apply failed for $target"
     notify "SeTeR Shuffle: apply failed for $target ($mode)"
+    # Skip the redundant undo restore (v3.0.7, 2026-10-29 21:01
+    # trial-dedupe): apply-order's own error message says whether
+    # its internal restore succeeded ("playlist restored from
+    # backup") or failed under both mappings ("CRITICAL"). When
+    # it already restored, the playlist is back at the per-run
+    # snapshot, and running undo on top of it only rebuilds the
+    # same snapshot again, under the wrong mapping first, then
+    # under the opposite one: 3 extra rebuilds for no change,
+    # and undo's "restored to pre-undo state" exit then looks
+    # like a critical restore failure and stops a trial-dedupe
+    # before it ever tries the other mapping. Only lines since
+    # this apply's STEP line count, so an older run cannot
+    # false-positive here. A CRITICAL apply still falls through
+    # to undo below, because then the playlist is not known to
+    # be back at the snapshot.
+    apply_step_line="$(grep -n "STEP: apply order to $target" "$LOG" | tail -n 1 | cut -d: -f1)"
+    if [ -n "$apply_step_line" ] && tail -n +"$apply_step_line" "$LOG" | grep -q "restored from backup" && ! tail -n +"$apply_step_line" "$LOG" | grep -q "CRITICAL"; then
+      log "apply already restored the playlist from its per-run snapshot at $run_backup; skipping the redundant undo restore (v3.0.7); main backup at $backup was NOT overwritten by this failed run"
+      return 1
+    fi
     if [ -f "$run_backup" ]; then
       log "per-run snapshot exists at $run_backup; attempting restore via undo (undo itself tries both mappings, v3.0.5); main backup at $backup was NOT overwritten by this failed run"
       if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "$build_mapping"; then
