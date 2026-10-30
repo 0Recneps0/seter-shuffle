@@ -7,8 +7,15 @@
 #      kept 14 days, under the install directory's backups/.
 #   2. Dedupe the daily playlist (no-op when it is already clean),
 #      then shuffle it in place (v2.6 dailyRemoveDuplicates = true).
-#   3. Refresh "SeTeR Rediscover" and record history only after a
+#   3. Refresh "SeTeR Flow" (v3.0.9: the daily run refreshes Flow
+#      too, not just the main playlist and Rediscover).
+#   4. Refresh "SeTeR Rediscover" and record history only after a
 #      successful apply (run.sh does that part).
+#   Shuffle, Flow, and Rediscover each stamp their playlist
+#   description "Last reshuffled: <Mac local date/time at the
+#   verified apply>" (run.sh stamp flag, v3.0.9 adds Rediscover),
+#   so every daily-refreshed playlist shows that morning's time,
+#   not a stale manual-run time. Dedupe does not stamp.
 #
 # Usage (called by launchd, or by hand):
 #   ./daily.sh "My New Sandwich Recipe"
@@ -17,7 +24,7 @@
 # HARD RULES (do not weaken these for convenience):
 # - This script AUTO SELF-PROBES (v3.0.2). Before the mapping
 #   check, it runs ./run.sh selfprobe on EACH target it touches
-#   (the daily playlist AND "SeTeR Rediscover"), refreshing that
+#   (the daily playlist, "SeTeR Flow", AND "SeTeR Rediscover"), refreshing that
 #   target's per-target mapping from the target itself, under
 #   the target's own sort, which Music remembers per playlist.
 #   That is why an automated probe is safe here when it was not
@@ -48,20 +55,21 @@
 #   the snapshot named, recoverable via
 #   ./run.sh restore <target> <snapshot>. An "other" mapping
 #   is still an abort, never a build.
-# - TRIAL-DEDUPE BREAKS THE OLD DEADLOCK (v3.0.4): the
-#   duplicate-entry refusal is unchanged, so a self-probe on
-#   a playlist with duplicate entries still refuses and
-#   changes nothing. But the daily run no longer stops there:
-#   when the daily playlist's probe refuses ONLY on duplicate
-#   entries (the probe output says so), the daily run attempts
-#   ./run.sh dedupe on that playlist, which trial-dedupes
-#   (forward, then reversed, verify-after as the oracle) and
-#   records the winning mapping. A probe failure for any
-#   other reason still stops the run immediately, and a failed
-#   trial-dedupe stops it before shuffle/rediscover. The
-#   Rediscover probe has no trial fallback: Rediscover is a
-#   generated playlist, and a doubled Rediscover is a manual
-#   dedupe, not a daily-run repair.
+# - IN-PLACE DEDUPE BREAKS THE OLD DEADLOCK (v3.0.9,
+#   superseding presence dedupe v3.0.8 and trial-dedupe
+#   v3.0.4): the duplicate-entry refusal is unchanged, so a
+#   self-probe on a playlist with duplicate entries still
+#   refuses and changes nothing. But the daily run no longer
+#   stops there: when the daily playlist's probe refuses ONLY
+#   on duplicate entries (the probe output says so), the
+#   daily run attempts ./run.sh dedupe on that playlist,
+#   which deletes only the duplicate entries in place and
+#   records no mapping. A probe failure for any other reason
+#   still stops the run immediately, and a failed in-place
+#   dedupe stops it before shuffle, flow, and rediscover. The
+#   Rediscover and Flow probes have no dedupe fallback: both are
+#   generated playlists, and a doubled generated playlist is a
+#   manual dedupe, not a daily-run repair.
 # - Dry runs (SETER_DAILY_DRY_RUN=1, a test hook never used by
 #   launchd) do NOT run the self-probes, because a dry run
 #   changes nothing; they log the planned probes instead and
@@ -89,6 +97,7 @@ STATE="${SETER_STATE_DIR:-$HOME/Library/Logs/seter-shuffle-python}"
 LOG="$STATE/daily.log"
 BACKUP_DIR="${SETER_BACKUP_DIR:-$ROOT/backups}"
 REDISCOVER_PLAYLIST="SeTeR Rediscover"
+FLOW_PLAYLIST="SeTeR Flow"
 
 mkdir -p "$STATE" "$BACKUP_DIR" 2>/dev/null || true
 
@@ -127,8 +136,8 @@ mapping_file_for() {
 
 # Auto self-probe one target before the mapping check. Return
 # codes: 0 on success; 2 when the probe refused ONLY on
-# duplicate entries (the caller may then try trial-dedupe, which
-# is the one repair that does not need a probe); 1 on any other
+# duplicate entries (the caller may then try in-place
+# dedupe, which is the one repair that does not need a probe); 1 on any other
 # failure, in which case the whole daily run stops here: do not
 # probe the other target (shared snapshot file), do not build
 # anything. The probe output is captured to a file first so the
@@ -147,7 +156,7 @@ auto_self_probe() {
   fi
   cat "$probe_out" >> "$LOG"
   if grep -q "duplicate song entry" "$probe_out"; then
-    log "daily auto self-probe for '$target' refused on duplicate entries only; trial-dedupe will be attempted (it verifies its own mapping, it does not probe)"
+    log "daily auto self-probe for '$target' refused on duplicate entries only; in-place dedupe will be attempted (it deletes only the duplicate entries, 0 rebuilds on success, and records no mapping)"
     return 2
   fi
   log "DAILY FAILED: auto self-probe failed for '$target'; daily stopped before any build, dedupe, or rediscover, and before probing the other target."
@@ -214,34 +223,37 @@ fi
 # first probe stops the run before the second probe (shared
 # snapshot file) and before anything else is touched. A
 # duplicate-only failure for the daily playlist triggers
-# trial-dedupe instead (v3.0.4): if it cleans the playlist and
-# records a mapping, the run continues to the mapping check
-# and the normal steps (the later dedupe step then no-ops);
-# if it fails, the run stops before shuffle/rediscover.
+# in-place dedupe instead (v3.0.9): if it cleans the playlist,
+# the run continues to the mapping check and the normal steps
+# (the later dedupe step then no-ops); if it fails, the run
+# stops before shuffle, flow, and rediscover. In-place dedupe
+# records no mapping; the mapping check self-probes the clean list.
 if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
-  log "dry run: auto self-probes skipped (dry runs change nothing); planned probes: '$PLAYLIST', '$REDISCOVER_PLAYLIST'"
+  log "dry run: auto self-probes skipped (dry runs change nothing); planned probes: '$PLAYLIST', '$REDISCOVER_PLAYLIST', '$FLOW_PLAYLIST'"
 else
   probe_status=0
   auto_self_probe "$PLAYLIST" || probe_status=$?
   if [ "$probe_status" = "2" ]; then
-    log "daily trial-dedupe attempt for '$PLAYLIST' (probe refused on duplicates)"
+    log "daily in-place dedupe attempt for '$PLAYLIST' (probe refused on duplicates)"
     if "$ROOT/run.sh" dedupe "$PLAYLIST" >> "$LOG" 2>&1; then
-      log "daily trial-dedupe cleaned '$PLAYLIST'; continuing to the mapping check"
+      log "daily in-place dedupe cleaned '$PLAYLIST'; continuing to the mapping check"
     else
-      log "DAILY FAILED: trial-dedupe failed for '$PLAYLIST'; daily stopped before shuffle and rediscover"
+      log "DAILY FAILED: in-place dedupe failed for '$PLAYLIST'; daily stopped before shuffle, flow, and rediscover"
       exit 1
     fi
   elif [ "$probe_status" != "0" ]; then
     exit 1
   fi
   auto_self_probe "$REDISCOVER_PLAYLIST" || exit 1
+  auto_self_probe "$FLOW_PLAYLIST" || exit 1
 fi
 
 check_mapping "$PLAYLIST" || exit 1
 check_mapping "$REDISCOVER_PLAYLIST" || exit 1
+check_mapping "$FLOW_PLAYLIST" || exit 1
 
 if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
-  log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', rediscover"
+  log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', flow, rediscover"
   log "daily dry run done; nothing was changed"
   exit 0
 fi
@@ -267,15 +279,19 @@ else
   log "daily manifest already exists for today: $MANIFEST"
 fi
 
-# 2-3. Dedupe, then shuffle, then Rediscover. Each step goes
-# through run.sh's own gates (fresh mapping, validate, snapshot,
-# verify, restore on failure). Any failure stops the run here:
-# a failed shuffle must not be followed by a Rediscover refresh
-# that would burn cooldown on a half-done day.
+# 2-4. Dedupe, then shuffle, then Flow, then Rediscover. Each
+# step goes through run.sh's own gates (fresh mapping,
+# validate, snapshot, verify, restore on failure). Any failure
+# stops the run here: a failed shuffle must not be followed by
+# a Flow or Rediscover refresh that would burn cooldown on a
+# half-done day. Shuffle, Flow, and Rediscover each stamp their
+# playlist description with the verified apply's local time.
 "$ROOT/run.sh" dedupe "$PLAYLIST" >> "$LOG" 2>&1 || die "dedupe '$PLAYLIST' failed (see $LOG)"
 log "daily dedupe done for '$PLAYLIST'"
 "$ROOT/run.sh" shuffle "$PLAYLIST" >> "$LOG" 2>&1 || die "shuffle '$PLAYLIST' failed (see $LOG)"
 log "daily shuffle done for '$PLAYLIST'"
+"$ROOT/run.sh" flow >> "$LOG" 2>&1 || die "flow failed (see $LOG)"
+log "daily flow done"
 "$ROOT/run.sh" rediscover >> "$LOG" 2>&1 || die "rediscover failed (see $LOG)"
 log "daily rediscover done"
 

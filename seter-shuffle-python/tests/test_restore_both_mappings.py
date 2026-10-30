@@ -90,9 +90,23 @@ if script == "apply-order.applescript":
         "\\n".join(os.environ.get("FAKE_DUMP_IDS", "A B A C B").split()) + "\\n",
         encoding="utf-8",
     )
+    # Presence mode (v3.0.8): succeeds regardless of mapping.
+    if sys.argv[-1] == "presence":
+        sys.exit(1 if os.environ.get("FAKE_APPLY_FAIL") == "1" else 0)
     if mapping == os.environ.get("FAKE_WINNING_MAPPING", "reversed"):
         sys.exit(0)
     sys.exit(1)
+if script == "dedupe-in-place.applescript":
+    # Args: target, order-txt, delete-indices-txt, run-backup.
+    # The bridge writes its verified pre-change snapshot to
+    # the run-backup before deleting; the fake stands in for
+    # that write and for a presence-verified delete (0 rebuilds).
+    run_backup = Path(sys.argv[5])
+    run_backup.write_text(
+        "\\n".join(os.environ.get("FAKE_DUMP_IDS", "A B A C B").split()) + "\\n",
+        encoding="utf-8",
+    )
+    sys.exit(1 if os.environ.get("FAKE_APPLY_FAIL") == "1" else 0)
 if script == "undo.applescript":
     # Exit 1 stands in for the undo script's internal restore
     # failing under BOTH mappings; exit 0 stands in for a
@@ -170,42 +184,39 @@ class RestoreBothMappingsHarness(unittest.TestCase):
         for line in self.calls.read_text(encoding="utf-8").splitlines():
             parts = shlex.split(line)
             if parts and parts[0] == "apply-order.applescript":
-                mappings.append(parts[-4])
+                # 8 apply arguments: mapping is 5th from the end.
+                mappings.append(parts[-5])
         return mappings
 
-    def test_trial_stops_critical_when_restore_fails_under_both_mappings(self) -> None:
-        # Forward apply fails (winning mapping is reversed) and
-        # the undo restore fails too: in v3.0.5 that means the
-        # restore was tried under both mappings inside the
-        # bridge and still failed, so the trial must NOT try
-        # the reversed trial on top of a possibly partial state.
-        result = self.run_dedupe(
-            {"FAKE_WINNING_MAPPING": "reversed", "FAKE_UNDO_FAIL": "1"}
-        )
+    def dedupe_in_place_calls(self) -> list[str]:
+        if not self.calls.exists():
+            return []
+        return [
+            line for line in self.calls.read_text(encoding="utf-8").splitlines()
+            if line.startswith("dedupe-in-place.applescript")
+        ]
+
+    def test_dedupe_presence_succeeds_without_trial(self) -> None:
+        # v3.0.8: dedupe no longer trials, so a reversed true
+        # mapping does not produce a forward failure, an undo
+        # restore, or a critical stop: one presence apply lands
+        # the song set and records no mapping.
+        result = self.run_dedupe({"FAKE_WINNING_MAPPING": "reversed"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
+        self.assertFalse(mapping_file(self.state(), TARGET).exists())
+
+    def test_dedupe_presence_failure_records_nothing(self) -> None:
+        result = self.run_dedupe({"FAKE_APPLY_FAIL": "1"})
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.apply_mappings(), ["forward"])
-        combined = result.stdout + result.stderr
-        self.assertIn("under both mappings", combined)
-        self.assertIn("not trying the other mapping", combined)
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
         self.assertFalse(mapping_file(self.state(), TARGET).exists())
         self.assertFalse(
             backup_file(self.state(), TARGET).exists(),
-            "a critical trial must not install a main backup",
+            "a failed dedupe must not install a main backup",
         )
-
-    def test_trial_proceeds_after_restore_succeeds_under_either_mapping(self) -> None:
-        # Forward apply fails, undo restore succeeds: the
-        # restore succeeded under one of the two mappings, so
-        # the trial proceeds to reversed and records it.
-        result = self.run_dedupe({"FAKE_WINNING_MAPPING": "reversed"})
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.apply_mappings(), ["forward", "reversed"])
-        fields = {}
-        for line in mapping_file(self.state(), TARGET).read_text(encoding="utf-8").splitlines():
-            key, _, value = line.partition(": ")
-            fields[key] = value
-        self.assertEqual(fields["MAPPING"], "reversed")
-        self.assertIn("trial-dedupe", fields["SORT"])
 
 
 class BridgeRestoreStructuralTests(unittest.TestCase):

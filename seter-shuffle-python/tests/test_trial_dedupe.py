@@ -1,4 +1,14 @@
-"""Tests for v3.0.4 trial-dedupe.
+"""Tests for v3.0.4 trial-dedupe, superseded for the dedupe
+path by v3.0.8 presence dedupe (see test_dedupe_presence.py):
+dedupe no longer trials forward then reversed, because a
+presence-verified apply lands the song set under either
+mapping and records no mapping. The trial functions remain
+in run.sh but are no longer called by the dedupe case, and
+the harness below now tests the presence path instead.
+The original trial-dedupe history is kept in this file's
+git history and in the v3.0.4-3.0.7 release notes.
+
+Tests for v3.0.4 trial-dedupe.
 
 The deadlock, proven on Spencer's Mac 2026-10-29 18:44 PT: the
 v3.0.3 menu auto self-probe on "My New Sandwich Recipe" refused
@@ -98,14 +108,27 @@ if script == "apply-order.applescript":
         "\\n".join(os.environ.get("FAKE_DUMP_IDS", "A B A C B").split()) + "\\n",
         encoding="utf-8",
     )
-    # Verify-after simulation: only the winning mapping lands
-    # the deduped order, so only it exits 0. A failure here
-    # stands in for the bridge's internal restore: the fake
-    # changes no playlist state, so the runner's undo restore
-    # (which also succeeds in this fake) is a no-op.
+    # Verify-after simulation for exact mode: only the winning
+    # mapping lands the deduped order, so only it exits 0.
+    # Presence mode (v3.0.8, last argument "presence") lands
+    # the song set under either mapping, so it exits 0
+    # regardless of the winning mapping, unless forced to fail.
+    if sys.argv[-1] == "presence":
+        sys.exit(1 if os.environ.get("FAKE_APPLY_FAIL") == "1" else 0)
     if mapping == os.environ.get("FAKE_WINNING_MAPPING", "reversed"):
         sys.exit(0)
     sys.exit(1)
+if script == "dedupe-in-place.applescript":
+    # Args: target, order-txt, delete-indices-txt, run-backup.
+    # The bridge writes its verified pre-change snapshot to
+    # the run-backup before deleting; the fake stands in for
+    # that write and for a presence-verified delete (0 rebuilds).
+    run_backup = Path(sys.argv[5])
+    run_backup.write_text(
+        "\\n".join(os.environ.get("FAKE_DUMP_IDS", "A B A C B").split()) + "\\n",
+        encoding="utf-8",
+    )
+    sys.exit(1 if os.environ.get("FAKE_APPLY_FAIL") == "1" else 0)
 if script == "undo.applescript":
     sys.exit(0)
 sys.exit(0)
@@ -176,41 +199,51 @@ class TrialDedupeHarness(unittest.TestCase):
             if parts and parts[0] == "apply-order.applescript":
                 # Args after the (multi-word) target are order-txt,
                 # run-backup, mapping, allow-dupes, lib-songs,
-                # stamp, so the mapping is 4th from the end
-                # (shlex preserves the empty lib-songs argument).
-                mappings.append(parts[-4])
+                # stamp, verify-mode, so the mapping is 5th from
+                # the end (shlex preserves the empty lib-songs
+                # argument).
+                mappings.append(parts[-5])
         return mappings
+
+    def dedupe_in_place_calls(self) -> list[str]:
+        if not self.calls.exists():
+            return []
+        return [
+            line for line in self.calls.read_text(encoding="utf-8").splitlines()
+            if line.startswith("dedupe-in-place.applescript")
+        ]
 
     def call_basenames(self) -> list[str]:
         if not self.calls.exists():
             return []
         return [shlex.split(line)[0] for line in self.calls.read_text(encoding="utf-8").splitlines()]
 
-    def test_trial_forward_then_reversed_records_winner(self) -> None:
+    def test_dedupe_presence_succeeds_single_apply_no_mapping(self) -> None:
+        # v3.0.8: even when the true mapping is reversed, a
+        # presence-verified dedupe succeeds on its single
+        # forward apply and records NO mapping, because a
+        # presence success proves nothing about the sort.
         result = self.run_dedupe({"FAKE_WINNING_MAPPING": "reversed"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.apply_mappings(), ["forward", "reversed"])
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
         self.assertNotIn("sort-probe.applescript", self.call_basenames())
-        mapfile = mapping_file(self.state(), TARGET)
-        self.assertTrue(mapfile.exists())
-        fields = read_fields(mapfile)
-        self.assertEqual(fields["MAPPING"], "reversed")
-        self.assertEqual(fields["TARGET"], TARGET)
-        self.assertIn("trial-dedupe", fields["SORT"])
+        self.assertFalse(mapping_file(self.state(), TARGET).exists())
         backup = backup_file(self.state(), TARGET)
-        self.assertTrue(backup.exists(), "a successful trial installs the main backup")
+        self.assertTrue(backup.exists(), "a successful dedupe installs the main backup")
         self.assertEqual(backup.read_text(encoding="utf-8").split(), ["A", "B", "A", "C", "B"])
         combined = result.stdout + result.stderr
-        self.assertIn("trial-dedupe apply", combined)
-        self.assertIn("mapping recorded", combined)
+        self.assertIn("in-place", combined)
+        self.assertNotIn("trial-dedupe apply", combined)
 
-    def test_trial_forward_win_tries_only_forward(self) -> None:
+    def test_dedupe_presence_succeeds_with_forward_winning_too(self) -> None:
         result = self.run_dedupe({"FAKE_WINNING_MAPPING": "forward"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.apply_mappings(), ["forward"])
-        self.assertEqual(read_fields(mapping_file(self.state(), TARGET))["MAPPING"], "forward")
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
+        self.assertFalse(mapping_file(self.state(), TARGET).exists())
 
-    def test_fresh_mapping_used_directly_without_trial(self) -> None:
+    def test_dedupe_ignores_recorded_mapping(self) -> None:
         mapfile = mapping_file(self.state(), TARGET)
         mapfile.parent.mkdir(parents=True, exist_ok=True)
         mapfile.write_text(
@@ -219,10 +252,13 @@ class TrialDedupeHarness(unittest.TestCase):
             % (TARGET, TARGET, int(time.time())),
             encoding="utf-8",
         )
-        result = self.run_dedupe({"FAKE_WINNING_MAPPING": "forward"})
+        result = self.run_dedupe({"FAKE_WINNING_MAPPING": "reversed"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.apply_mappings(), ["forward"])
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
         self.assertNotIn("trial-dedupe apply", result.stdout + result.stderr)
+        # Presence dedupe neither reads nor rewrites the mapping.
+        self.assertEqual(read_fields(mapfile)["MAPPING"], "forward")
 
     def test_clean_playlist_applies_nothing_and_needs_no_mapping(self) -> None:
         result = self.run_dedupe(
@@ -233,20 +269,18 @@ class TrialDedupeHarness(unittest.TestCase):
         self.assertFalse(mapping_file(self.state(), TARGET).exists())
         self.assertIn("nothing was applied", result.stdout + result.stderr)
 
-    def test_neither_mapping_verifies_restores_and_records_nothing(self) -> None:
-        result = self.run_dedupe({"FAKE_WINNING_MAPPING": "none"})
+    def test_dedupe_presence_failure_records_nothing(self) -> None:
+        result = self.run_dedupe({"FAKE_APPLY_FAIL": "1"})
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.apply_mappings(), ["forward", "reversed"])
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
         self.assertFalse(mapping_file(self.state(), TARGET).exists())
         self.assertFalse(
             backup_file(self.state(), TARGET).exists(),
-            "a failed trial must not install a main backup",
+            "a failed dedupe must not install a main backup",
         )
-        combined = result.stdout + result.stderr
-        self.assertIn("neither forward nor reversed mapping verified", combined)
-        self.assertIn("pre-dedupe order", combined)
 
-    def test_menu_dedupe_uses_trial_path(self) -> None:
+    def test_menu_dedupe_uses_presence_path(self) -> None:
         env = dict(self.env)
         env["FAKE_WINNING_MAPPING"] = "reversed"
         result = subprocess.run(
@@ -258,13 +292,14 @@ class TrialDedupeHarness(unittest.TestCase):
             timeout=60,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.apply_mappings(), ["forward", "reversed"])
+        self.assertEqual(self.apply_mappings(), [])
+        self.assertEqual(len(self.dedupe_in_place_calls()), 1)
         self.assertNotIn("sort-probe.applescript", self.call_basenames())
-        self.assertEqual(read_fields(mapping_file(self.state(), TARGET))["MAPPING"], "reversed")
+        self.assertFalse(mapping_file(self.state(), TARGET).exists())
 
 
 class DailyTrialDedupeTests(unittest.TestCase):
-    """daily.sh with a stub run.sh: duplicate probe -> trial-dedupe."""
+    """daily.sh with a stub run.sh: duplicate probe -> presence dedupe."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -345,7 +380,7 @@ class DailyTrialDedupeTests(unittest.TestCase):
             timeout=60,
         )
 
-    def test_daily_duplicate_probe_triggers_trial_dedupe_then_continues(self) -> None:
+    def test_daily_duplicate_probe_triggers_presence_dedupe_then_continues(self) -> None:
         result = self.run_daily({"STUB_DUPLICATE_TARGET": TARGET})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls.read_text(encoding="utf-8").splitlines()
@@ -355,13 +390,15 @@ class DailyTrialDedupeTests(unittest.TestCase):
                 "selfprobe " + TARGET,
                 "dedupe " + TARGET,
                 "selfprobe SeTeR Rediscover",
+                "selfprobe SeTeR Flow",
                 "dedupe " + TARGET,
                 "shuffle " + TARGET,
+                "flow",
                 "rediscover",
             ],
-            "duplicate probe -> trial-dedupe -> Rediscover probe -> normal steps",
+            "duplicate probe -> in-place dedupe -> Rediscover probe -> Flow probe -> normal steps",
         )
-        self.assertIn("trial-dedupe cleaned", result.stdout + result.stderr)
+        self.assertIn("in-place dedupe cleaned", result.stdout + result.stderr)
 
     def test_daily_duplicate_probe_plus_failed_dedupe_stops_before_rediscover(self) -> None:
         result = self.run_daily(

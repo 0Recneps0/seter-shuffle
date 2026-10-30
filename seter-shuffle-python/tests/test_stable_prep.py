@@ -84,7 +84,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.install / "daily.sh").exists())
         self.assertTrue((self.install / "bridge" / "apply-order.applescript").exists())
         self.assertTrue((self.install / "seter_shuffle" / "cli.py").exists())
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.7")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.9")
         self.assertFalse((self.agents / "com.seter.python.daily.plist").exists())
 
     def test_install_is_idempotent_for_same_version(self) -> None:
@@ -92,7 +92,7 @@ class InstallerTests(unittest.TestCase):
         second = run_script("setup-python.sh", ["--no-daily", "-y"], self.env)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.7")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.9")
 
     def test_install_refuses_different_version_without_force(self) -> None:
         run_script("setup-python.sh", ["--no-daily", "-y"], self.env)
@@ -102,7 +102,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("already holds version", refused.stderr + refused.stdout)
         forced = run_script("setup-python.sh", ["--no-daily", "-y", "--force"], self.env)
         self.assertEqual(forced.returncode, 0, forced.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.7")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.9")
 
     def test_daily_plist_uses_single_hour_variable_and_new_label(self) -> None:
         result = run_script("setup-python.sh", ["-y"], self.env)
@@ -227,6 +227,7 @@ class DailyTests(unittest.TestCase):
     def test_daily_dry_run_passes_with_fresh_mappings(self) -> None:
         write_mapping(self.state, "My New Sandwich Recipe")
         write_mapping(self.state, "SeTeR Rediscover")
+        write_mapping(self.state, "SeTeR Flow")
         env = dict(self.env)
         env["SETER_DAILY_DRY_RUN"] = "1"
         result = run_script("daily.sh", ["My New Sandwich Recipe"], env)

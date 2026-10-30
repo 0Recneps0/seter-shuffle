@@ -182,10 +182,24 @@ on run argv
 	-- "0" or absent does not. The stamp is best-effort and never
 	-- fails an already-verified apply (see the stamp step after
 	-- verification, below). Undo/restore never call this script,
-	-- and run.sh passes "0" for dedupe/rediscover, so a stamp can
-	-- only ever follow a verified shuffle or flow apply.
+	-- and run.sh passes "0" for dedupe, so a stamp can only ever
+	-- follow a verified shuffle, flow, or rediscover apply.
 	set stampDescription to false
 	if (count of argv) > 6 and (item 7 of argv) is "1" then set stampDescription to true
+
+	-- Verify mode (8th argument, run.sh only, v3.0.8): "presence"
+	-- means the landed playlist must hold exactly the desired
+	-- song SET, in any order: same count, every desired ID
+	-- present. That is the dedupe contract Spencer stated
+	-- 2026-10-30: duplicates gone, order not cared about. Any
+	-- other value, including omission, means exact order, as
+	-- before: shuffle, flow, and every restore still verify
+	-- song by song in exact order, because there the order is
+	-- the result (flow arc, undo). A presence success proves
+	-- nothing about the sort mapping, so run.sh must never
+	-- record a mapping from a presence-verified apply.
+	set verifyPresenceMode to false
+	if (count of argv) > 7 and (item 8 of argv) is "presence" then set verifyPresenceMode to true
 
 	-- Validate the order BEFORE resolving or changing anything.
 	set orderIDs to my readOrderFile(orderPath, allowDuplicates)
@@ -232,7 +246,11 @@ on run argv
 	-- build could not be proven, and the only safe next step is
 	-- the backup restore. There is no flip: a failed verify never
 	-- retries with the opposite mapping.
-	set buildResult to my buildAndVerifyMapping(destPl, orderIDs, buildMapping)
+	if verifyPresenceMode then
+		set buildResult to my buildAndVerifyPresence(destPl, orderIDs, buildMapping)
+	else
+		set buildResult to my buildAndVerifyMapping(destPl, orderIDs, buildMapping)
+	end if
 	if not (ok of buildResult) then
 		set buildFailed to failed of buildResult
 		-- Delete-empty failure: nothing was duplicated (see
@@ -256,7 +274,11 @@ on run argv
 			if (count of buildFailed) > 0 then
 				error "apply-order: " & (count of buildFailed) & " song(s) were not found in the library (" & my joinList(buildFailed) & "); playlist restored from backup at " & backupPath & ", nothing applied." number 1
 			else
+				if verifyPresenceMode then
+				error "apply-order: verification failed for \"" & playlistName & "\" (final song set does not match the desired set: wrong count, a desired song missing, or a duplicate still present); playlist restored from backup at " & backupPath & "." number 1
+			else
 				error "apply-order: verification failed for \"" & playlistName & "\" (final song order does not match the desired order under mapping " & buildMapping & "); playlist restored from backup at " & backupPath & "." number 1
+			end if
 			end if
 		else
 			error "apply-order: CRITICAL: build/verification failed AND restore failed under both mappings for \"" & playlistName & "\"; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
@@ -609,6 +631,43 @@ on verifyAgainst(pl, expectedIDs)
 	set actualIDs to my playlistIDs(pl)
 	return my listsEqual(actualIDs, expectedIDs)
 end verifyAgainst
+
+-- Presence verification (v3.0.8, dedupe only): the landed
+-- playlist must hold exactly the desired song SET, in any
+-- order. Count equality plus every desired ID present implies
+-- set equality when the desired IDs are unique, which a
+-- dedupe order is by construction: a leftover duplicate or
+-- an extra song breaks the count, a missing song breaks
+-- presence. Order is deliberately ignored here, so a build
+-- under either mapping verifies, and no mapping is proven.
+on verifyPresence(pl, expectedIDs)
+	set actualIDs to my playlistIDs(pl)
+	if (count of actualIDs) is not (count of expectedIDs) then return false
+	repeat with expectedID in expectedIDs
+		if not (actualIDs contains (contents of expectedID)) then return false
+	end repeat
+	return true
+end verifyPresence
+
+-- Build a desired song set under the given mapping and verify
+-- presence only, never exact order. Mirrors
+-- buildAndVerifyMapping except for the final check; the
+-- restore handlers still verify exactly against snapshots.
+on buildAndVerifyPresence(pl, desiredIDs, buildMapping)
+	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
+	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
+	set verified to false
+	try
+		set verified to my verifyPresence(pl, desiredIDs)
+	on error
+		set verified to false
+	end try
+	if verified then
+		return {ok:true, failed:{}}
+	else
+		return {ok:false, failed:{}}
+	end if
+end buildAndVerifyPresence
 
 on joinList(idList)
 	set AppleScript's text item delimiters to ", "

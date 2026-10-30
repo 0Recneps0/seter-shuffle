@@ -276,7 +276,7 @@ class DailyAutoProbeTests(unittest.TestCase):
             timeout=60,
         )
 
-    def test_daily_auto_probes_both_targets_before_build(self) -> None:
+    def test_daily_auto_probes_all_three_targets_before_build(self) -> None:
         result = self.run_daily()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls.read_text(encoding="utf-8").splitlines()
@@ -285,15 +285,18 @@ class DailyAutoProbeTests(unittest.TestCase):
             [
                 "selfprobe My New Sandwich Recipe",
                 "selfprobe SeTeR Rediscover",
+                "selfprobe SeTeR Flow",
                 "dedupe My New Sandwich Recipe",
                 "shuffle My New Sandwich Recipe",
+                "flow",
                 "rediscover",
             ],
-            "probe playlist, probe Rediscover, then mapping check, then builds",
+            "probe playlist, probe Rediscover, probe Flow, then mapping check, then builds",
         )
         combined = result.stdout + result.stderr
         self.assertIn("auto self-probe OK for 'My New Sandwich Recipe'", combined)
         self.assertIn("auto self-probe OK for 'SeTeR Rediscover'", combined)
+        self.assertIn("auto self-probe OK for 'SeTeR Flow'", combined)
 
     def test_daily_first_probe_failure_stops_before_second_probe_and_build(self) -> None:
         result = self.run_daily({"STUB_PROBE_FAIL": "My New Sandwich Recipe"})
@@ -319,10 +322,20 @@ class DailyAutoProbeTests(unittest.TestCase):
         )
         self.assertNotIn("dedupe", "\n".join(calls))
 
+    def test_daily_third_probe_failure_stops_before_build(self) -> None:
+        result = self.run_daily({"STUB_PROBE_FAIL": "SeTeR Flow"})
+        self.assertNotEqual(result.returncode, 0)
+        calls = self.calls.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            calls,
+            ["selfprobe My New Sandwich Recipe", "selfprobe SeTeR Rediscover", "selfprobe SeTeR Flow"],
+        )
+        self.assertNotIn("dedupe", "\n".join(calls))
+
     def test_daily_dry_run_logs_planned_probes_without_running_them(self) -> None:
         # Dry runs change nothing: probes are planned, not run, and
         # the mapping check runs on the recorded mappings.
-        for target in ("My New Sandwich Recipe", "SeTeR Rediscover"):
+        for target in ("My New Sandwich Recipe", "SeTeR Rediscover", "SeTeR Flow"):
             safe = target.replace(" ", "_")
             digest = hashlib.sha256(target.encode()).hexdigest()[:12]
             (self.state / f"sort-mapping-{safe}-{digest}.txt").write_text(

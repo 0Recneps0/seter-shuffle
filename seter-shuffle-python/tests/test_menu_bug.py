@@ -153,7 +153,7 @@ class NoEmptyArrayTests(unittest.TestCase):
         self.assertNotIn("menu_args=", RUN_TEXT)
         self.assertNotIn("menu_args[@]", RUN_TEXT)
         # The only [@] expansion left is apply_args, which is
-        # always assigned exactly seven elements before use.
+        # always assigned exactly eight elements before use.
         expansions = [
             line for line in RUN_TEXT.splitlines() if "[@]" in line
         ]
@@ -161,7 +161,7 @@ class NoEmptyArrayTests(unittest.TestCase):
         self.assertIn("apply_args[@]", expansions[0])
         self.assertIn(
             'apply_args=("$target" "$ORDER_TXT" "$run_backup" '
-            '"$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag")',
+            '"$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag" "$verify_mode")',
             RUN_TEXT,
         )
 

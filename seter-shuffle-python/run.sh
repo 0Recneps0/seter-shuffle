@@ -30,33 +30,22 @@
 #                                   history ONLY after a successful apply
 #   ./run.sh undo <playlist>        restore a playlist from its last backup
 #   ./run.sh dedupe <playlist>      remove duplicate entries from a
-#                                   playlist (unique songs, first
-#                                   occurrence order); skips the
-#                                   apply entirely if it has none.
-#                                   TRIAL-DEDUPE (v3.0.4): when no
-#                                   fresh mapping is recorded, dedupe
-#                                   does NOT probe (a probe refuses
+#                                   playlist in place (unique songs,
+#                                   first occurrence kept); skips
+#                                   entirely if it has none.
+#                                   IN-PLACE DEDUPE (v3.0.9,
+#                                   superseding trial-dedupe v3.0.4
+#                                   and presence dedupe v3.0.8,
+#                                   both retained but no longer
+#                                   called): only the duplicate
+#                                   entries are deleted, nothing
+#                                   is rebuilt, so success costs
+#                                   0 rebuilds and needs no mapping
+#                                   at all. A probe still refuses
 #                                   on duplicate entries, which is
-#                                   exactly the deadlock this
-#                                   breaks). Instead it tries the
-#                                   deduped order under mapping
-#                                   forward, verifies the list
-#                                   read against it, and on failure
-#                                   restores from the snapshot and
-#                                   tries reversed. Verify-after
-#                                   on the actual desired order
-#                                   is the mapping oracle here,
-#                                   NOT a rotation classification,
-#                                   so this path must never be
-#                                   borrowed back into the probe:
-#                                   the probe's duplicate refusal
-#                                   is unchanged. A fresh mapping,
-#                                   when one exists, is used
-#                                   directly with no trial. If
-#                                   neither mapping verifies, the
-#                                   playlist is restored to its
-#                                   pre-dedupe order and no mapping
-#                                   is recorded.
+#                                   why dedupe never probes: it
+#                                   does not need to. The probe's
+#                                   duplicate refusal is unchanged.
 #   ./run.sh restore <playlist> <backup-txt>
 #                                   restore a playlist from a given
 #                                   backup file (freshness-checked
@@ -1031,23 +1020,34 @@ apply_order_mapped() {
   if [ "$mode" = "dedupe" ]; then
     allow_dupes="0"
   fi
-  # Description stamp (v2.6 "Last reshuffled" parity): only for
-  # shuffle and flow, only as the 7th bridge argument, and only
-  # after verification passes inside apply-order. The bridge
-  # stamps best-effort: if Music's scripting does not expose a
-  # settable playlist description, the stamp step logs skipped
-  # and the already-verified apply still succeeds. Undo and
-  # restore never stamp (they do not call this function), and
-  # dedupe/rediscover do not stamp either, because neither is a
-  # reshuffle.
+  # Description stamp (v2.6 "Last reshuffled" parity): for
+  # shuffle, flow, and rediscover, only as the 7th bridge
+  # argument, and only after verification passes inside
+  # apply-order. The bridge stamps "Last reshuffled: <Mac
+  # local date/time at the verified apply>", best-effort: if
+  # Music's scripting does not expose a settable playlist
+  # description, the stamp step logs skipped and the
+  # already-verified apply still succeeds. Undo and restore
+  # never stamp (they do not call this function), and dedupe
+  # does not stamp, because dedupe is not a reshuffle or a
+  # refresh. Rediscover stamps from v3.0.9: a daily refresh
+  # should leave its own last-refresh time on its description,
+  # not a stale manual-run time.
   stamp_flag="0"
-  if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ]; then
+  if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ] || [ "$mode" = "rediscover" ]; then
     stamp_flag="1"
   fi
+  # Verify mode (v3.0.8): dedupe verifies presence only, per
+  # Spencer's 2026-10-30 answer that dedupe need not keep the
+  # original order. Every other mode verifies exact order.
+  verify_mode="exact"
+  if [ "$mode" = "dedupe" ]; then
+    verify_mode="presence"
+  fi
   if [ -n "$lib_songs" ]; then
-    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag")
+    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag" "$verify_mode")
   else
-    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "" "$stamp_flag")
+    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "" "$stamp_flag" "$verify_mode")
   fi
   if step "apply order to $target" osascript "$BRIDGE/apply-order.applescript" "${apply_args[@]}"; then
     # Install the per-run snapshot as the main backup ONLY now,
@@ -1188,6 +1188,81 @@ dedupe_trial_apply() {
   return 1
 }
 
+# In-place dedupe (v3.0.9, superseding presence dedupe v3.0.8
+# before v3.0.8 was ever published). Spencer's cap, 2026-10-30:
+# dedupe must rebuild his playlist 1-2 times max. A rebuild is
+# the wrong tool for dedupe at all: deleting only the duplicate
+# entries in place costs 0 rebuilds on success, needs no
+# mapping, no probe, and no trial, because nothing is re-added
+# in any order. The bridge script snapshots (verified, atomic)
+# before deleting, deletes duplicate positions in descending
+# order, verifies presence only, and on failure restores from
+# the snapshot trying both mappings, exactly like apply-order.
+# Only that restore is a rebuild, and only on a failed run.
+# This function mirrors apply_order_mapped's backup chain:
+# the per-run snapshot becomes the main backup only after a
+# verified success, with the previous main backup kept as .prev.
+# Return codes: 0 on success; 1 on a failure whose playlist
+# was restored (or never changed); 2 on a CRITICAL failure
+# whose restore failed under both mappings.
+dedupe_in_place() {
+  local target="$1" backup run_backup delete_txt
+  backup="$(backup_path_for "$target")"
+  run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.txt"
+  delete_txt="$WORK/delete-indices.txt"
+  # Duplicate positions, 1-based, strictly descending, computed
+  # from the same dump the dedupe order came from, with the
+  # same match rule (default "song", so same-song entries with
+  # a different persistent ID are included, not just exact
+  # ID repeats): the first occurrence of each song stays,
+  # every later occurrence is a position to delete. Descending
+  # order is what makes the bridge's deletions safe (a higher
+  # deletion never shifts a lower position still to delete).
+  # The bridge's own count check (snapshot count minus unique
+  # count equals delete count) refuses before deleting if
+  # these positions ever disagree with the dedupe order.
+  step "compute dedupe delete positions for $target" "$PY" -m seter_shuffle.cli dedupe-positions --library "$DUMP" --match "$DEDUPE_MATCH" --out "$delete_txt" || return 1
+  if step "dedupe in place for $target" osascript "$BRIDGE/dedupe-in-place.applescript" "$target" "$ORDER_TXT" "$delete_txt" "$run_backup"; then
+    if [ -f "$backup" ]; then
+      cp "$backup" "$backup.prev"
+      log "previous backup preserved at $backup.prev"
+    fi
+    cp "$run_backup" "$backup"
+    log "GATE: in-place dedupe verified for $target (pre-run snapshot installed as backup at $backup; per-run snapshot kept at $run_backup)"
+    ls -t "$STATE"/backup-*.run-*.txt 2>/dev/null | tail -n +11 | while read -r f; do rm -f "$f"; done || true
+    notify "SeTeR Shuffle: $target deduped in place"
+    return 0
+  fi
+  log "GATE FAILED: in-place dedupe failed for $target"
+  notify "SeTeR Shuffle: in-place dedupe failed for $target"
+  # Skip the redundant undo restore (v3.0.7 logic): if the
+  # bridge already restored from its snapshot, undo would
+  # only rebuild the same snapshot again. Only lines since
+  # this dedupe's STEP line count.
+  dedupe_step_line="$(grep -n "STEP: dedupe in place for $target" "$LOG" | tail -n 1 | cut -d: -f1)"
+  if [ -n "$dedupe_step_line" ] && tail -n +"$dedupe_step_line" "$LOG" | grep -q "restored from backup" && ! tail -n +"$dedupe_step_line" "$LOG" | grep -q "CRITICAL"; then
+    log "in-place dedupe already restored the playlist from its per-run snapshot at $run_backup; skipping the redundant undo restore (v3.0.7); main backup at $backup was NOT overwritten by this failed run"
+    return 1
+  fi
+  if [ -f "$run_backup" ]; then
+    log "per-run snapshot exists at $run_backup; attempting restore via undo (undo itself tries both mappings, v3.0.5); main backup at $backup was NOT overwritten by this failed run"
+    if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "forward"; then
+      log "restore from per-run snapshot succeeded; playlist is back to its pre-run state"
+    else
+      restore_step_line="$(grep -n "STEP: restore $target from per-run snapshot" "$LOG" | tail -n 1 | cut -d: -f1)"
+      if [ -n "$restore_step_line" ] && tail -n +"$restore_step_line" "$LOG" | grep -q "PLAYLIST_UNTOUCHED"; then
+        log "restore from per-run snapshot failed while reading the playlist before any change (PLAYLIST_UNTOUCHED); playlist is untouched, NOT partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+      else
+        log "CRITICAL: restore from per-run snapshot also failed; playlist may be partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+        return 2
+      fi
+    fi
+  else
+    log "no per-run snapshot was written, so the in-place dedupe failed before any playlist change; playlist untouched and main backup at $backup untouched"
+  fi
+  return 1
+}
+
 case "$CMD" in
   audit)
     log "audit (no Music changes)"
@@ -1265,14 +1340,20 @@ case "$CMD" in
     if [ "$order_count" = "$dump_count" ]; then
       log "dedupe done: no duplicate entries in \"$TARGET_PLAYLIST\" ($dump_count songs); nothing was applied"
       notify "SeTeR Shuffle: $TARGET_PLAYLIST already clean, nothing applied"
-    elif mapping_is_ready "$TARGET_PLAYLIST"; then
-      log "dedupe: $dump_count entries, $order_count unique songs; fresh mapping recorded, applying unique order under it (first-occurrence order, NOT backup order; no trial)"
-      apply_order "$TARGET_PLAYLIST" "dedupe"
-      log "dedupe done"
     else
-      log "dedupe: $dump_count entries, $order_count unique songs; no fresh mapping recorded, trial-dedupe will try forward then reversed (first-occurrence order, NOT backup order)"
-      dedupe_trial_apply "$TARGET_PLAYLIST" || exit 1
-      log "dedupe done"
+      # In-place dedupe (v3.0.9, superseding presence dedupe
+      # v3.0.8 before v3.0.8 was ever published): Spencer's
+      # cap is 1-2 rebuilds max, and deleting only the
+      # duplicate entries costs 0 rebuilds on success. No
+      # mapping is needed, probed, or trialled at all, and no
+      # mapping is recorded: the next shuffle or flow
+      # self-probes the now-clean playlist for its true
+      # mapping. Trial-dedupe (v3.0.4-3.0.7) and presence
+      # dedupe (v3.0.8) are retained in the code but no longer
+      # called for dedupe.
+      log "dedupe: $dump_count entries, $order_count unique songs; in-place delete of $((dump_count - order_count)) duplicate entries (0 rebuilds on success, no mapping recorded)"
+      dedupe_in_place "$TARGET_PLAYLIST" || exit 1
+      log "dedupe done: playlist holds the $order_count unique songs, deduped in place; no mapping was recorded from this run"
     fi
     ;;
 esac

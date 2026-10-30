@@ -49,11 +49,11 @@ class OneClickFixTest(unittest.TestCase):
                     f"{script.name}: unexpected [@] expansion {match.group(0)}",
                 )
         run = (ROOT / "run.sh").read_text(encoding="utf-8")
-        # apply_args is assigned all 7 elements in both branches before use.
+        # apply_args is assigned all 8 elements in both branches before use.
         assignments = re.findall(r'apply_args=\(([^)]*)\)', run)
         self.assertEqual(len(assignments), 2)
         for assignment in assignments:
-            self.assertEqual(len(re.findall(r'"[^"]*"', assignment)), 7)
+            self.assertEqual(len(re.findall(r'"[^"]*"', assignment)), 8)
 
     def test_default_no_argument_path_runs(self):
         """--yes only: no --playlist/--hour/--minute/--force from the
@@ -84,7 +84,7 @@ class OneClickFixTest(unittest.TestCase):
             self.assertIn("ok install/update done", result.stdout)
             self.assertFalse((agents / "com.seter.daily.plist").exists())
             self.assertEqual(
-                (install / "installed-version.txt").read_text().strip(), "3.0.7"
+                (install / "installed-version.txt").read_text().strip(), "3.0.9"
             )
 
     def test_chmod_self_restores_execute_bits(self):

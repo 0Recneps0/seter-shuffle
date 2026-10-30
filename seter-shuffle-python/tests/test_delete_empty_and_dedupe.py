@@ -296,7 +296,7 @@ class RunnerStructuralTests(unittest.TestCase):
         self.assertIn("dedupe|restore|probe", RUN_SH)
         self.assertIn('"$CMD" = "dedupe"', RUN_SH)
         self.assertIn("seter_shuffle.cli dedupe", RUN_SH)
-        self.assertIn('apply_order "$TARGET_PLAYLIST" "dedupe"', RUN_SH)
+        self.assertIn('dedupe_in_place "$TARGET_PLAYLIST"', RUN_SH)
         # No-duplicate playlists skip the rebuild entirely.
         self.assertIn('if [ "$order_count" = "$dump_count" ]', RUN_SH)
 

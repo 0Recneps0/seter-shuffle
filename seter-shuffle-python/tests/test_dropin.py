@@ -177,8 +177,8 @@ class StampTests(unittest.TestCase):
         self.assertNotIn("description", (BRIDGE / "undo.applescript").read_text())
         self.assertNotIn("description", (BRIDGE / "restore-original.applescript").read_text())
 
-    def test_run_passes_stamp_flag_only_for_shuffle_and_flow(self):
-        self.assertIn('if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ]; then', RUN_TEXT)
+    def test_run_passes_stamp_flag_for_shuffle_flow_and_rediscover(self):
+        self.assertIn('if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ] || [ "$mode" = "rediscover" ]; then', RUN_TEXT)
         self.assertIn('stamp_flag="1"', RUN_TEXT)
 
 

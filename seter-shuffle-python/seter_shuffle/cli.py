@@ -203,6 +203,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser(
+        "dedupe-positions",
+        help="1-based dump positions of duplicate entries, strictly "
+        "descending, for in-place dedupe (v3.0.9): same rule as dedupe, "
+        "but positions instead of an order",
+    )
+    p.add_argument("--library", required=True, help="library JSON dump")
+    p.add_argument("--out", required=True, help="positions file to write")
+    p.add_argument(
+        "--match",
+        choices=["id", "song"],
+        default="song",
+        help="what counts as a duplicate (same choices as dedupe)",
+    )
+
+    p = sub.add_parser(
         "audit", help="tag-coverage audit of a library dump (changes nothing)"
     )
     p.add_argument("--library", required=True, help="library JSON dump")
@@ -263,6 +278,27 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "dedupe-positions":
+        # A playlist dump repeats IDs by definition: that is
+        # exactly what dedupe is removing.
+        tracks = load_library(args.library, allow_duplicates=True)
+        _kept, removed = split_duplicates(tracks, args.match)
+        # Removed entries are elements of the input list, so
+        # their dump positions are found by object identity,
+        # not by ID: two entries can share an ID, and a
+        # same-song entry shares no ID with its kept copy.
+        positions_by_id = {id(t): i + 1 for i, t in enumerate(tracks)}
+        positions = sorted(
+            (positions_by_id[id(t)] for t, _kept_t, _why in removed),
+            reverse=True,
+        )
+        Path(args.out).write_text(
+            "\n".join(str(p) for p in positions) + ("\n" if positions else ""),
+            encoding="utf-8",
+        )
+        print(f"Dedupe positions: {len(positions)} duplicate entries.")
+        return 0
+
     if args.command == "validate-order":
         ids = validate_order_file(
             args.library,
