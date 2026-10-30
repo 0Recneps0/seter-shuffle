@@ -147,10 +147,14 @@ class MenuTests(unittest.TestCase):
     def test_menu_shows_mapping_status_before_builds(self):
         self.assertIn("mapping_status_for", RUN_TEXT)
         self.assertIn("mapping status for", RUN_TEXT)
-        # The menu never probes: no sortprobe dispatch inside it.
+        # v3.0.3 supersedes the v3.0.2 menu rule: the menu now
+        # auto self-probes via ensure_mapping_for on a missing
+        # or stale mapping, instead of refusing outright, and it
+        # never dispatches a throwaway sortprobe itself.
         menu = RUN_TEXT.split('if [ "$CMD" = "menu" ]')[1].split(
             "# Sort-probe command"
         )[0]
+        self.assertIn("ensure_mapping_for", menu)
         self.assertNotIn("sortprobe", menu)
 
 

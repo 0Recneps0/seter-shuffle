@@ -440,6 +440,29 @@ until Spencer approves the exact change list.
    a mapping obtained another way) before it can be
    auto-probed; do not weaken the refusal to get past this.
 
+## Menu and direct auto-probe Mac steps (v3.0.3)
+
+1. Menu shuffle with no mapping: open `./run.sh menu`,
+   choice 1, a clean target playlist, no fresh mapping
+   recorded. Pass: the menu auto self-probes the target
+   itself (log shows the self-probe, then a fresh mapping),
+   then the shuffle applies; it does NOT print the old
+   "never probes" gate refusal.
+2. Menu shuffle on a doubled playlist: same menu path on a
+   playlist with duplicate entries. Pass: the auto
+   self-probe refuses on duplicates, changes nothing, the
+   menu loops back with the probe error visible, and no
+   dump or apply ran.
+3. Direct shuffle with a stale mapping: record a mapping
+   older than 48 hours, then run `./run.sh shuffle
+   "<target>"` directly. Pass: the run re-probes the
+   target itself before any dump, then applies under the
+   refreshed mapping.
+4. Direct shuffle with a fresh mapping: pass: the run
+   applies with NO re-probe (no extra rebuild time), and
+   the log says the mapping is fresh and the probe was
+   skipped.
+
 ## Stable-promotion gaps STILL open (not fixed by this prep package)
 
 - Flow energy flatness for gospel-heavy libraries: left

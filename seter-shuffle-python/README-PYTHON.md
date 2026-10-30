@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0.2)
+# SeTeR Shuffle, Python core (v3.0.3)
 
-This tree is the v3.0.2 stable tree on the main branch. The v2.6
+This tree is the v3.0.3 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.2)
+## One-click install or update (v3.0.3)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.2, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.3, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -32,10 +32,20 @@ mapping obtained another way) before it can be auto-probed.
 You can also self-probe by hand any time:
 `./run.sh selfprobe "My New Sandwich Recipe"`.
 
-## Stable preparation (v3.0.2)
+NEW IN v3.0.3: menu and direct builds AUTO SELF-PROBE too.
+v3.0.2 only auto-probed the daily run, so the menu still
+refused on a missing mapping. Now every build path (menu,
+direct shuffle, rediscover, dedupe, flow, undo, restore)
+self-probes the target itself first when no fresh mapping
+is recorded, and reuses a fresh mapping with no re-probe.
+A failed probe aborts before any dump or apply, with the
+probe error named. A doubled playlist still fails closed
+at the probe (duplicate refusal unchanged) until deduped.
 
-Stable name: v3.0.2. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.2`. No tag or release is created by
+## Stable preparation (v3.0.3)
+
+Stable name: v3.0.3. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.3`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash

@@ -17,10 +17,14 @@ arrays: every branch spells out its full argument list.
 The same paste proved a second gap: the menu printed
 "mapping status: none recorded" and then dumped anyway,
 because the mapping gate only fired at apply time. The menu
-now pre-checks with mapping_ready_for and refuses before any
-dump or apply. The non-interactive dedupe refusal in the same
-paste (1612 entries / 806 unique, then GATE FAILED on the
-missing mapping, no change) was correct and is unchanged.
+first pre-checked with mapping_ready_for and refused before
+any dump or apply; v3.0.3 supersedes that refusal with
+ensure_mapping_for, which auto self-probes on a missing or
+stale mapping and only loops back when the probe fails. The
+non-interactive dedupe refusal in the same paste (1612
+entries / 806 unique, then GATE FAILED on the missing
+mapping, no change) was correct and is unchanged, except
+that the probe is now attempted automatically first.
 """
 
 from __future__ import annotations
@@ -107,10 +111,14 @@ def _mapping(mapping="forward", sort="Playlist Order", age_s=0):
 
 
 class MappingReadyTests(unittest.TestCase):
-    def test_missing_mapping_refuses_with_sortprobe_command(self):
+    def test_missing_mapping_refuses_with_selfprobe_command(self):
+        # v3.0.3: mapping_ready_for is the legacy pure check; its
+        # failure now names the automatic self-probe, not a manual
+        # sortprobe to run first. The menu itself uses
+        # ensure_mapping_for, which probes before refusing.
         out, err = _run_ready("Test Target", None)
         self.assertIn("REFUSED", out)
-        self.assertIn("sortprobe", err)
+        self.assertIn("selfprobe", err)
         self.assertIn("Test Target", err)
 
     def test_fresh_mapping_ready(self):
@@ -212,22 +220,28 @@ class MenuPrecheckTests(unittest.TestCase):
         )[0]
 
     def test_menu_prechecks_mapping_before_every_build(self):
+        # v3.0.3: the menu auto self-probes via
+        # ensure_mapping_for (fresh mapping reused, missing/stale
+        # mapping probed, failed probe loops back) instead of
+        # refusing outright with mapping_ready_for alone.
         menu = self._menu_section()
         for target in (
             '"$menu_target"',
             '"SeTeR Rediscover"',
             '"SeTeR Flow"',
         ):
-            self.assertIn(f"mapping_ready_for {target}", menu)
+            self.assertIn(f"ensure_mapping_for {target}", menu)
         # Dedupe and undo share the $pl branch.
-        self.assertGreaterEqual(menu.count('mapping_ready_for "$pl"'), 2)
+        self.assertGreaterEqual(menu.count('ensure_mapping_for "$pl"'), 2)
+        # No bare mapping_ready_for dispatch remains in the menu.
+        self.assertNotIn("mapping_ready_for ", menu)
         # Each pre-check precedes its dispatch in the section.
         self.assertLess(
-            menu.index('mapping_ready_for "$menu_target"'),
+            menu.index('ensure_mapping_for "$menu_target"'),
             menu.index('bash "$ROOT/run.sh" shuffle'),
         )
         self.assertLess(
-            menu.index('mapping_ready_for "SeTeR Rediscover"'),
+            menu.index('ensure_mapping_for "SeTeR Rediscover"'),
             menu.index('bash "$ROOT/run.sh" rediscover'),
         )
 

@@ -53,7 +53,8 @@
 #                                   records the mapping for that
 #                                   target's builds (fresh for 48
 #                                   hours)
-#   ./run.sh selfprobe <playlist>   SELF-PROBE (v3.0.2): measure the
+#   ./run.sh selfprobe <playlist>   SELF-PROBE (v3.0.2, and auto for
+#                                   every build in v3.0.3): measure the
 #                                   mapping on the target playlist
 #                                   ITSELF, under its own sort.
 #                                   Music remembers each playlist's
@@ -102,9 +103,15 @@
 # target's own sort needs no throwaway to imitate it. sort-probe
 # builds a rotation on it, reads it back, restores it, and records
 # the end-to-end mapping (forward: building X lands list read X;
-# reversed: building X lands list read reverse(X)). Apply and undo
-# read that recorded mapping (fresh for 48 hours, else they refuse)
-# and pass it to the bridge scripts, which build and verify with it
+# reversed: building X lands list read reverse(X)). Since v3.0.3
+# every build path (menu, direct shuffle/rediscover/dedupe/flow/
+# undo/restore, and the daily run since v3.0.2) AUTO self-probes
+# first when no fresh mapping is recorded: a missing or stale
+# mapping is refreshed from the target itself, never from a
+# throwaway, and a failed probe aborts before any dump or apply.
+# Apply and undo read that recorded mapping (fresh for 48 hours,
+# else the auto-probe runs again) and pass it to the bridge
+# scripts, which build and verify with it
 # (see bridge/sort-probe.applescript and
 # seter_shuffle/order_direction.py's mapping section). A sort-probe
 # that returns anything else refuses the build upstream. There is
@@ -342,8 +349,9 @@ fi
 # one (older than 48h), and refuse a file whose TARGET field does
 # not match, so a build never silently uses a mapping measured for
 # a different playlist's sort or a different day. If the target's
-# sort may have changed since the probe, re-run sortprobe first:
-# a stale mapping is a wrong mapping.
+# sort may have changed since the probe, the automatic self-probe
+# in ensure_mapping_for refreshes it first: a stale mapping is a
+# wrong mapping, and a build never proceeds on one.
 # The pre-.5 shared file $STATE/sort-mapping.txt is IGNORED since
 # .5: it is exactly the file that let a Flow build reuse a mapping
 # measured on the main playlist's descending sort for a new
@@ -366,9 +374,9 @@ mapping_for_build() {
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
     if [ -f "$STATE/sort-mapping.txt" ]; then
-      logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; the pre-.5 shared sort-mapping.txt is ignored since .5 because mappings do not transfer between sorts; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+      logerr "GATE FAILED: no per-target sort mapping recorded for '$target' after the automatic self-probe (./run.sh selfprobe '$target'); the pre-.5 shared sort-mapping.txt is ignored since .5 because mappings do not transfer between sorts; see the self-probe error above, no dump or apply ran"
     else
-      logerr "GATE FAILED: no sort-matched mapping recorded for '$target'; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+      logerr "GATE FAILED: no sort-matched mapping recorded for '$target' after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above, no dump or apply ran"
     fi
     return 1
   fi
@@ -379,20 +387,20 @@ mapping_for_build() {
   ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
   now="$(date +%s)"
   if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe"
+    logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping') after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above, no dump or apply ran"
     return 1
   fi
   if [ "$recorded_target" != "$target" ]; then
-    logerr "GATE FAILED: recorded mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; re-run sortprobe for '$target'"
+    logerr "GATE FAILED: recorded mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; the automatic self-probe (./run.sh selfprobe '$target') should have replaced it, see its error above"
     return 1
   fi
   if [ -z "$sort_label" ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label"
+    logerr "GATE FAILED: recorded mapping for '$target' has no sort label after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above"
     return 1
   fi
-  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1;; esac
+  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above"; return 1;; esac
   if [ $((now - ts)) -gt 172800 ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours (throwaway '$throwaway', sort '$sort_label'); re-run sortprobe so the mapping matches the target's current sort"
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours (throwaway '$throwaway', sort '$sort_label') after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above, the probe should have refreshed it"
     return 1
   fi
   logfile "sort mapping for builds: $mapping (target '$target', throwaway '$throwaway', sort '$sort_label', at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
@@ -415,7 +423,7 @@ mapping_info_for() {
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
   throwaway="$(grep '^THROWAWAY: ' "$map_file" | head -n 1 | sed 's/^THROWAWAY: //')"
   sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
-  log "build mapping for '$target': $mapping (throwaway '$throwaway', sort '$sort_label'); if this sort does not match '$target''s sort in Music, stop and re-run sortprobe"
+  log "build mapping for '$target': $mapping (throwaway '$throwaway', sort '$sort_label'); if this sort does not match '$target''s sort in Music, stop and re-run ./run.sh selfprobe '$target'"
 }
 
 # Print one target's recorded mapping status for the menu (and
@@ -426,7 +434,7 @@ mapping_status_for() {
   local target="$1" map_file mapping throwaway sort_label ts now age
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
-    log "mapping status for '$target': none recorded; a build will refuse until you run ./run.sh sortprobe <throwaway> '$target' '<sort-label>'"
+    log "mapping status for '$target': none recorded; a build will auto self-probe (./run.sh selfprobe '$target') before refusing"
     return 0
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
@@ -437,26 +445,88 @@ mapping_status_for() {
   case "$ts" in ''|*[!0-9]*) log "mapping status for '$target': invalid timestamp; a build will refuse"; return 0;; esac
   age=$((now - ts))
   if [ "$age" -gt 172800 ]; then
-    log "mapping status for '$target': STALE ($mapping, throwaway '$throwaway', sort '$sort_label', ${age}s old); a build will refuse until you re-run sortprobe"
+    log "mapping status for '$target': STALE ($mapping, throwaway '$throwaway', sort '$sort_label', ${age}s old); a build will auto self-probe (./run.sh selfprobe '$target') before refusing"
   else
     log "mapping status for '$target': $mapping (throwaway '$throwaway', sort '$sort_label', ${age}s old, valid 48 hours)"
   fi
 }
 
-# Gate a menu build BEFORE any dump or apply (2026-10-29, mode 39):
-# the non-interactive paths dump first and refuse at apply time,
-# which is safe (nothing changes) but wasteful and confusing in
-# the menu, where the user has already been told the mapping is
-# missing. mapping_ready_for returns 0 only for a fresh (<48h),
-# per-target, forward/reversed mapping with a sort label; anything
-# else prints the exact sortprobe command and returns 1, and the
-# menu then loops back without invoking the build at all.
+# Quiet readiness check used by ensure_mapping_for: 0 only for a
+# fresh (<48h), per-target, forward/reversed mapping with a sort
+# label and a valid timestamp. It prints nothing: mapping_for_build
+# is captured with $(...), and ensure_mapping_for logs its own
+# status lines, so a chatty check here would either pollute a
+# capture or double-print every gate failure.
+mapping_is_ready() {
+  local target="$1" map_file mapping recorded_target sort_label ts now age
+  map_file="$(mapping_file_for "$target")"
+  [ -f "$map_file" ] || return 1
+  mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+  recorded_target="$(grep '^TARGET: ' "$map_file" | head -n 1 | sed 's/^TARGET: //')"
+  sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
+  ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+  case "$mapping" in forward|reversed) ;; *) return 1 ;; esac
+  [ "$recorded_target" = "$target" ] || return 1
+  [ -n "$sort_label" ] || return 1
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s)"
+  age=$((now - ts))
+  [ "$age" -le 172800 ]
+}
+
+# Automatic self-probe gate (v3.0.3, the fix for the v3.0.2 gap:
+# daily.sh auto-probed, but the menu and direct builds still
+# refused on a missing mapping and told the user to probe by
+# hand). Every build path calls this BEFORE any dump or apply:
+# a fresh mapping is reused as-is, with NO re-probe, so a normal
+# run costs no extra rebuild; a missing, stale, or otherwise
+# unusable mapping triggers ./run.sh selfprobe on the target
+# itself, then a re-check. If the mapping is still not ready
+# after the probe, the run aborts with the probe error named,
+# before any dump or apply, and the menu loops back. Safety
+# properties are unchanged: the probe snapshots first, rotates,
+# restores under the measured mapping and verifies the restore;
+# "other" aborts and deletes the mapping; the duplicate-entry
+# refusal is unchanged, so a doubled playlist still fails
+# closed here, documented plainly; verify-after still fails
+# closed; no other target's mapping is ever borrowed; no fresh
+# throwaway probe is ever used. The v3.0.2 restore-failed
+# exception still applies inside the probe itself: a mapping
+# measured but not restore-verified is recorded so restore can
+# run, and the probe exits non-zero, so ensure_mapping_for
+# still refuses the build after it.
+ensure_mapping_for() {
+  local target="$1"
+  mapping_status_for "$target"
+  if mapping_is_ready "$target"; then
+    log "mapping for '$target' is fresh; skipping automatic self-probe"
+    return 0
+  fi
+  log "STEP: automatic self-probe for '$target' (no fresh mapping recorded; probing the target itself under its own sort)"
+  if bash "$ROOT/run.sh" selfprobe "$target" 2>&1 | tee -a "$LOG"; then
+    if mapping_is_ready "$target"; then
+      log "GATE OK: automatic self-probe for '$target' produced a fresh mapping"
+      return 0
+    fi
+    logerr "GATE FAILED: automatic self-probe ./run.sh selfprobe '$target' completed but left no usable mapping; no dump or apply ran for '$target'"
+    return 1
+  fi
+  logerr "GATE FAILED: automatic self-probe ./run.sh selfprobe '$target' failed (see the self-probe error above); no dump or apply ran for '$target'"
+  return 1
+}
+
+# Legacy pure check (kept for the test harness and for a human
+# asking "is this target ready?" without probing): returns 0
+# only for a fresh (<48h), per-target, forward/reversed mapping
+# with a sort label. The menu and the direct build paths no
+# longer use this alone; they use ensure_mapping_for, which
+# probes first when this check fails.
 mapping_ready_for() {
   local target="$1" map_file mapping sort_label ts now age
   mapping_status_for "$target"
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
-    logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+    logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; the automatic self-probe is ./run.sh selfprobe '$target'"
     return 1
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
@@ -465,17 +535,17 @@ mapping_ready_for() {
   now="$(date +%s)"
   case "$mapping" in
     forward|reversed) ;;
-    *) logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe"; return 1 ;;
+    *) logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run ./run.sh selfprobe '$target'"; return 1 ;;
   esac
   case "$sort_label" in
-    '') logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label"; return 1 ;;
+    '') logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run ./run.sh selfprobe '$target'"; return 1 ;;
   esac
   case "$ts" in
-    ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1 ;;
+    ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run ./run.sh selfprobe '$target'"; return 1 ;;
   esac
   age=$((now - ts))
   if [ "$age" -gt 172800 ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours; re-run sortprobe so the mapping matches the target's current sort"
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours; re-run ./run.sh selfprobe '$target' so the mapping matches the target's current sort"
     return 1
   fi
   return 0
@@ -487,11 +557,14 @@ mapping_ready_for() {
 # non-interactive paths applies unchanged: a build still refuses
 # without a fresh per-target mapping, still validates its order,
 # still snapshots and verifies. The menu pre-checks the mapping
-# with mapping_ready_for before invoking any build, so a missing
-# or stale mapping refuses before any dump, not after it; it
-# never probes, never picks a mapping, and never overrides a
-# refusal. Playlist names may contain spaces; size is the
-# documented 100/250/500/1000/all choice, blank for all.
+# with ensure_mapping_for before invoking any build: a fresh
+# mapping is reused with no re-probe, and a missing or stale
+# mapping triggers an automatic self-probe of the target itself
+# before any dump, not after it. A failed probe loops the menu
+# back with the probe error visible; the menu never picks a
+# mapping, never borrows another target's mapping, and never
+# overrides a refusal. Playlist names may contain spaces; size is
+# the documented 100/250/500/1000/all choice, blank for all.
 if [ "$CMD" = "menu" ]; then
   while true; do
     printf '\nSeTeR Shuffle\n  1) Shuffle a playlist\n  2) Rediscover\n  3) Remove duplicates (dedupe)\n  4) Undo last shuffle\n  5) Flow\n  6) Flow preview\n  7) Audit\n  0) Quit\n'
@@ -502,7 +575,7 @@ if [ "$CMD" = "menu" ]; then
         printf 'Playlist (blank for SeTeR Shuffle): '
         read -r pl || exit 0
         if [ -n "$pl" ]; then menu_target="$pl"; else menu_target="SeTeR Shuffle"; fi
-        mapping_ready_for "$menu_target" || continue
+        ensure_mapping_for "$menu_target" || continue
         printf 'Size (100/250/500/1000/all, blank for all): '
         read -r sz || exit 0
         # No array here, for the same bash 3.2 reason as the
@@ -520,25 +593,25 @@ if [ "$CMD" = "menu" ]; then
         fi
         ;;
       2)
-        mapping_ready_for "SeTeR Rediscover" || continue
+        ensure_mapping_for "SeTeR Rediscover" || continue
         bash "$ROOT/run.sh" rediscover || notify "SeTeR Shuffle: rediscover failed"
         ;;
       3)
         printf 'Playlist: '
         read -r pl || exit 0
         [ -n "$pl" ] || { echo "dedupe needs a playlist name."; continue; }
-        mapping_ready_for "$pl" || continue
+        ensure_mapping_for "$pl" || continue
         bash "$ROOT/run.sh" dedupe "$pl" || notify "SeTeR Shuffle: dedupe failed"
         ;;
       4)
         printf 'Playlist: '
         read -r pl || exit 0
         [ -n "$pl" ] || { echo "undo needs a playlist name."; continue; }
-        mapping_ready_for "$pl" || continue
+        ensure_mapping_for "$pl" || continue
         bash "$ROOT/run.sh" undo "$pl" || notify "SeTeR Shuffle: undo failed"
         ;;
       5)
-        mapping_ready_for "SeTeR Flow" || continue
+        ensure_mapping_for "SeTeR Flow" || continue
         bash "$ROOT/run.sh" flow || notify "SeTeR Shuffle: flow failed"
         ;;
       6)
@@ -714,6 +787,7 @@ if [ "$CMD" = "undo" ]; then
     ls -t "$STATE"/backup-*.txt 2>/dev/null | head -n 10 | while read -r f; do log "  $f"; done
     exit 1
   fi
+  ensure_mapping_for "$PLAYLIST" || exit 1
   MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
   mapping_info_for "$PLAYLIST"
   log "undo $PLAYLIST from $BACKUP (mapping $MAPPING; pre-undo snapshot will be saved at $BACKUP.pre-undo)"
@@ -740,6 +814,7 @@ if [ "$CMD" = "restore" ]; then
     log "GATE FAILED: backup file $BACKUP does not exist; restore refuses, playlist untouched"
     exit 1
   fi
+  ensure_mapping_for "$PLAYLIST" || exit 1
   MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
   mapping_info_for "$PLAYLIST"
   log "restore $PLAYLIST from $BACKUP (mapping $MAPPING; pre-fix snapshot will be saved at $BACKUP.fix-snapshot)"
@@ -786,6 +861,20 @@ if [ "$CMD" = "shuffle" ]; then
     exit 2
   fi
 fi
+
+# Automatic self-probe before any dump (v3.0.3): the build
+# target for this command gets ensure_mapping_for first, so a
+# missing or stale mapping is refreshed from the target itself
+# and a failed probe aborts before the dump, the compute, or
+# the apply. Audit and preview commands never reach this block
+# with a build target, so they probe nothing. apply_order still
+# re-checks with mapping_for_build as its final gate.
+case "$CMD" in
+  shuffle) ensure_mapping_for "${SHUFFLE_PLAYLIST:-SeTeR Shuffle}" || exit 1 ;;
+  dedupe) [ -n "${2:-}" ] || { echo "usage: $0 dedupe <playlist>" >&2; exit 2; }; ensure_mapping_for "$2" || exit 1 ;;
+  flow) ensure_mapping_for "SeTeR Flow" || exit 1 ;;
+  rediscover) ensure_mapping_for "SeTeR Rediscover" || exit 1 ;;
+esac
 
 # Dump: whole library, or one playlist for shuffle/dedupe. The dump
 # lives in a fresh temporary directory per run, so a failed dump can

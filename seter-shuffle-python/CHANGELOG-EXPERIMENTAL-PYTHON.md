@@ -8,6 +8,46 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — v3.0.3: automatic self-probing for menu and direct builds (NOT yet a published release)
+
+v3.0.2 only auto-probed the daily run. Spencer then ran the
+menu on 3.0.2 and still got the gate failure, correctly,
+because the menu code explicitly said it "never probes" and
+called mapping_ready_for || continue. That is the gap this
+release closes: probing is now automatic for menu and direct
+builds too, not just the daily run.
+
+**What changed.** `run.sh` gained ensure_mapping_for, called
+before any dump or apply by menu choices and by direct
+shuffle, rediscover, dedupe, flow, undo, and restore. A
+fresh (<48h), correctly-targeted, forward/reversed mapping
+is reused as-is, with NO re-probe, so a normal run costs no
+extra rebuild. A missing, stale, or otherwise unusable
+mapping triggers `./run.sh selfprobe` on the target itself,
+then a re-check; if it is still not ready after the probe,
+the run aborts with the probe error named, before any dump
+or apply, and the menu loops back. Gate-failure messages no
+longer tell the user to run a manual sortprobe first when
+the automatic self-probe just failed; they name the
+self-probe that was attempted. Manual sortprobe and
+selfprobe commands keep working exactly as before.
+
+**Safety, unchanged.** The probe snapshots first, rotates,
+restores under the measured mapping, and verifies the
+restore; "other" aborts and deletes the mapping; the
+duplicate-entry refusal is unchanged, so a doubled playlist
+still fails closed at the probe, documented plainly;
+verify-after still fails closed; no other target's mapping
+is ever borrowed; no fresh throwaway probe is ever used.
+The v3.0.2 restore-failed exception still applies inside
+the probe itself (mapping recorded so restore can run,
+probe exits non-zero, no build follows).
+
+Version marker bumped to `3.0.3`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.3 one-click run, a menu
+auto-probe on a real playlist, a direct-build auto-probe,
+and the doubled-playlist dedupe deadlock path.
+
 ## 2026-10-29 — v3.0.2: automatic self-probing (NOT yet a published release)
 
 Spencer's correction, which supersedes the throwaway-only

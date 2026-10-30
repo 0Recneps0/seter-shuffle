@@ -557,9 +557,25 @@ Safety properties, unchanged except as noted:
   (its sort label is replaced). The old throwaway form
   keeps working exactly as before, and a fresh throwaway
   probe is never used by any build or by the daily run.
+- v3.0.3 extends the same auto self-probe to every other
+  build path, closing the v3.0.2 gap Spencer hit in the
+  menu: `run.sh` menu choices, and direct shuffle /
+  rediscover / dedupe / flow / undo / restore, now call
+  ensure_mapping_for before any dump or apply. A fresh
+  mapping is reused with NO re-probe; a missing or stale
+  mapping triggers ./run.sh selfprobe on the target
+  itself, then a re-check; a failed probe aborts with
+  the probe error named, before any dump or apply, and
+  the menu loops back. Gate-failure messages no longer
+  tell the user to run a manual sortprobe first when
+  the automatic self-probe just failed; they name the
+  self-probe that was attempted. The menu's old "never
+  probes" rule is superseded: it auto-probes, and never
+  overrides a refusal or borrows another target's mapping.
 
 UNPROVEN ON A MAC: a self-probe on a real playlist, the
-daily auto-probe on a Mac, and the doubled-playlist dedupe
+daily auto-probe on a Mac, the menu/direct auto-probe on
+a Mac, and the doubled-playlist dedupe
 deadlock path. The sort-probe AppleScript's own "other"
 error text still says to set "the throwaway sort"; for a
 self-probe that wording is stale (there is no throwaway),
@@ -577,7 +593,9 @@ drop-in package closes them, with the guards intact:
   refused run, never a corrupted playlist. No other guard moved.
 - `./run.sh menu` re-invokes run.sh per choice, so menu builds
   keep every gate; the menu prints mapping status before a
-  build and never probes or overrides a refusal.
+  build and, since v3.0.3, auto self-probes on a missing
+  or stale mapping instead of refusing outright, and never
+  overrides a refusal.
 - The "Last reshuffled" stamp runs only in apply-order, only
   after verification and the library-shrink check, only for
   shuffle/flow (run.sh stamp flag), and best-effort: an
