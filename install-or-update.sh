@@ -1,9 +1,27 @@
 #!/bin/bash
-# install-or-update.sh (SeTeR Shuffle v3.0, one-click install or update)
+# install-or-update.sh (SeTeR Shuffle v3.0.1, one-click install or update)
+#
+# Bash 3.2 note (macOS ships bash 3.2): this script contains NO
+# array expansions at all. The v3.0 build died on a default run
+# with "SETUP_ARGS[@]: unbound variable" because expanding an
+# empty array under set -u is an error on bash 3.2, unlike bash 5
+# on Linux. Setup arguments are rebuilt with set -- / "$@" here,
+# which is safe when empty even on bash 3.2, and the v3.0.1
+# regression test pins that default path.
+#
+# Execute-bit note: release zips have shipped these scripts with
+# the execute bit stripped (mode 660), so double-clicking the
+# .command wrapper gave "permission denied". This script chmods
+# +x its own helpers at the start of every run (setup-python.sh,
+# check-python.sh, daily.sh, run.sh, migrate-to-python.sh,
+# install-or-update.sh, SeTeR-Shuffle-Install.command), before
+# invoking any of them, so a future zip with stripped modes
+# still works. Running via `bash install-or-update.sh` never
+# needed the bit in the first place.
 #
 # One confirmation, then everything in order:
 #   1. Verify a real python3 (3.9+) exists.
-#   2. Install or update ~/Documents/SeTeRShufflePython to v3.0
+#   2. Install or update ~/Documents/SeTeRShufflePython to v3.0.1
 #      (differing files get a timestamped .bak first; backups, logs,
 #      and Rediscover history are never deleted).
 #   3. Write and load the 8:00 AM com.seter.python.daily plist.
@@ -54,6 +72,17 @@ if [ ! -f "$SCRIPT_DIR/setup-python.sh" ] && [ -f "$SCRIPT_DIR/seter-shuffle-pyt
   SCRIPT_DIR="$SCRIPT_DIR/seter-shuffle-python"
 fi
 
+# Restore the execute bit on our own helpers before invoking any
+# of them. Release zips have stripped modes before (660), which
+# made double-clicking the .command wrapper fail with
+# "permission denied". Mode changes only; no content is touched,
+# and this runs even if the user later declines the prompt.
+for helper in setup-python.sh check-python.sh daily.sh run.sh migrate-to-python.sh install-or-update.sh SeTeR-Shuffle-Install.command; do
+  if [ -f "$SCRIPT_DIR/$helper" ]; then
+    chmod +x "$SCRIPT_DIR/$helper" 2>/dev/null || true
+  fi
+done
+
 ASSUME_YES=0
 FORCE=0
 PLAYLIST=""
@@ -62,7 +91,7 @@ MINUTE=""
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle v3.0 -- one-click install or update
+SeTeR Shuffle v3.0.1 -- one-click install or update
 
 Usage: bash install-or-update.sh [--yes] [--playlist NAME] [--hour H] [--minute M] [--force]
 
@@ -106,7 +135,7 @@ OLD_PLIST="$PLIST_DIR/com.seter.daily.plist"
 NEW_PLIST="$PLIST_DIR/com.seter.python.daily.plist"
 MARKER_FILE="$INSTALL_DIR/installed-version.txt"
 
-say "SeTeR Shuffle v3.0 -- one-click install or update"
+say "SeTeR Shuffle v3.0.1 -- one-click install or update"
 say ""
 if [ -f "$MARKER_FILE" ]; then
   say "Existing install found at $INSTALL_DIR (version: $(cat "$MARKER_FILE" 2>/dev/null || echo unknown)). This will update it in place."
@@ -135,16 +164,23 @@ else
   say "ok python3 check skipped (test mode)"
 fi
 
-# 2. Install or update, with the 8am schedule. --force is passed
-# through so an update from a 3.0-proposed install is allowed;
-# setup-python.sh still .bak's every differing file first.
-SETUP_ARGS=()
-[ -n "$PLAYLIST" ] && SETUP_ARGS+=(--playlist "$PLAYLIST")
-[ -n "$HOUR" ] && SETUP_ARGS+=(--hour "$HOUR")
-[ -n "$MINUTE" ] && SETUP_ARGS+=(--minute "$MINUTE")
-[ "$FORCE" = 1 ] && SETUP_ARGS+=(--force)
+# 2. Install or update, with the 8am schedule. --force is always
+# passed through here (the user already confirmed once in this
+# script), so an update from a 3.0-proposed or 3.0 install is
+# allowed; setup-python.sh still .bak's every differing file
+# first. Arguments are rebuilt with set -- / "$@" on purpose:
+# NO array is used anywhere in this script, because expanding an
+# empty array under set -u is an unbound-variable error on
+# macOS bash 3.2, which is exactly how the v3.0 default run died
+# at Step 1 before any migration. "$@" with no arguments expands
+# to nothing safely even on bash 3.2.
+set --
+[ -n "$PLAYLIST" ] && set -- "$@" --playlist "$PLAYLIST"
+[ -n "$HOUR" ] && set -- "$@" --hour "$HOUR"
+[ -n "$MINUTE" ] && set -- "$@" --minute "$MINUTE"
+set -- "$@" --force
 say "Step 1 of 3: installing/updating into $INSTALL_DIR ..."
-bash "$SCRIPT_DIR/setup-python.sh" "${SETUP_ARGS[@]}" || die "setup-python.sh failed; nothing was migrated. Your previous install (if any) and v2.6 job are untouched except for any .bak files setup kept. Re-run this script after fixing the error above."
+bash "$SCRIPT_DIR/setup-python.sh" "$@" || die "setup-python.sh failed; nothing was migrated. Your previous install (if any) and v2.6 job are untouched except for any .bak files setup kept. Re-run this script after fixing the error above."
 say "ok install/update done"
 
 # 3a. Verify the install and the schedule before migrating.
@@ -171,7 +207,7 @@ if [ -f "$OLD_PLIST" ]; then
   die "Final check failed: v2.6 daily plist is still present; migration did not take effect. Rollback is available: bash $INSTALL_DIR/migrate-to-python.sh --rollback"
 fi
 say ""
-say "Done. SeTeR Shuffle v3.0 is installed and scheduled for 8:00 AM."
+say "Done. SeTeR Shuffle v3.0.1 is installed and scheduled for 8:00 AM."
 say "  Install: $INSTALL_DIR"
 say "  Daily job: com.seter.python.daily (8:00 AM)"
 say "  v2.6 daily job: disabled (script and backups kept; rollback: bash $INSTALL_DIR/migrate-to-python.sh --rollback)"

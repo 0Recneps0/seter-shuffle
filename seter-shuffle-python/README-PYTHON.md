@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0)
+# SeTeR Shuffle, Python core (v3.0.1)
 
-This tree is the v3.0 stable tree, prepared for publish on the
-main branch. The v2.6 AppleScript build on main is not edited by
-this tree; it is only disabled, by an explicit migration step,
-when the user runs the one-click installer below.
+This tree is the v3.0.1 stable tree on the main branch. The v2.6
+AppleScript build on main is not edited by this tree; it is only
+disabled, by an explicit migration step, when the user runs the
+one-click installer below.
 
-## One-click install or update (v3.0)
+## One-click install or update (v3.0.1)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.1, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -24,10 +24,10 @@ each target on a clean throwaway set to that target's sort
 (never the main playlist itself as the throwaway) before the
 first scheduled run.
 
-## Stable preparation (v3.0)
+## Stable preparation (v3.0.1)
 
-Stable name: v3.0. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0`. No v3.0 tag or release is created by
+Stable name: v3.0.1. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.1`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash

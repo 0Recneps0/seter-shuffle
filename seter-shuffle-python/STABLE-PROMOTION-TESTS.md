@@ -372,16 +372,25 @@ until Spencer approves the exact change list.
    a 49h-old one refuses; test by hand with the recorded
    timestamps, do not wait two days if a faster check works).
 
-## One-click Mac steps (v3.0)
+## One-click Mac steps (v3.0.1)
 
 1. Fresh or update: download the stable zip, unzip, double-click
    `SeTeR-Shuffle-Install.command`, answer yes once. Pass: the
    install dir lands at `~/Documents/SeTeRShufflePython` with
-   marker `3.0`, the 8am `com.seter.python.daily` plist exists
+   marker `3.0.1`, the 8am `com.seter.python.daily` plist exists
    and is loaded, and the v2.6 plist is renamed to
    `.disabled-<timestamp>` (script and backups untouched).
-   An update from a `3.0-proposed` install must succeed and
-   keep differing files as `.bak` copies.
+   An update from a `3.0-proposed` or `3.0` install must succeed
+   and keep differing files as `.bak` copies.
+1b. One-click no-argument regression (v3.0.1): run the installer
+   with no --playlist/--hour/--minute/--force arguments, exactly
+   as the v3.0 run that died at Step 1 with an unbound-variable
+   error on macOS bash 3.2. Pass: it proceeds past Step 1, with
+   no unbound-variable error and no empty-array expansion.
+1c. Stripped modes: if the unzipped helpers arrive mode 660
+   (no execute bit), double-clicking must still work, because
+   the installer chmods +x its own helpers at the start of a
+   run. Pass: no "permission denied" from the entry point.
 2. Decline: answer anything but yes. Pass: nothing changes.
 3. Rollback: `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
    Pass: the v2.6 plist is restored and loaded, the Python

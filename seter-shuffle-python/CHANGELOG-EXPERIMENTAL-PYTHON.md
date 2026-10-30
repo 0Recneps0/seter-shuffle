@@ -8,6 +8,33 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — v3.0.1: one-click installer fix (NOT yet a published release)
+
+Proven on Spencer's Mac at ~17:32 PT, running the v3.0 one-click
+installer with no extra arguments: after "ok python3 check
+passed" and "Step 1 of 3: installing/updating…", it died with
+"install-or-update.sh: line 147: SETUP_ARGS[@]: unbound
+variable". Same bash 3.2 empty-array class as the .7 menu bug:
+macOS ships bash 3.2, where expanding an empty array under
+set -u is an error, unlike bash 5 on Linux, so the bug was
+invisible here. The installer stopped at Step 1, before any
+migration, so v2.6 and the existing install were untouched.
+
+**Fix.** `install-or-update.sh` contains no array at all now:
+setup arguments are rebuilt with `set --` / `"$@"`, which is
+safe when empty even on bash 3.2, and `--force` is always
+passed through (the user already confirmed once in the
+one-click script), so an update from a `3.0-proposed` or `3.0`
+install is allowed. A tree-wide audit found only one other
+`[@]` expansion, `apply_args` in `run.sh`, which is assigned
+all 7 elements in both branches before use and is provably
+non-empty, so it was left alone. The installer also chmods +x
+its own helpers at the start of every run, because the v3.0 zip
+shipped them mode 660 and double-clicking gave "permission
+denied". Installer marker bumped to `3.0.1`; no v2.6 file was
+changed. UNPROVEN ON A MAC: the v3.0.1 one-click run itself,
+including the no-argument path and the stripped-modes path.
+
 ## 2026-10-29 — v3.0 stable-prep: one-click install-or-update (NOT a published release)
 
 Spencer approved publishing v3.0 stable and asked for almost a
