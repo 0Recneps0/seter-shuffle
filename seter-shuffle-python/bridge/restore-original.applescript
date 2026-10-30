@@ -23,9 +23,15 @@
 -- script duplicates D under "forward" and reverse(D) under
 -- "reversed", and verifies the list read against D, always. Any
 -- other mapping string, or a missing one, aborts before any change.
--- A failed verify restores the pre-fix snapshot (under the same
--- mapping) and reports failure loudly; it never flips, never
--- guesses, and never claims success on an unproven playlist.
+-- A failed verify puts the pre-fix snapshot back, trying both
+-- mappings (each verified against the snapshot) before declaring
+-- CRITICAL, and reports failure loudly; it never flips the
+-- desired restore order itself, never guesses, and never claims
+-- success on an unproven playlist. The both-mappings rule is
+-- the same 2026-10-29 mode 41 fix as apply-order/undo: a
+-- snapshot put-back under a wrong mapping cannot verify, by
+-- the same mechanism as the build failure, so a
+-- single-mapping put-back traps itself.
 --
 -- Safety, same contract as the other bridge scripts:
 --  * Only a regular user playlist is ever modified, resolved by an
@@ -106,12 +112,15 @@ on run argv
 	end if
 	-- Could not prove the restore. Put the snapshot back, then
 	-- report failure honestly; never claim success on an unproven
-	-- playlist, and never flip (see the header).
-	set snapFailed to my rebuild(destPl, my buildForMapping(currentIDs, buildMapping))
-	if (count of snapFailed) is 0 and my verifyAgainst(destPl, currentIDs) then
+	-- playlist, and never flip the desired order (see the header).
+	-- The put-back tries BOTH mappings, each verified against the
+	-- snapshot: a put-back under a wrong mapping cannot verify,
+	-- by the same mechanism as the build failure, so a
+	-- single-mapping put-back would trap itself (mode 41).
+	if my tryPutBackBothMappings(destPl, currentIDs, buildMapping) then
 		error "FIX FAILED: could not restore \"" & playlistName & "\" to the backup order (mapping " & buildMapping & "), so the playlist was put back to its pre-fix state. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Nothing was lost from the library." number 1
 	end if
-	error "FIX FAILED CRITICAL: could not restore \"" & playlistName & "\" to the backup order (mapping " & buildMapping & "), AND the pre-fix snapshot could not be put back either. Playlist may be partial. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Keep both files and report this message; do not run the old undo again." number 1
+	error "FIX FAILED CRITICAL: could not restore \"" & playlistName & "\" to the backup order (mapping " & buildMapping & "), AND the pre-fix snapshot could not be put back under either mapping. Playlist may be partial. Original backup: " & backupPath & ". Pre-fix snapshot: " & snapshotPath & ". Keep both files and report this message; do not run the old undo again." number 1
 end run
 
 -- The build mapping, validated, never defaulted.
@@ -127,6 +136,27 @@ on buildForMapping(desiredIDs, buildMapping)
 	if buildMapping is "reversed" then return my reverseList(desiredIDs)
 	return desiredIDs
 end buildForMapping
+
+-- The opposite of a mapping: the only other value parseMapping
+-- accepts, so this can never invent a third mapping.
+on oppositeMapping(buildMapping)
+	if buildMapping is "reversed" then return "forward"
+	return "reversed"
+end oppositeMapping
+
+-- Put a snapshot back trying BOTH mappings, given first then
+-- opposite, each verified against the snapshot. Returns true if
+-- either verifies, false if neither does. This is a RESTORE
+-- retry, not a build flip: it never lands a desired order, it
+-- only returns to a snapshot that already existed.
+on tryPutBackBothMappings(pl, snapshotIDs, buildMapping)
+	set failed1 to my rebuild(pl, my buildForMapping(snapshotIDs, buildMapping))
+	if (count of failed1) is 0 and my verifyAgainst(pl, snapshotIDs) then return true
+	set otherMapping to my oppositeMapping(buildMapping)
+	set failed2 to my rebuild(pl, my buildForMapping(snapshotIDs, otherMapping))
+	if (count of failed2) is 0 and my verifyAgainst(pl, snapshotIDs) then return true
+	return false
+end tryPutBackBothMappings
 
 on resolvePlaylist(playlistName)
 	tell application "Music"

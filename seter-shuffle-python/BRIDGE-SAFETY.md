@@ -631,6 +631,54 @@ error text still says to set "the throwaway sort"; for a
 self-probe that wording is stale (there is no throwaway),
 and run.sh's failure log carries the corrected meaning.
 
+## Failure mode 41: a restore under a wrong mapping cannot verify (2026-10-29, proven on the Mac)
+
+On 2026-10-29 18:59 PT trial-dedupe (v3.0.4) on the real
+main playlist tried forward first (1612 entries, 806
+unique). The playlist's true mapping is reversed, so the
+forward dedupe build verified-failed, as it should. Then
+apply-order's internal restore rebuilt the pre-dedupe
+snapshot with the SAME forward mapping, so it
+verified-failed too and declared CRITICAL, and the
+run.sh undo restore failed the same way. The pre-undo
+snapshot file proved all 1612 entries were present at
+undo start, in the exact reverse of the snapshot, and a
+read-only diagnostic at 19:08 PT proved the current
+list-read order is exactly the pre-dedupe snapshot order
+(1612, first EC60833070C7D0B1, last 6471F2089E4E7F7D).
+No songs were lost; the playlist was back at doubled
+order and needed no restore. The trap is mechanical: a
+restore under a wrong mapping cannot verify, by the same
+mechanism as a build failure under that mapping, so a
+single-mapping restore traps itself and wrongly declares
+a playlist partial when every song is present, merely
+reversed.
+
+The fix (v3.0.5) is a RESTORE retry, not a build flip,
+and the distinction must not be blurred later. A build
+never retries its desired order under the opposite
+mapping, and a failed build still exits non-zero and
+records nothing. A restore's only job is to return to a
+known snapshot, and each restore attempt is verified
+against that snapshot before it counts, so every restore
+now tries both mappings, given first then opposite:
+apply-order's internal restore (failed build,
+delete-empty failure, library shrink), undo's pre-undo
+restore, and restore-original's snapshot put-back (the
+same trap in the run.sh restore path). Only if neither
+verifies does a script declare CRITICAL, with the
+snapshot named. In run.sh, a trial-dedupe attempt whose
+restore fails now means neither mapping restored, so the
+trial stops critical with the snapshot named and does
+not try the other trial mapping on top of a possibly
+partial state; if the restore succeeds under either
+mapping, the trial proceeds to the next mapping.
+
+UNPROVEN ON A MAC: trial-dedupe completing on the real
+doubled playlist under v3.0.5, the mapping recorded by
+a successful trial, and a subsequent shuffle after
+trial-dedupe.
+
 ## Failure mode 38: drop-in gaps closed, and the one left open (2026-10-29)
 
 The stable-prep audit listed five gaps against v2.6 parity; the

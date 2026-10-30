@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0.4)
+# SeTeR Shuffle, Python core (v3.0.5)
 
-This tree is the v3.0.4 stable tree on the main branch. The v2.6
+This tree is the v3.0.5 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.4)
+## One-click install or update (v3.0.5)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.4, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.5, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -61,10 +61,36 @@ the actual desired order. The daily run attempts
 trial-dedupe only when the daily playlist's probe refused
 on duplicate entries specifically.
 
-## Stable preparation (v3.0.4)
+NEW IN v3.0.5: restores try BOTH mappings before declaring
+CRITICAL. On 2026-10-29 18:59 PT trial-dedupe tried forward
+first on the real main playlist (1612 entries, 806 unique);
+its true mapping is reversed, so the forward build
+verified-failed, as it should, and then the restore inside
+that same apply rebuilt the snapshot with the SAME forward
+mapping, so it verified-failed too, and the undo restore
+failed the same way. No songs were lost: the pre-undo file
+proved all 1612 entries were present, in the exact reverse
+of the snapshot, and a read-only diagnostic afterwards
+proved the current list-read order is exactly the
+pre-dedupe snapshot order, so the playlist needs no
+restore. The trap was that a restore under a wrong mapping
+cannot verify, by the same mechanism as the build failure.
+Now every restore (apply-order, undo's pre-undo restore,
+and restore-original's snapshot put-back) tries the given
+mapping first, then the opposite, each verified against
+the snapshot it is returning to, and only declares
+CRITICAL if neither verifies. This is NOT a build flip:
+a failed build still exits non-zero and records nothing;
+a restore retries only to return to a known snapshot.
+A trial-dedupe attempt whose restore fails under both
+mappings stops critical with the snapshot named and does
+not try the other trial mapping on top of a possibly
+partial state.
 
-Stable name: v3.0.4. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.4`. No tag or release is created by
+## Stable preparation (v3.0.5)
+
+Stable name: v3.0.5. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.5`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash

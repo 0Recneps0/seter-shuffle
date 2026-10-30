@@ -945,11 +945,15 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 # recorded. Return codes from apply_order_mapped(): 0 on a
 # verified apply; 1 on an apply failure whose playlist was
 # restored (or never changed), so a trial caller may safely try
-# the other mapping; 2 on an apply failure whose restore also
-# failed and left the playlist possibly partial, so a trial
-# caller must NOT try the other mapping on top of a partial
-# state. Normal callers run under set -e, so any non-zero
-# return stops the run, exactly as the old exit 1 did.
+# the other mapping; 2 on an apply failure whose restore failed
+# under BOTH mappings inside apply-order and inside undo
+# (v3.0.5, mode 41) and left the playlist possibly partial, so
+# a trial caller must NOT try the other mapping on top of a
+# partial state. A restore failure no longer means "the one
+# mapping tried was wrong": both were tried, each verified
+# against the snapshot, before code 2 is returned. Normal
+# callers run under set -e, so any non-zero return stops the
+# run, exactly as the old exit 1 did.
 # APPLY_LAST_RUN_BACKUP and APPLY_RESTORE_FAILED are globals
 # set here for trial callers: the per-run snapshot to name in a
 # hard error, and whether the last attempt's restore failed
@@ -1053,7 +1057,7 @@ apply_order_mapped() {
     log "GATE FAILED: apply failed for $target"
     notify "SeTeR Shuffle: apply failed for $target ($mode)"
     if [ -f "$run_backup" ]; then
-      log "per-run snapshot exists at $run_backup; attempting restore via undo (same recorded mapping); main backup at $backup was NOT overwritten by this failed run"
+      log "per-run snapshot exists at $run_backup; attempting restore via undo (undo itself tries both mappings, v3.0.5); main backup at $backup was NOT overwritten by this failed run"
       if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "$build_mapping"; then
         log "restore from per-run snapshot succeeded; playlist is back to its pre-run state"
       else
@@ -1118,9 +1122,16 @@ record_trial_mapping() {
 # "other" sort like Title ascending, where neither forward nor
 # reversed can land the desired order), the playlist is left
 # at its pre-dedupe order, no mapping is recorded, and this
-# returns 1. If an attempt's restore itself fails critically
-# (playlist possibly partial), this returns 2 immediately and
-# does NOT try the other mapping on top of a partial state.
+# returns 1. If an attempt's restore fails under BOTH mappings
+# (v3.0.5: apply-order's internal restore and undo's restore
+# each try the trial mapping first, then the opposite, each
+# verified against the snapshot), the playlist may be partial,
+# this returns 2 immediately, and the trial does NOT try the
+# other mapping on top of a partial state. A restore failure
+# after v3.0.5 therefore means neither mapping could return
+# the playlist to its snapshot, not merely that the trial
+# mapping was wrong: the opposite mapping was already tried
+# for the restore before the trial stopped.
 # The probe is never involved: this function must not be
 # generalized into a probe bypass, because the probe's job is
 # to classify a sort from a rotation without changing the
@@ -1137,7 +1148,7 @@ dedupe_trial_apply() {
       return 0
     fi
     if [ "${APPLY_RESTORE_FAILED:-0}" = "1" ]; then
-      log "CRITICAL: trial-dedupe apply with mapping $trial_mapping failed AND its restore failed; playlist may be partial; snapshot at $APPLY_LAST_RUN_BACKUP; not trying the other mapping"
+      log "CRITICAL: trial-dedupe apply with mapping $trial_mapping failed AND its restore failed under both mappings; playlist may be partial; snapshot at $APPLY_LAST_RUN_BACKUP; not trying the other mapping"
       return 2
     fi
     log "trial-dedupe apply with mapping $trial_mapping did not verify; playlist restored to its pre-dedupe order; trying the other mapping"

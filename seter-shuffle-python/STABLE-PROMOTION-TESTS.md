@@ -476,6 +476,38 @@ deadlock: dedupe it by hand") is SUPERSEDED by these
 steps: trial-dedupe is now the supported path, and the
 probe's duplicate refusal itself is unchanged.
 
+## Restore-both-mappings Mac steps (v3.0.5)
+
+These steps supersede the v3.0.4 trial-dedupe steps for
+the restore behaviour only; the trial design itself is
+unchanged. Do NOT re-run trial-dedupe on v3.0.4: it
+repeats the forward-then-restore trap below.
+
+1. Trial-dedupe on the doubled main playlist: from the
+   v3.0.5 install, run `./run.sh dedupe "My New
+   Sandwich Recipe"` (or menu choice 3). Pass: the
+   forward trial apply verifies-fails under the
+   playlist's true reversed mapping, its restore
+   succeeds under the opposite (reversed) mapping, the
+   trial then proceeds to reversed, applies the
+   first-occurrence order (1612 entries become 806
+   unique songs), the main backup holds the pre-dedupe
+   doubled order, and a trial-dedupe mapping
+   (reversed) is recorded for the target. The log must
+   NOT declare CRITICAL for the forward trial.
+2. Restore that fails under both mappings: this step is
+   hard to stage deliberately and is not required to
+   pass by staging it; the pass condition, if it ever
+   occurs, is: the log names the snapshot, says the
+   restore failed under both mappings, the trial stops
+   without trying the other trial mapping, and no
+   further build runs until the playlist is restored
+   from that snapshot by hand.
+3. Subsequent shuffle after trial-dedupe: run a shuffle
+   on the same playlist immediately after step 1. Pass:
+   it reuses the trial-dedupe mapping directly, with no
+   probe and no trial, and applies.
+
 ## Menu and direct auto-probe Mac steps (v3.0.3)
 
 1. Menu shuffle with no mapping: open `./run.sh menu`,

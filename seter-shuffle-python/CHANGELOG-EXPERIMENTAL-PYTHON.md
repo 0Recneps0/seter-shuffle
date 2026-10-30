@@ -8,6 +8,56 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-10-29 — v3.0.5: restores try both mappings before declaring CRITICAL (NOT yet a published release)
+
+On 2026-10-29 18:59-19:05 PT Spencer ran trial-dedupe
+(v3.0.4) on the real main playlist from the menu: 1612
+entries, 806 unique songs, first-occurrence order
+computed and logged, then the forward trial apply
+verified-failed. That part was correct: the playlist's
+true mapping is reversed, so a forward build cannot land
+the deduped order. The trap was the restore: apply-order
+rebuilt the pre-dedupe snapshot with the SAME forward
+mapping, so it verified-failed too and declared CRITICAL,
+and the run.sh undo restore failed the same way. The
+pre-undo snapshot file proved the playlist held all 1612
+entries at undo start, in the exact reverse of the
+snapshot, and a read-only diagnostic at 19:08 PT proved
+the current list-read order is exactly the pre-dedupe
+snapshot order (1612, first EC60833070C7D0B1, last
+6471F2089E4E7F7D). No songs were lost, and the playlist
+is back at doubled order and needs no restore. Do NOT
+re-run trial-dedupe on v3.0.4: it would repeat the same
+forward-then-restore trap.
+
+**What changed.** Every restore now tries BOTH mappings
+before declaring CRITICAL: bridge/apply-order.applescript
+(its internal restore after a failed build, a
+delete-empty failure, and a library shrink), bridge/
+undo.applescript (its pre-undo restore), and
+bridge/restore-original.applescript (its snapshot
+put-back, the same trap in the run.sh restore path).
+Each attempt is verified against the snapshot it is
+returning to; the first verified attempt wins, and only
+if neither verifies does the script declare CRITICAL
+with the snapshot named. This is NOT a build flip and
+must not be misread as one: a failed build still exits
+non-zero and records nothing, and the opposite mapping
+is never used to land a desired order. A restore retries
+only to return to a known snapshot that already existed.
+In run.sh, a trial-dedupe attempt whose restore fails
+now means neither mapping restored, so the trial stops
+critical with the snapshot named and does not try the
+other trial mapping on top of a possibly partial state;
+if the restore succeeds under either mapping, the trial
+proceeds to the next mapping as before.
+
+Version marker bumped to `3.0.5`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.5 one-click run, trial-dedupe
+completing on the real doubled playlist, the mapping
+recorded by a successful trial, and a subsequent shuffle
+after trial-dedupe.
+
 ## 2026-10-29 — v3.0.4: trial-dedupe breaks the doubled-playlist deadlock (NOT yet a published release)
 
 On 2026-10-29 18:44 PT Spencer ran the v3.0.3 menu on the

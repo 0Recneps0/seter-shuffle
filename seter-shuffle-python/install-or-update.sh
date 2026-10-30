@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-or-update.sh (SeTeR Shuffle v3.0.4, one-click install or update)
+# install-or-update.sh (SeTeR Shuffle v3.0.5, one-click install or update)
 #
 # Bash 3.2 note (macOS ships bash 3.2): this script contains NO
 # array expansions at all. The v3.0 build died on a default run
@@ -21,7 +21,7 @@
 #
 # One confirmation, then everything in order:
 #   1. Verify a real python3 (3.9+) exists.
-#   2. Install or update ~/Documents/SeTeRShufflePython to v3.0.4
+#   2. Install or update ~/Documents/SeTeRShufflePython to v3.0.5
 #      (differing files get a timestamped .bak first; backups, logs,
 #      and Rediscover history are never deleted).
 #   3. Write and load the 8:00 AM com.seter.python.daily plist.
@@ -91,7 +91,7 @@ MINUTE=""
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle v3.0.4 -- one-click install or update
+SeTeR Shuffle v3.0.5 -- one-click install or update
 
 Usage: bash install-or-update.sh [--yes] [--playlist NAME] [--hour H] [--minute M] [--force]
 
@@ -135,7 +135,7 @@ OLD_PLIST="$PLIST_DIR/com.seter.daily.plist"
 NEW_PLIST="$PLIST_DIR/com.seter.python.daily.plist"
 MARKER_FILE="$INSTALL_DIR/installed-version.txt"
 
-say "SeTeR Shuffle v3.0.4 -- one-click install or update"
+say "SeTeR Shuffle v3.0.5 -- one-click install or update"
 say ""
 if [ -f "$MARKER_FILE" ]; then
   say "Existing install found at $INSTALL_DIR (version: $(cat "$MARKER_FILE" 2>/dev/null || echo unknown)). This will update it in place."
@@ -207,7 +207,7 @@ if [ -f "$OLD_PLIST" ]; then
   die "Final check failed: v2.6 daily plist is still present; migration did not take effect. Rollback is available: bash $INSTALL_DIR/migrate-to-python.sh --rollback"
 fi
 say ""
-say "Done. SeTeR Shuffle v3.0.4 is installed and scheduled for 8:00 AM."
+say "Done. SeTeR Shuffle v3.0.5 is installed and scheduled for 8:00 AM."
 say "  Install: $INSTALL_DIR"
 say "  Daily job: com.seter.python.daily (8:00 AM)"
 say "  v2.6 daily job: disabled (script and backups kept; rollback: bash $INSTALL_DIR/migrate-to-python.sh --rollback)"
