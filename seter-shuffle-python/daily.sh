@@ -60,16 +60,32 @@
 #   v3.0.4): the duplicate-entry refusal is unchanged, so a
 #   self-probe on a playlist with duplicate entries still
 #   refuses and changes nothing. But the daily run no longer
-#   stops there: when the daily playlist's probe refuses ONLY
+#   stops there: when ANY target's probe refuses ONLY
 #   on duplicate entries (the probe output says so), the
-#   daily run attempts ./run.sh dedupe on that playlist,
+#   daily run attempts ./run.sh dedupe on that target,
 #   which deletes only the duplicate entries in place and
-#   records no mapping. A probe failure for any other reason
-#   still stops the run immediately, and a failed in-place
-#   dedupe stops it before shuffle, flow, and rediscover. The
-#   Rediscover and Flow probes have no dedupe fallback: both are
-#   generated playlists, and a doubled generated playlist is a
-#   manual dedupe, not a daily-run repair.
+#   records no mapping, then re-probes the clean target
+#   once for a fresh mapping. A probe failure for any other
+#   reason still stops the run immediately, a failed
+#   in-place dedupe stops it before shuffle, flow, and
+#   rediscover, and a re-probe that still refuses (or
+#   fails any other way) stops it with no second dedupe
+#   attempt. v3.0.10: this fallback used
+#   to cover only the daily playlist, so on 2026-10-31 the
+#   daily run cleaned the main playlist, then exited at
+#   the Rediscover probe's duplicate refusal before
+#   shuffle, flow, or rediscover ever ran. Rediscover and
+#   Flow are generated playlists, but a doubled generated
+#   playlist stalls the whole daily run the same way a
+#   doubled main playlist does, and in-place dedupe is
+#   the same safe repair for them (snapshot before,
+#   verified after, 0 rebuilds, no mapping recorded).
+#   The re-probe after a fallback dedupe is safe against
+#   the shared-snapshot rule below: the refused probe
+#   changed nothing and wrote no snapshot, so there is no
+#   pending restore for the re-probe to overwrite, and
+#   the re-probe is on the SAME target, never a different
+#   target while a restore is pending.
 # - Dry runs (SETER_DAILY_DRY_RUN=1, a test hook never used by
 #   launchd) do NOT run the self-probes, because a dry run
 #   changes nothing; they log the planned probes instead and
@@ -164,6 +180,43 @@ auto_self_probe() {
   return 1
 }
 
+# Probe one target, with the duplicate-only in-place dedupe
+# fallback shared by all three daily targets (v3.0.10
+# stable; before this, only the daily playlist had it).
+# Return codes: 0 when the target ends with a fresh mapping
+# (probe OK, or dedupe succeeded and the re-probe passed);
+# 1 on any failure, in which case the caller stops the whole
+# daily run before probing another target or building
+# anything. Exactly one dedupe attempt per target, ever: a
+# re-probe that still refuses on duplicates means the dedupe
+# did not clean the list, and trying dedupe again on top of
+# that state would be guessing, so the run stops instead.
+probe_target() {
+  local target="$1" status=0
+  auto_self_probe "$target" || status=$?
+  if [ "$status" = "0" ]; then
+    return 0
+  fi
+  if [ "$status" != "2" ]; then
+    return 1
+  fi
+  log "daily in-place dedupe attempt for '$target' (probe refused on duplicates)"
+  if ! "$ROOT/run.sh" dedupe "$target" >> "$LOG" 2>&1; then
+    log "DAILY FAILED: in-place dedupe failed for '$target'; daily stopped before shuffle, flow, and rediscover"
+    return 1
+  fi
+  log "daily in-place dedupe cleaned '$target'; re-probing the clean playlist for a fresh mapping"
+  status=0
+  auto_self_probe "$target" || status=$?
+  if [ "$status" = "0" ]; then
+    return 0
+  fi
+  if [ "$status" = "2" ]; then
+    log "DAILY FAILED: re-probe for '$target' still refused on duplicate entries after the fallback dedupe; daily stopped with no second dedupe attempt"
+  fi
+  return 1
+}
+
 # Refuse unless TARGET has a fresh, correctly-targeted mapping.
 # Prints the manual self-probe command on failure (the daily run
 # already auto self-probed by the time this runs, so reaching
@@ -219,33 +272,26 @@ if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then
 fi
 
 # Auto self-probe each target, in order, BEFORE the mapping
-# check and before any build. A non-duplicate failure in the
-# first probe stops the run before the second probe (shared
-# snapshot file) and before anything else is touched. A
-# duplicate-only failure for the daily playlist triggers
-# in-place dedupe instead (v3.0.9): if it cleans the playlist,
-# the run continues to the mapping check and the normal steps
-# (the later dedupe step then no-ops); if it fails, the run
-# stops before shuffle, flow, and rediscover. In-place dedupe
-# records no mapping; the mapping check self-probes the clean list.
+# check and before any build. A failure in any probe stops
+# the run before the next probe (shared snapshot file) and
+# before anything else is touched. A duplicate-only failure
+# for any target triggers probe_target's in-place dedupe
+# plus one re-probe (v3.0.9 for the daily playlist,
+# v3.0.10 for Rediscover and Flow): if the
+# dedupe cleans the target and the re-probe passes, the run
+# continues to the mapping check and the normal steps (the
+# later dedupe step then no-ops); if the dedupe or the
+# re-probe fails, the run stops before shuffle, flow, and
+# rediscover. In-place dedupe itself records no mapping;
+# the re-probe is what records the fresh mapping for the
+# clean list, so the mapping check after it is not relying
+# on a mapping that survived the refused probe.
 if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
   log "dry run: auto self-probes skipped (dry runs change nothing); planned probes: '$PLAYLIST', '$REDISCOVER_PLAYLIST', '$FLOW_PLAYLIST'"
 else
-  probe_status=0
-  auto_self_probe "$PLAYLIST" || probe_status=$?
-  if [ "$probe_status" = "2" ]; then
-    log "daily in-place dedupe attempt for '$PLAYLIST' (probe refused on duplicates)"
-    if "$ROOT/run.sh" dedupe "$PLAYLIST" >> "$LOG" 2>&1; then
-      log "daily in-place dedupe cleaned '$PLAYLIST'; continuing to the mapping check"
-    else
-      log "DAILY FAILED: in-place dedupe failed for '$PLAYLIST'; daily stopped before shuffle, flow, and rediscover"
-      exit 1
-    fi
-  elif [ "$probe_status" != "0" ]; then
-    exit 1
-  fi
-  auto_self_probe "$REDISCOVER_PLAYLIST" || exit 1
-  auto_self_probe "$FLOW_PLAYLIST" || exit 1
+  probe_target "$PLAYLIST" || exit 1
+  probe_target "$REDISCOVER_PLAYLIST" || exit 1
+  probe_target "$FLOW_PLAYLIST" || exit 1
 fi
 
 check_mapping "$PLAYLIST" || exit 1

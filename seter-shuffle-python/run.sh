@@ -575,8 +575,106 @@ mapping_ready_for() {
   return 0
 }
 
+# Numbered playlist picker for the menu (v3.0.10): shuffle,
+# dedupe, and undo no longer require a typed playlist name.
+# It lists Music playlists via bridge/list-playlists.applescript
+# into a temp file (never a bash array, and no empty-array
+# expansion under set -u: macOS ships bash 3.2, where expanding
+# an empty array under set -u is an unbound-variable error),
+# numbers them, and lets the user pick a number. Results are
+# returned in MENU_PICKED (the picked name, or "" when the user
+# typed nothing) and MENU_PICKED_LIBRARY (1 only for shuffle's
+# whole-library choice, the old blank-playlist behaviour that
+# shuffles the whole library into "SeTeR Shuffle"). 0, an
+# invalid pick, an out-of-range number, a failed listing, or
+# an empty listing all fall back to typing a name, exactly as
+# the old menu did, so a picker failure can never block the
+# menu. SETER_MENU_LIST_FILE is a test hook only (never set
+# by a real run): when it names an existing file, that file
+# is used as the list instead of running osascript, so the
+# picker can be tested on a machine with no Music app.
+# The picker itself changes nothing in Music and authorizes
+# nothing: every caller still runs its own gates afterwards
+# (shuffle's ensure_mapping_for, undo's ensure_mapping_for,
+# dedupe's own no-precheck path).
+menu_pick_playlist() {
+  local mode="$1"
+  local list_file="" list_ok=0 is_temp=0 count=0 line="" pick="" manual_name="" picked_line=""
+  MENU_PICKED=""
+  MENU_PICKED_LIBRARY=0
+  if [ -n "${SETER_MENU_LIST_FILE:-}" ] && [ -f "${SETER_MENU_LIST_FILE:-}" ]; then
+    list_file="$SETER_MENU_LIST_FILE"
+    list_ok=1
+  else
+    list_file="$(mktemp)"
+    is_temp=1
+    if osascript "$BRIDGE/list-playlists.applescript" > "$list_file" 2>/dev/null && [ -s "$list_file" ]; then
+      list_ok=1
+    fi
+  fi
+  if [ "$list_ok" = "1" ] && [ -s "$list_file" ]; then
+    printf 'Pick a playlist:\n'
+    count=0
+    while IFS= read -r line; do
+      count=$((count + 1))
+      printf '  %s) %s\n' "$count" "$line"
+    done < "$list_file"
+    if [ "$mode" = "shuffle" ]; then
+      printf '  L) Whole library (into SeTeR Shuffle)\n'
+    fi
+    printf '  0) Type a name instead\n'
+    printf 'Number: '
+    read -r pick || pick=""
+    case "$pick" in
+      L|l)
+        if [ "$mode" = "shuffle" ]; then
+          MENU_PICKED_LIBRARY=1
+        else
+          printf 'Playlist: '
+          read -r manual_name || manual_name=""
+          MENU_PICKED="$manual_name"
+        fi
+        ;;
+      0)
+        printf 'Playlist: '
+        read -r manual_name || manual_name=""
+        MENU_PICKED="$manual_name"
+        ;;
+      ''|*[!0-9]*)
+        echo "not a playlist number; type a name instead."
+        printf 'Playlist: '
+        read -r manual_name || manual_name=""
+        MENU_PICKED="$manual_name"
+        ;;
+      *)
+        if [ "$pick" -ge 1 ] && [ "$pick" -le "$count" ]; then
+          picked_line="$(sed -n "${pick}p" "$list_file")"
+          MENU_PICKED="$picked_line"
+        else
+          echo "number $pick is out of range; type a name instead."
+          printf 'Playlist: '
+          read -r manual_name || manual_name=""
+          MENU_PICKED="$manual_name"
+        fi
+        ;;
+    esac
+  else
+    printf 'Playlist: '
+    read -r manual_name || manual_name=""
+    MENU_PICKED="$manual_name"
+  fi
+  if [ "$is_temp" = "1" ]; then
+    rm -f "$list_file"
+  fi
+  return 0
+}
+
 # Interactive menu (Terminal only, matching v2.6's interactive
-# options; there is no .app bundle in this build). Every choice
+# options; there is no .app bundle in this build). Choices
+# 1, 3, and 4 pick a playlist from a numbered list
+# (menu_pick_playlist, v3.0.10) instead of requiring a typed
+# name, with 0 to type a name and a whole-library choice for
+# shuffle. Every choice
 # re-invokes run.sh as a fresh process, so every gate in the
 # non-interactive paths applies unchanged: a build still refuses
 # without a fresh per-target mapping, still validates its order,
@@ -596,9 +694,14 @@ if [ "$CMD" = "menu" ]; then
     read -r choice || exit 0
     case "$choice" in
       1)
-        printf 'Playlist (blank for SeTeR Shuffle): '
-        read -r pl || exit 0
-        if [ -n "$pl" ]; then menu_target="$pl"; else menu_target="SeTeR Shuffle"; fi
+        menu_pick_playlist shuffle
+        if [ "$MENU_PICKED_LIBRARY" = "1" ] || [ -z "$MENU_PICKED" ]; then
+          pl=""
+          menu_target="SeTeR Shuffle"
+        else
+          pl="$MENU_PICKED"
+          menu_target="$MENU_PICKED"
+        fi
         ensure_mapping_for "$menu_target" || continue
         printf 'Size (100/250/500/1000/all, blank for all): '
         read -r sz || exit 0
@@ -621,8 +724,8 @@ if [ "$CMD" = "menu" ]; then
         bash "$ROOT/run.sh" rediscover || notify "SeTeR Shuffle: rediscover failed"
         ;;
       3)
-        printf 'Playlist: '
-        read -r pl || exit 0
+        menu_pick_playlist dedupe
+        pl="$MENU_PICKED"
         [ -n "$pl" ] || { echo "dedupe needs a playlist name."; continue; }
         # No pre-check here (v3.0.4): dedupe handles its own
         # mapping, because a doubled playlist fails the
@@ -632,8 +735,8 @@ if [ "$CMD" = "menu" ]; then
         bash "$ROOT/run.sh" dedupe "$pl" || notify "SeTeR Shuffle: dedupe failed"
         ;;
       4)
-        printf 'Playlist: '
-        read -r pl || exit 0
+        menu_pick_playlist undo
+        pl="$MENU_PICKED"
         [ -n "$pl" ] || { echo "undo needs a playlist name."; continue; }
         ensure_mapping_for "$pl" || continue
         bash "$ROOT/run.sh" undo "$pl" || notify "SeTeR Shuffle: undo failed"

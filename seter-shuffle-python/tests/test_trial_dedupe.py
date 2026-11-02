@@ -299,7 +299,7 @@ class TrialDedupeHarness(unittest.TestCase):
 
 
 class DailyTrialDedupeTests(unittest.TestCase):
-    """daily.sh with a stub run.sh: duplicate probe -> presence dedupe."""
+    """daily.sh with a stub run.sh: duplicate probe -> in-place dedupe, one re-probe, then continues (v3.0.10)."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -319,7 +319,10 @@ class DailyTrialDedupeTests(unittest.TestCase):
             "#!/bin/bash\n"
             "echo \"$*\" >> \"$STUB_CALLS\"\n"
             "if [ \"$1\" = \"selfprobe\" ]; then\n"
-            "  if [ \"$2\" = \"$STUB_DUPLICATE_TARGET\" ]; then\n"
+            "  safe=\"$(printf '%s' \"$2\" | tr ' /' '__')\"\n"
+            "  count_file=\"$SETER_STATE_DIR/probe-count-$safe\"\n"
+            "  if [ \"$2\" = \"$STUB_DUPLICATE_TARGET\" ] && [ ! -f \"$count_file\" ]; then\n"
+            "    touch \"$count_file\"\n"
             "    echo \"sort-probe: playlist \\\"$2\\\" contains a duplicate song entry\" >&2\n"
             "    exit 1\n"
             "  fi\n"
@@ -389,6 +392,7 @@ class DailyTrialDedupeTests(unittest.TestCase):
             [
                 "selfprobe " + TARGET,
                 "dedupe " + TARGET,
+                "selfprobe " + TARGET,
                 "selfprobe SeTeR Rediscover",
                 "selfprobe SeTeR Flow",
                 "dedupe " + TARGET,
@@ -396,7 +400,7 @@ class DailyTrialDedupeTests(unittest.TestCase):
                 "flow",
                 "rediscover",
             ],
-            "duplicate probe -> in-place dedupe -> Rediscover probe -> Flow probe -> normal steps",
+            "duplicate probe -> in-place dedupe -> re-probe -> Rediscover probe -> Flow probe -> normal steps",
         )
         self.assertIn("in-place dedupe cleaned", result.stdout + result.stderr)
 

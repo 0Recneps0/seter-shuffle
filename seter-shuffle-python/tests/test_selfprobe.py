@@ -352,16 +352,18 @@ class DailyAutoProbeTests(unittest.TestCase):
 class SelfProbeStructuralTests(unittest.TestCase):
     def test_daily_probes_before_mapping_check_in_source(self) -> None:
         text = (ROOT / "daily.sh").read_text(encoding="utf-8")
-        probe_pos = text.index("auto_self_probe \"$PLAYLIST\"")
+        probe_pos = text.index('probe_target "$PLAYLIST"')
         check_pos = text.index('check_mapping "$PLAYLIST"')
-        # v3.0.4: the FIRST dedupe in daily.sh is the trial
-        # fallback, guarded by a duplicate-only probe failure
-        # (probe_status == "2") and placed before the mapping
-        # check by design; the NORMAL dedupe step is still
-        # after the mapping check, which is what this test
-        # pins: probes before check before builds.
+        # v3.0.10: the probes run through the probe_target
+        # helper, whose FIRST dedupe in daily.sh is the
+        # duplicate-only fallback, guarded by a probe status
+        # of 2 (duplicate-only refusal) and placed before the
+        # mapping check by design; the NORMAL dedupe step is
+        # still after the mapping check, which is what this
+        # test pins: probes before check before builds.
+        self.assertIn("probe_target()", text)
         trial_pos = text.index('run.sh" dedupe')
-        self.assertIn('probe_status" = "2"', text[:trial_pos + 200])
+        self.assertIn('"$status" != "2"', text[:trial_pos + 200])
         normal_dedupe_pos = text.index('run.sh" dedupe', check_pos)
         self.assertLess(probe_pos, check_pos)
         self.assertLess(check_pos, normal_dedupe_pos)

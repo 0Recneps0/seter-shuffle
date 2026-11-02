@@ -1,16 +1,16 @@
-# SeTeR Shuffle, Python core (v3.0.9)
+# SeTeR Shuffle, Python core (v3.0.10)
 
-This tree is the v3.0.9 stable tree on the main branch. The v2.6
+This tree is the v3.0.10 stable tree on the main branch. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.9)
+## One-click install or update (v3.0.10)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.9, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.0.10, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
@@ -119,6 +119,8 @@ This fixes the 2026-10-29 21:01 trial-dedupe, which rebuilt
 the playlist 5 times and stopped at 1612 without ever trying
 reversed, even though both restores had succeeded.
 
+NEW IN v3.0.10: the daily duplicate fallback now covers all three daily targets, and the menu picks playlists from a list. On 2026-10-31 the daily cleaned the main playlist, then exited at the SeTeR Rediscover probe's duplicate refusal before shuffle, flow, or rediscover ran. Now a duplicate-only probe refusal for the main playlist, SeTeR Rediscover, or SeTeR Flow triggers one in-place dedupe plus one re-probe of that target; any other failure, a failed dedupe, or a still-refusing re-probe stops the run with no second dedupe. The menu's shuffle, dedupe, and undo choices now list the Music playlists to pick from (numbered, with 0 to type a name instead, and a whole-library choice for shuffle) instead of requiring a typed playlist name.
+
 NEW IN v3.0.9: dedupe in place, plus a fuller daily run. Daily now refreshes three playlists in order: dedupe + shuffle the main playlist, refresh SeTeR Flow, then refresh SeTeR Rediscover, each with its own self-probe and mapping check first, and a failure stops the run before the next refresh. Shuffle, Flow, and Rediscover each stamp their description "Last reshuffled: <Mac local date/time at the verified apply>", so the daily run leaves that morning's time on all three, not a stale manual-run time; dedupe does not stamp.
 
 NEW IN v3.0.9: dedupe in place. Spencer set a 1-2 rebuild cap for dedupe on 2026-10-30, and a rebuild is the wrong tool for it: dedupe now deletes only the duplicate entries, in descending position order, and leaves every other song exactly where it was. That is 0 rebuilds on success, no mapping, no probe, no trial, and no mapping recorded; a rebuild happens only if a failed run needs its snapshot restore. Presence dedupe (v3.0.8) was built but never published and is superseded by this; its presence verify code remains in apply-order, unused by dedupe.
@@ -134,10 +136,10 @@ records no mapping; the next shuffle or flow self-probes
 the now-clean playlist for its true mapping. Shuffle,
 flow, and every restore still verify exact order.
 
-## Stable preparation (v3.0.9)
+## Stable preparation (v3.0.10)
 
-Stable name: v3.0.9. Daily time: 8:00 AM, matching v2.6. The
-installer records `3.0.9`. No tag or release is created by
+Stable name: v3.0.10. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.10`. No tag or release is created by
 this tree itself; publishing is a separate, explicit step.
 
 ```bash

@@ -6,4 +6,4 @@ dump; it never touches the Music app itself. The AppleScript bridge in
 part that still needs a Mac to verify.
 """
 
-__version__ = "experimental-python-2026-10-28"
+__version__ = "3.0.10"
