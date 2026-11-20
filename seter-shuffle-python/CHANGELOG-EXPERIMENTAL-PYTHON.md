@@ -8,6 +8,53 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-11-20 — EXPERIMENTAL: bare run.sh opens the menu, plus an Options submenu (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-20.2 staging
+(exp-2026-11-20.2, 518 tests, published as a prerelease the same
+day). Spencer asked for two things: run.sh should go straight to
+the menu when run with no arguments, and the menu should have an
+Options section for the new features. Both are in this build.
+
+What changed, nothing else:
+- Bare `./run.sh` opens the interactive menu when stdin is a
+  terminal (same as `./run.sh menu`). With piped or redirected
+  stdin it keeps the old behaviour (usage to stderr, exit 2),
+  so a bare run in a script or launchd job can never hang
+  waiting for input nobody will type. Every named subcommand
+  works exactly as before.
+- Menu choice 8) Options opens a submenu showing the current
+  values and letting him toggle: AI tagging for Flow, split
+  collabs, and probe max age (0-40 hours, 0 = probe every day).
+  It confirms each change, rejects a bad probe number with a
+  clear message, and 0 returns to the main menu without
+  quitting it. The submenu reminds him that AI tagging needs
+  `sudo fm license` once plus `ai-selftest` before Flow uses it.
+- The options persist in three small files under the
+  SeTeRShuffle settings dir (the same dir the AI marker and tag
+  cache already use): `ai-enabled` (marker, as before),
+  `split-collabs-enabled` (marker), and `probe-max-age-hours`
+  (one number). The Python CLI already reads the AI marker
+  itself and SETER_SPLIT_COLLABS, so run.sh only turns the
+  split-collabs marker into that env var at startup, and
+  daily.sh only reads the probe-age file. An env var already
+  set wins over the file, and the menu says so instead of
+  pretending a toggle took effect. A persisted value is honored
+  by menu commands, direct commands, and the daily run: menu
+  children are fresh run.sh processes that re-read the files,
+  and the toggle keeps the in-process env in step with the
+  marker so a stale value can never leak into a child.
+- tests/test_menu_options.py (35 tests): bare-run TTY gating
+  (pty test plus piped-stdin usage test), options read/write
+  and probe-number validation, the submenu end to end, the
+  env-override notices, and daily.sh honouring the probe-age
+  file in the stub-run harness (skip, zero, env-wins, and the
+  over-40 clamp).
+
+Version stays 3.0.11 throughout. The Options submenu touches
+nothing in Music and authorizes nothing.
+
 ## 2026-11-20 — EXPERIMENTAL: v3.0.10 menu playlist picker grafted in (not a stable release)
 
 Experimental only, prerelease if published, never auto-installed,

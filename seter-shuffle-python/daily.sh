@@ -210,6 +210,30 @@ mapping_file_for() {
 # which is a lot of add/remove churn to sync every day. The mapping
 # check below still refuses anything older than 48 hours, and the
 # real build still verifies after writing and restores on failure.
+# Persisted probe cadence (menu Options submenu, v3.0.11 exp
+# 2026-11-20.3): the probe-max-age-hours file under the
+# SeTeRShuffle settings dir (same dir the AI marker already
+# uses; SETER_AI_DIR is a test hook, never set by a real run).
+# An env var already set wins over the file, so a one-off
+# override still works. The file holds one number; the
+# validation below (non-numeric reads as 0, over 40 clamps to
+# 40) covers a hand-edited file.
+load_probe_max_age() {
+  local dir val
+  if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
+    return 0
+  fi
+  dir="${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+  if [ -f "$dir/probe-max-age-hours" ]; then
+    val="$(head -n 1 "$dir/probe-max-age-hours" 2>/dev/null | tr -d ' \t\r\n')"
+    case "$val" in
+      ''|*[!0-9]*) return 0 ;;
+    esac
+    export SETER_PROBE_MAX_AGE_HOURS="$val"
+  fi
+  return 0
+}
+load_probe_max_age
 PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"
 case "$PROBE_MAX_AGE_HOURS" in ''|*[!0-9]*) PROBE_MAX_AGE_HOURS=0 ;; esac
 [ "$PROBE_MAX_AGE_HOURS" -gt 40 ] && PROBE_MAX_AGE_HOURS=40

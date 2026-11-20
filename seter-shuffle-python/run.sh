@@ -6,6 +6,10 @@
 # order. Previews never call the apply script at all.
 #
 # Usage (from this directory):
+#   ./run.sh                       interactive menu (same as ./run.sh menu),
+#                                   when stdin is a terminal; with piped
+#                                   stdin it prints usage instead, so a
+#                                   bare run can never hang waiting for input
 #   ./run.sh menu                   interactive Terminal menu (v2.6
 #                                   options: shuffle, rediscover,
 #                                   dedupe, undo, flow, flowPreview,
@@ -264,11 +268,161 @@ CHECK_OUT="$(bash "$ROOT/check-python.sh")" || exit 2
 PY="${CHECK_OUT%% *}"
 log "python: $CHECK_OUT"
 
-CMD="${1:-}"
+# Persisted options (menu Options submenu, v3.0.11 exp
+# 2026-11-20.3). Three small files under the SeTeRShuffle
+# settings dir (${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle},
+# the same dir the AI marker and tag cache already use;
+# SETER_AI_DIR is a test hook, never set by a real run):
+#   ai-enabled             empty marker: AI tagging for Flow is on
+#   split-collabs-enabled  empty marker: "A & B" counts as artist "A"
+#   probe-max-age-hours    one number 0-40: the daily run skips a
+#                          target's self-probe while its mapping is
+#                          younger than N hours (0 = probe every day;
+#                          only the daily run reads it)
+# The menu writes these files. The Python CLI already reads the
+# AI marker itself (ai_enabled_by_environment) and
+# SETER_SPLIT_COLLABS (in _settings_from), so the loader below
+# only has to turn the split-collabs marker into that env var;
+# the daily run reads the probe-age file itself. An env var
+# already set when a script starts wins over the file, so a
+# one-off override still works, and the menu says so instead of
+# pretending a toggle took effect.
+options_dir() {
+  printf '%s' "${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+}
+
+# Effective AI state, mirroring ai_enabled_by_environment: a
+# recognized SETER_AI value decides, otherwise the marker file.
+options_ai_on() {
+  local flag
+  flag="$(printf '%s' "${SETER_AI:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$flag" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+  [ -f "$(options_dir)/ai-enabled" ]
+}
+
+# Whether SETER_AI holds a recognized value (and therefore
+# overrides the marker file, so the menu must not pretend a
+# toggle changes anything).
+options_ai_env_set() {
+  local flag
+  flag="$(printf '%s' "${SETER_AI:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$flag" in
+    1|true|yes|on|0|false|no|off) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+options_set_ai() {
+  local dir
+  dir="$(options_dir)"
+  if [ "$1" = "on" ]; then
+    mkdir -p "$dir" || return 1
+    touch "$dir/ai-enabled" || return 1
+  else
+    rm -f "$dir/ai-enabled"
+  fi
+  return 0
+}
+
+# Effective split-collabs state: an env var set before this
+# process started (OPTIONS_SPLIT_ENV_SET, recorded by
+# load_persisted_options) decides; otherwise the marker file.
+# The loader exports the marker's value into the env, so a
+# menu child inherits it, and the toggle below keeps the env
+# in step with the marker for the same reason: without that,
+# a menu process that exported 1 at startup would hand its
+# children a stale 1 after the user toggled the marker off.
+options_split_collabs_on() {
+  if [ -n "${OPTIONS_SPLIT_ENV_SET:-}" ]; then
+    case "$(printf '%s' "${SETER_SPLIT_COLLABS:-}" | tr '[:upper:]' '[:lower:]')" in
+      1|true|yes|on) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  [ -f "$(options_dir)/split-collabs-enabled" ]
+}
+
+options_set_split_collabs() {
+  local dir
+  dir="$(options_dir)"
+  if [ "$1" = "on" ]; then
+    mkdir -p "$dir" || return 1
+    touch "$dir/split-collabs-enabled" || return 1
+    export SETER_SPLIT_COLLABS=1
+  else
+    rm -f "$dir/split-collabs-enabled"
+    export SETER_SPLIT_COLLABS=0
+  fi
+  return 0
+}
+
+# Persisted probe max age in hours (0-40; 0 = probe every
+# day), read from the probe-max-age-hours file. Anything
+# unreadable or out of range reads as 0, the daily run's own
+# default; the menu validates on write, so a bad file can only
+# come from a hand edit.
+options_probe_max_age() {
+  local dir val
+  dir="$(options_dir)"
+  if [ -f "$dir/probe-max-age-hours" ]; then
+    val="$(head -n 1 "$dir/probe-max-age-hours" 2>/dev/null | tr -d ' \t\r\n')"
+    case "$val" in
+      ''|*[!0-9]*) printf '0'; return 0 ;;
+    esac
+    if [ "$val" -gt 40 ]; then
+      printf '40'
+    else
+      printf '%s' "$val"
+    fi
+    return 0
+  fi
+  printf '0'
+}
+
+options_write_probe_max_age() {
+  local dir tmp
+  dir="$(options_dir)"
+  mkdir -p "$dir" || return 1
+  tmp="$(mktemp "$dir/.probe-max-age.XXXXXX")" || return 1
+  printf '%s\n' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/probe-max-age-hours" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# Turn the persisted split-collabs marker into the env var the
+# CLI already reads, unless the env was already set when this
+# process started (an explicit env var wins over the file).
+# OPTIONS_SPLIT_ENV_SET records which case applied, so the menu
+# can tell the user when a toggle would be ignored.
+load_persisted_options() {
+  if [ -n "${SETER_SPLIT_COLLABS:-}" ]; then
+    OPTIONS_SPLIT_ENV_SET=1
+  elif [ -f "$(options_dir)/split-collabs-enabled" ]; then
+    export SETER_SPLIT_COLLABS=1
+  fi
+  return 0
+}
+load_persisted_options
+
+# Bare ./run.sh opens the interactive menu when stdin is a
+# terminal (v3.0.11 exp 2026-11-20.3): double-clicking the
+# script or running it with no arguments should land in the
+# menu, not print usage. A bare run whose stdin is NOT a
+# terminal (piped input, a script, launchd) keeps the old
+# behaviour — usage to stderr, exit 2 — so it can never hang
+# waiting for input nobody will type.
+if [ $# -eq 0 ] && [ -t 0 ]; then
+  CMD="menu"
+else
+  CMD="${1:-}"
+fi
 case "$CMD" in
   audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|selfprobe|menu) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|selfprobe <playlist>|menu}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|selfprobe <playlist>|menu} (run with no arguments in a terminal to open the menu)" >&2
     exit 2
     ;;
 esac
@@ -733,6 +887,77 @@ menu_pick_playlist() {
   return 0
 }
 
+# Options submenu (v3.0.11 exp 2026-11-20.3): shows the current
+# values, lets the user toggle AI tagging and split collabs and
+# set the probe max age, confirms each change, and returns to
+# the main menu on 0. Quitting here never quits the menu: the
+# function returns, and the main loop prints again. No option
+# touches Music or authorizes anything: AI tagging only takes
+# effect inside a later Flow compute (which still needs sudo
+# fm license once plus ai-selftest first), split collabs only
+# changes how the next shuffle/flow/rediscover counts artists,
+# and the probe age only changes how often the daily run
+# self-probes.
+menu_options() {
+  local choice ai_state split_state probe_age new_age env_note
+  while true; do
+    if options_ai_on; then ai_state="ON"; else ai_state="OFF"; fi
+    if options_split_collabs_on; then split_state="ON"; else split_state="OFF"; fi
+    probe_age="$(options_probe_max_age)"
+    env_note=""
+    if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
+      env_note=" (SETER_PROBE_MAX_AGE_HOURS=$SETER_PROBE_MAX_AGE_HOURS is set in this shell; the daily run uses that instead)"
+    fi
+    printf '\nOptions\n  AI tagging for Flow: %s\n  Split collabs: %s\n  Probe max age: %s hours (0 = probe every day)%s\n  (AI tagging needs sudo fm license once + ai-selftest before Flow uses it.)\n\n  1) Toggle AI tagging\n  2) Toggle split collabs\n  3) Set probe max age (0-40)\n  0) Back\n' "$ai_state" "$split_state" "$probe_age" "$env_note"
+    printf 'Choice: '
+    read -r choice || return 0
+    case "$choice" in
+      1)
+        if options_ai_env_set; then
+          echo "AI tagging is set by SETER_AI=$SETER_AI in the environment; unset it to use the menu setting."
+        elif options_ai_on; then
+          options_set_ai off && echo "AI tagging is now OFF."
+        else
+          options_set_ai on && echo "AI tagging is now ON."
+        fi
+        ;;
+      2)
+        if [ -n "${OPTIONS_SPLIT_ENV_SET:-}" ]; then
+          echo "Split collabs is set by SETER_SPLIT_COLLABS=$SETER_SPLIT_COLLABS in the environment; unset it to use the menu setting."
+        elif options_split_collabs_on; then
+          options_set_split_collabs off && echo "Split collabs is now OFF."
+        else
+          options_set_split_collabs on && echo "Split collabs is now ON: \"A & B\" counts as artist \"A\" for spacing and caps."
+        fi
+        ;;
+      3)
+        printf 'Probe max age in hours (0-40, 0 = probe every day): '
+        read -r new_age || return 0
+        case "$new_age" in
+          ''|*[!0-9]*)
+            echo "not a number 0-40; probe max age unchanged."
+            ;;
+          *)
+            if [ "$new_age" -gt 40 ]; then
+              echo "probe max age must be 0-40; probe max age unchanged."
+            elif options_write_probe_max_age "$new_age"; then
+              echo "Probe max age is now $new_age hours."
+            else
+              echo "could not save probe max age; unchanged."
+            fi
+            ;;
+        esac
+        ;;
+      0|q|quit)
+        return 0
+        ;;
+      *)
+        echo "unknown choice: $choice"
+        ;;
+    esac
+  done
+}
+
 # Interactive menu (Terminal only, matching v2.6's interactive
 # options; there is no .app bundle in this build). Choices
 # 1, 3, and 4 pick a playlist from a numbered list
@@ -753,7 +978,7 @@ menu_pick_playlist() {
 # the documented 100/250/500/1000/all choice, blank for all.
 if [ "$CMD" = "menu" ]; then
   while true; do
-    printf '\nSeTeR Shuffle\n  1) Shuffle a playlist\n  2) Rediscover\n  3) Remove duplicates (dedupe)\n  4) Undo last shuffle\n  5) Flow\n  6) Flow preview\n  7) Audit\n  0) Quit\n'
+    printf '\nSeTeR Shuffle\n  1) Shuffle a playlist\n  2) Rediscover\n  3) Remove duplicates (dedupe)\n  4) Undo last shuffle\n  5) Flow\n  6) Flow preview\n  7) Audit\n  8) Options\n  0) Quit\n'
     printf 'Choice: '
     read -r choice || exit 0
     case "$choice" in
@@ -814,6 +1039,9 @@ if [ "$CMD" = "menu" ]; then
         ;;
       7)
         bash "$ROOT/run.sh" audit || notify "SeTeR Shuffle: audit failed"
+        ;;
+      8)
+        menu_options
         ;;
       0|q|quit)
         exit 0
