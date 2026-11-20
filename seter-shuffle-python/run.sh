@@ -30,9 +30,22 @@
 #                                   history ONLY after a successful apply
 #   ./run.sh undo <playlist>        restore a playlist from its last backup
 #   ./run.sh dedupe <playlist>      remove duplicate entries from a
-#                                   playlist (unique songs, first
-#                                   occurrence order); skips the
-#                                   apply entirely if it has none
+#                                   playlist in place (unique songs,
+#                                   first occurrence kept); skips
+#                                   entirely if it has none.
+#                                   IN-PLACE DEDUPE (v3.0.9,
+#                                   superseding trial-dedupe v3.0.4
+#                                   and presence dedupe v3.0.8,
+#                                   both retained but no longer
+#                                   called): only the duplicate
+#                                   entries are deleted, nothing
+#                                   is rebuilt, so success costs
+#                                   0 rebuilds and needs no mapping
+#                                   at all. A probe still refuses
+#                                   on duplicate entries, which is
+#                                   why dedupe never probes: it
+#                                   does not need to. The probe's
+#                                   duplicate refusal is unchanged.
 #   ./run.sh restore <playlist> <backup-txt>
 #                                   restore a playlist from a given
 #                                   backup file (freshness-checked
@@ -51,8 +64,36 @@
 #                                   throwaway, builds a rotation,
 #                                   reads it back, restores it, and
 #                                   records the mapping for that
-#                                   target's builds (fresh for 24
+#                                   target's builds (fresh for 48
 #                                   hours)
+#   ./run.sh selfprobe <playlist>   SELF-PROBE (v3.0.2, and auto for
+#                                   every build in v3.0.3): measure the
+#                                   mapping on the target playlist
+#                                   ITSELF, under its own sort.
+#                                   Music remembers each playlist's
+#                                   own sort, so a mapping measured
+#                                   on the target under its own sort
+#                                   is, by construction, the mapping
+#                                   for that target and sort: no
+#                                   throwaway sort to match, no
+#                                   mapping transfer possible. The
+#                                   probe snapshots the target,
+#                                   builds a rotation, restores the
+#                                   snapshot under the measured
+#                                   mapping, and verifies the
+#                                   restore before returning OK.
+#                                   A failed restore leaves the
+#                                   target holding the rotation
+#                                   order, with the snapshot file
+#                                   named in the log; recover with
+#                                   ./run.sh restore <target>
+#                                   <snapshot>. A self-probe on a
+#                                   playlist with duplicate entries
+#                                   refuses and changes nothing.
+#                                   sortprobe with throwaway ==
+#                                   target is the same self-probe
+#                                   (the sort label is replaced by
+#                                   the self-probe label).
 #   ./run.sh probe-keep             like probe, but LEAVE the probe
 #                                   playlist in place so its on-screen
 #                                   order in Music can be eyeballed
@@ -68,13 +109,22 @@
 # killed track index as a manual-order reference (list read
 # reversed against the backup, yet the list's first track carries
 # index 1). So builds below NEVER consult a fresh probe and NEVER
-# use track index. Instead, the user first runs ./run.sh sortprobe
-# on a throwaway set to the SAME sort as the target; sort-probe
+# use track index. Instead, the mapping is measured either with
+# ./run.sh sortprobe on a throwaway set to the SAME sort as the
+# target, or (v3.0.2, preferred) with ./run.sh selfprobe on the
+# target itself: Music remembers each playlist's own sort, so the
+# target's own sort needs no throwaway to imitate it. sort-probe
 # builds a rotation on it, reads it back, restores it, and records
 # the end-to-end mapping (forward: building X lands list read X;
-# reversed: building X lands list read reverse(X)). Apply and undo
-# read that recorded mapping (fresh for 48 hours, else they refuse)
-# and pass it to the bridge scripts, which build and verify with it
+# reversed: building X lands list read reverse(X)). Since v3.0.3
+# every build path (menu, direct shuffle/rediscover/dedupe/flow/
+# undo/restore, and the daily run since v3.0.2) AUTO self-probes
+# first when no fresh mapping is recorded: a missing or stale
+# mapping is refreshed from the target itself, never from a
+# throwaway, and a failed probe aborts before any dump or apply.
+# Apply and undo read that recorded mapping (fresh for 48 hours,
+# else the auto-probe runs again) and pass it to the bridge
+# scripts, which build and verify with it
 # (see bridge/sort-probe.applescript and
 # seter_shuffle/order_direction.py's mapping section). A sort-probe
 # that returns anything else refuses the build upstream. There is
@@ -135,6 +185,17 @@ BRIDGE="$ROOT/bridge"
 STATE="$HOME/Library/Logs/seter-shuffle-python"
 LOG="$STATE/run.log"
 HISTORY="$HOME/Documents/SeTeRShuffle/rediscover-history.tsv"
+# What counts as a duplicate for `dedupe` (and the daily dedupe step):
+#   song (default) = same Music track ID, OR same artist + title (and
+#                    length, when known), so one song stored as two
+#                    library tracks is removed too
+#   id             = same Music track ID only (the pre-3.0.6 behaviour)
+# Set SETER_DEDUPE_MATCH=id to turn the same-song matching off.
+DEDUPE_MATCH="${SETER_DEDUPE_MATCH:-song}"
+case "$DEDUPE_MATCH" in
+  id|song) ;;
+  *) echo "SETER_DEDUPE_MATCH must be 'id' or 'song' (got '$DEDUPE_MATCH')" >&2; exit 2 ;;
+esac
 
 mkdir -p "$STATE"
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
@@ -205,15 +266,81 @@ log "python: $CHECK_OUT"
 
 CMD="${1:-}"
 case "$CMD" in
-  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|menu) ;;
+  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|selfprobe|menu) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|menu}" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|selfprobe <playlist>|menu}" >&2
     exit 2
     ;;
 esac
 
+# ---- single-run lock (v3.0.11) ------------------------------------
+# Two runs touching Music at once (a manual run during the daily job, a
+# launchd catch-up after sleep, a double-click) can interleave their
+# delete/re-add loops and double a playlist, which is exactly what the
+# 2026-10-29 failure looked like. One lock directory per state folder:
+# mkdir is atomic, and macOS has no flock(1). The lock records the
+# owner's pid and start time; a lock whose owner is dead, or that is
+# older than 12 hours, is stale and taken over. A child run.sh started
+# by a locked parent (daily.sh, or run.sh's own self-probe) inherits
+# SETER_LOCK_HELD=1 and does not lock again.
+SETER_LOCK_DIR="${SETER_LOCK_DIR:-$STATE/run.lock.d}"
+LOCK_OWNED=0
+release_lock() {
+  if [ "$LOCK_OWNED" = "1" ] && [ "$(cat "$SETER_LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+    rm -rf "$SETER_LOCK_DIR"
+  fi
+  LOCK_OWNED=0
+}
+acquire_lock() {
+  local what="$1" pid started age waited tries=0
+  [ -n "${SETER_LOCK_HELD:-}" ] && return 0
+  while ! mkdir "$SETER_LOCK_DIR" 2>/dev/null; do
+    waited=0
+    pid="$(cat "$SETER_LOCK_DIR/pid" 2>/dev/null || true)"
+    # The owner may be between mkdir and writing its pid: give it a moment.
+    while [ -z "$pid" ] && [ "$waited" -lt 3 ] && [ -d "$SETER_LOCK_DIR" ]; do
+      sleep 1; waited=$((waited + 1))
+      pid="$(cat "$SETER_LOCK_DIR/pid" 2>/dev/null || true)"
+    done
+    started="$(cat "$SETER_LOCK_DIR/started" 2>/dev/null || echo 0)"
+    case "$started" in ''|*[!0-9]*) started=0 ;; esac
+    age=$(( $(date +%s) - started ))
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$age" -lt 43200 ]; then
+      LOCK_HOLDER="pid $pid ($(cat "$SETER_LOCK_DIR/what" 2>/dev/null || echo unknown), started $(date -r "$started" '+%H:%M:%S' 2>/dev/null || echo '?'))"
+      return 1
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -gt 3 ]; then
+      LOCK_HOLDER="an unreadable lock at $SETER_LOCK_DIR"
+      return 1
+    fi
+    printf '%s stale run lock removed (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${pid:-no pid}" >> "$LOG"
+    rm -rf "$SETER_LOCK_DIR"
+  done
+  printf '%s' "$$" > "$SETER_LOCK_DIR/pid"
+  date +%s > "$SETER_LOCK_DIR/started"
+  printf '%s' "$what" > "$SETER_LOCK_DIR/what"
+  LOCK_OWNED=1
+  export SETER_LOCK_HELD=1
+  return 0
+}
+
+
+# Read-only commands (and the menu, whose children lock themselves) skip
+# the lock; everything that can change a playlist takes it.
+case "$CMD" in
+  audit|flowPreview|rediscover-preview|menu) ;;
+  *)
+    if ! acquire_lock "run.sh $CMD"; then
+      echo "Another SeTeR run is in progress: $LOCK_HOLDER. Nothing was changed; try again when it finishes." >&2
+      printf '%s run.sh %s refused: another run holds the lock (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CMD" "$LOCK_HOLDER" >> "$LOG"
+      exit 3
+    fi
+    ;;
+esac
+
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"; release_lock' EXIT
 DUMP="$WORK/library.json"
 ORDER="$WORK/order.json"
 ORDER_TXT="$WORK/order.txt"
@@ -312,8 +439,9 @@ fi
 # one (older than 48h), and refuse a file whose TARGET field does
 # not match, so a build never silently uses a mapping measured for
 # a different playlist's sort or a different day. If the target's
-# sort may have changed since the probe, re-run sortprobe first:
-# a stale mapping is a wrong mapping.
+# sort may have changed since the probe, the automatic self-probe
+# in ensure_mapping_for refreshes it first: a stale mapping is a
+# wrong mapping, and a build never proceeds on one.
 # The pre-.5 shared file $STATE/sort-mapping.txt is IGNORED since
 # .5: it is exactly the file that let a Flow build reuse a mapping
 # measured on the main playlist's descending sort for a new
@@ -336,9 +464,9 @@ mapping_for_build() {
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
     if [ -f "$STATE/sort-mapping.txt" ]; then
-      logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; the pre-.5 shared sort-mapping.txt is ignored since .5 because mappings do not transfer between sorts; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+      logerr "GATE FAILED: no per-target sort mapping recorded for '$target' after the automatic self-probe (./run.sh selfprobe '$target'); the pre-.5 shared sort-mapping.txt is ignored since .5 because mappings do not transfer between sorts; see the self-probe error above, no dump or apply ran"
     else
-      logerr "GATE FAILED: no sort-matched mapping recorded for '$target'; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+      logerr "GATE FAILED: no sort-matched mapping recorded for '$target' after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above, no dump or apply ran"
     fi
     return 1
   fi
@@ -349,20 +477,20 @@ mapping_for_build() {
   ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
   now="$(date +%s)"
   if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe"
+    logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping') after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above, no dump or apply ran"
     return 1
   fi
   if [ "$recorded_target" != "$target" ]; then
-    logerr "GATE FAILED: recorded mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; re-run sortprobe for '$target'"
+    logerr "GATE FAILED: recorded mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; the automatic self-probe (./run.sh selfprobe '$target') should have replaced it, see its error above"
     return 1
   fi
   if [ -z "$sort_label" ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label"
+    logerr "GATE FAILED: recorded mapping for '$target' has no sort label after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above"
     return 1
   fi
-  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1;; esac
+  case "$ts" in ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above"; return 1;; esac
   if [ $((now - ts)) -gt 172800 ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours (throwaway '$throwaway', sort '$sort_label'); re-run sortprobe so the mapping matches the target's current sort"
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours (throwaway '$throwaway', sort '$sort_label') after the automatic self-probe (./run.sh selfprobe '$target'); see the self-probe error above, the probe should have refreshed it"
     return 1
   fi
   logfile "sort mapping for builds: $mapping (target '$target', throwaway '$throwaway', sort '$sort_label', at $(date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts"))"
@@ -385,7 +513,7 @@ mapping_info_for() {
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
   throwaway="$(grep '^THROWAWAY: ' "$map_file" | head -n 1 | sed 's/^THROWAWAY: //')"
   sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
-  log "build mapping for '$target': $mapping (throwaway '$throwaway', sort '$sort_label'); if this sort does not match '$target''s sort in Music, stop and re-run sortprobe"
+  log "build mapping for '$target': $mapping (throwaway '$throwaway', sort '$sort_label'); if this sort does not match '$target''s sort in Music, stop and re-run ./run.sh selfprobe '$target'"
 }
 
 # Print one target's recorded mapping status for the menu (and
@@ -396,7 +524,7 @@ mapping_status_for() {
   local target="$1" map_file mapping throwaway sort_label ts now age
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
-    log "mapping status for '$target': none recorded; a build will refuse until you run ./run.sh sortprobe <throwaway> '$target' '<sort-label>'"
+    log "mapping status for '$target': none recorded; a build will auto self-probe (./run.sh selfprobe '$target') before refusing"
     return 0
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
@@ -407,26 +535,88 @@ mapping_status_for() {
   case "$ts" in ''|*[!0-9]*) log "mapping status for '$target': invalid timestamp; a build will refuse"; return 0;; esac
   age=$((now - ts))
   if [ "$age" -gt 172800 ]; then
-    log "mapping status for '$target': STALE ($mapping, throwaway '$throwaway', sort '$sort_label', ${age}s old); a build will refuse until you re-run sortprobe"
+    log "mapping status for '$target': STALE ($mapping, throwaway '$throwaway', sort '$sort_label', ${age}s old); a build will auto self-probe (./run.sh selfprobe '$target') before refusing"
   else
     log "mapping status for '$target': $mapping (throwaway '$throwaway', sort '$sort_label', ${age}s old, valid 48 hours)"
   fi
 }
 
-# Gate a menu build BEFORE any dump or apply (2026-10-29, mode 39):
-# the non-interactive paths dump first and refuse at apply time,
-# which is safe (nothing changes) but wasteful and confusing in
-# the menu, where the user has already been told the mapping is
-# missing. mapping_ready_for returns 0 only for a fresh (<48h),
-# per-target, forward/reversed mapping with a sort label; anything
-# else prints the exact sortprobe command and returns 1, and the
-# menu then loops back without invoking the build at all.
+# Quiet readiness check used by ensure_mapping_for: 0 only for a
+# fresh (<48h), per-target, forward/reversed mapping with a sort
+# label and a valid timestamp. It prints nothing: mapping_for_build
+# is captured with $(...), and ensure_mapping_for logs its own
+# status lines, so a chatty check here would either pollute a
+# capture or double-print every gate failure.
+mapping_is_ready() {
+  local target="$1" map_file mapping recorded_target sort_label ts now age
+  map_file="$(mapping_file_for "$target")"
+  [ -f "$map_file" ] || return 1
+  mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+  recorded_target="$(grep '^TARGET: ' "$map_file" | head -n 1 | sed 's/^TARGET: //')"
+  sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
+  ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+  case "$mapping" in forward|reversed) ;; *) return 1 ;; esac
+  [ "$recorded_target" = "$target" ] || return 1
+  [ -n "$sort_label" ] || return 1
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s)"
+  age=$((now - ts))
+  [ "$age" -le 172800 ]
+}
+
+# Automatic self-probe gate (v3.0.3, the fix for the v3.0.2 gap:
+# daily.sh auto-probed, but the menu and direct builds still
+# refused on a missing mapping and told the user to probe by
+# hand). Every build path calls this BEFORE any dump or apply:
+# a fresh mapping is reused as-is, with NO re-probe, so a normal
+# run costs no extra rebuild; a missing, stale, or otherwise
+# unusable mapping triggers ./run.sh selfprobe on the target
+# itself, then a re-check. If the mapping is still not ready
+# after the probe, the run aborts with the probe error named,
+# before any dump or apply, and the menu loops back. Safety
+# properties are unchanged: the probe snapshots first, rotates,
+# restores under the measured mapping and verifies the restore;
+# "other" aborts and deletes the mapping; the duplicate-entry
+# refusal is unchanged, so a doubled playlist still fails
+# closed here, documented plainly; verify-after still fails
+# closed; no other target's mapping is ever borrowed; no fresh
+# throwaway probe is ever used. The v3.0.2 restore-failed
+# exception still applies inside the probe itself: a mapping
+# measured but not restore-verified is recorded so restore can
+# run, and the probe exits non-zero, so ensure_mapping_for
+# still refuses the build after it.
+ensure_mapping_for() {
+  local target="$1"
+  mapping_status_for "$target"
+  if mapping_is_ready "$target"; then
+    log "mapping for '$target' is fresh; skipping automatic self-probe"
+    return 0
+  fi
+  log "STEP: automatic self-probe for '$target' (no fresh mapping recorded; probing the target itself under its own sort)"
+  if bash "$ROOT/run.sh" selfprobe "$target" 2>&1 | tee -a "$LOG"; then
+    if mapping_is_ready "$target"; then
+      log "GATE OK: automatic self-probe for '$target' produced a fresh mapping"
+      return 0
+    fi
+    logerr "GATE FAILED: automatic self-probe ./run.sh selfprobe '$target' completed but left no usable mapping; no dump or apply ran for '$target'"
+    return 1
+  fi
+  logerr "GATE FAILED: automatic self-probe ./run.sh selfprobe '$target' failed (see the self-probe error above); no dump or apply ran for '$target'"
+  return 1
+}
+
+# Legacy pure check (kept for the test harness and for a human
+# asking "is this target ready?" without probing): returns 0
+# only for a fresh (<48h), per-target, forward/reversed mapping
+# with a sort label. The menu and the direct build paths no
+# longer use this alone; they use ensure_mapping_for, which
+# probes first when this check fails.
 mapping_ready_for() {
   local target="$1" map_file mapping sort_label ts now age
   mapping_status_for "$target"
   map_file="$(mapping_file_for "$target")"
   if [ ! -f "$map_file" ]; then
-    logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; run ./run.sh sortprobe <throwaway> '$target' '<sort-label>' on a throwaway set to '$target''s sort first"
+    logerr "GATE FAILED: no per-target sort mapping recorded for '$target'; the automatic self-probe is ./run.sh selfprobe '$target'"
     return 1
   fi
   mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
@@ -435,33 +625,132 @@ mapping_ready_for() {
   now="$(date +%s)"
   case "$mapping" in
     forward|reversed) ;;
-    *) logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run sortprobe"; return 1 ;;
+    *) logerr "GATE FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run ./run.sh selfprobe '$target'"; return 1 ;;
   esac
   case "$sort_label" in
-    '') logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run sortprobe with a sort label"; return 1 ;;
+    '') logerr "GATE FAILED: recorded mapping for '$target' has no sort label; re-run ./run.sh selfprobe '$target'"; return 1 ;;
   esac
   case "$ts" in
-    ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run sortprobe"; return 1 ;;
+    ''|*[!0-9]*) logerr "GATE FAILED: recorded mapping for '$target' has no valid timestamp; re-run ./run.sh selfprobe '$target'"; return 1 ;;
   esac
   age=$((now - ts))
   if [ "$age" -gt 172800 ]; then
-    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours; re-run sortprobe so the mapping matches the target's current sort"
+    logerr "GATE FAILED: recorded mapping for '$target' is older than 48 hours; re-run ./run.sh selfprobe '$target' so the mapping matches the target's current sort"
     return 1
   fi
   return 0
 }
 
+# It lists Music playlists via bridge/list-playlists.applescript
+# into a temp file (never a bash array, and no empty-array
+# expansion under set -u: macOS ships bash 3.2, where expanding
+# an empty array under set -u is an unbound-variable error),
+# numbers them, and lets the user pick a number. Results are
+# returned in MENU_PICKED (the picked name, or "" when the user
+# typed nothing) and MENU_PICKED_LIBRARY (1 only for shuffle's
+# whole-library choice, the old blank-playlist behaviour that
+# shuffles the whole library into "SeTeR Shuffle"). 0, an
+# invalid pick, an out-of-range number, a failed listing, or
+# an empty listing all fall back to typing a name, exactly as
+# the old menu did, so a picker failure can never block the
+# menu. SETER_MENU_LIST_FILE is a test hook only (never set
+# by a real run): when it names an existing file, that file
+# is used as the list instead of running osascript, so the
+# picker can be tested on a machine with no Music app.
+# The picker itself changes nothing in Music and authorizes
+# nothing: every caller still runs its own gates afterwards
+# (shuffle's ensure_mapping_for, undo's ensure_mapping_for,
+# dedupe's own no-precheck path).
+menu_pick_playlist() {
+  local mode="$1"
+  local list_file="" list_ok=0 is_temp=0 count=0 line="" pick="" manual_name="" picked_line=""
+  MENU_PICKED=""
+  MENU_PICKED_LIBRARY=0
+  if [ -n "${SETER_MENU_LIST_FILE:-}" ] && [ -f "${SETER_MENU_LIST_FILE:-}" ]; then
+    list_file="$SETER_MENU_LIST_FILE"
+    list_ok=1
+  else
+    list_file="$(mktemp)"
+    is_temp=1
+    if osascript "$BRIDGE/list-playlists.applescript" > "$list_file" 2>/dev/null && [ -s "$list_file" ]; then
+      list_ok=1
+    fi
+  fi
+  if [ "$list_ok" = "1" ] && [ -s "$list_file" ]; then
+    printf 'Pick a playlist:\n'
+    count=0
+    while IFS= read -r line; do
+      count=$((count + 1))
+      printf '  %s) %s\n' "$count" "$line"
+    done < "$list_file"
+    if [ "$mode" = "shuffle" ]; then
+      printf '  L) Whole library (into SeTeR Shuffle)\n'
+    fi
+    printf '  0) Type a name instead\n'
+    printf 'Number: '
+    read -r pick || pick=""
+    case "$pick" in
+      L|l)
+        if [ "$mode" = "shuffle" ]; then
+          MENU_PICKED_LIBRARY=1
+        else
+          printf 'Playlist: '
+          read -r manual_name || manual_name=""
+          MENU_PICKED="$manual_name"
+        fi
+        ;;
+      0)
+        printf 'Playlist: '
+        read -r manual_name || manual_name=""
+        MENU_PICKED="$manual_name"
+        ;;
+      ''|*[!0-9]*)
+        echo "not a playlist number; type a name instead."
+        printf 'Playlist: '
+        read -r manual_name || manual_name=""
+        MENU_PICKED="$manual_name"
+        ;;
+      *)
+        if [ "$pick" -ge 1 ] && [ "$pick" -le "$count" ]; then
+          picked_line="$(sed -n "${pick}p" "$list_file")"
+          MENU_PICKED="$picked_line"
+        else
+          echo "number $pick is out of range; type a name instead."
+          printf 'Playlist: '
+          read -r manual_name || manual_name=""
+          MENU_PICKED="$manual_name"
+        fi
+        ;;
+    esac
+  else
+    printf 'Playlist: '
+    read -r manual_name || manual_name=""
+    MENU_PICKED="$manual_name"
+  fi
+  if [ "$is_temp" = "1" ]; then
+    rm -f "$list_file"
+  fi
+  return 0
+}
+
 # Interactive menu (Terminal only, matching v2.6's interactive
-# options; there is no .app bundle in this build). Every choice
+# options; there is no .app bundle in this build). Choices
+# 1, 3, and 4 pick a playlist from a numbered list
+# (menu_pick_playlist, v3.0.10) instead of requiring a typed
+# name, with 0 to type a name and a whole-library choice for
+# shuffle. Every choice
 # re-invokes run.sh as a fresh process, so every gate in the
 # non-interactive paths applies unchanged: a build still refuses
 # without a fresh per-target mapping, still validates its order,
 # still snapshots and verifies. The menu pre-checks the mapping
-# with mapping_ready_for before invoking any build, so a missing
-# or stale mapping refuses before any dump, not after it; it
-# never probes, never picks a mapping, and never overrides a
-# refusal. Playlist names may contain spaces; size is the
-# documented 100/250/500/1000/all choice, blank for all.
+# with ensure_mapping_for before invoking any build: a fresh
+# mapping is reused with no re-probe, and a missing or stale
+# mapping triggers an automatic self-probe of the target itself
+# before any dump, not after it. A failed probe loops the menu
+# back with the probe error visible; the menu never picks a
+# mapping, never borrows another target's mapping, and never
+# overrides a refusal. Playlist names may contain spaces; size is
+# the documented 100/250/500/1000/all choice, blank for all.
 if [ "$CMD" = "menu" ]; then
   while true; do
     printf '\nSeTeR Shuffle\n  1) Shuffle a playlist\n  2) Rediscover\n  3) Remove duplicates (dedupe)\n  4) Undo last shuffle\n  5) Flow\n  6) Flow preview\n  7) Audit\n  0) Quit\n'
@@ -469,10 +758,15 @@ if [ "$CMD" = "menu" ]; then
     read -r choice || exit 0
     case "$choice" in
       1)
-        printf 'Playlist (blank for SeTeR Shuffle): '
-        read -r pl || exit 0
-        if [ -n "$pl" ]; then menu_target="$pl"; else menu_target="SeTeR Shuffle"; fi
-        mapping_ready_for "$menu_target" || continue
+        menu_pick_playlist shuffle
+        if [ "$MENU_PICKED_LIBRARY" = "1" ] || [ -z "$MENU_PICKED" ]; then
+          pl=""
+          menu_target="SeTeR Shuffle"
+        else
+          pl="$MENU_PICKED"
+          menu_target="$MENU_PICKED"
+        fi
+        ensure_mapping_for "$menu_target" || continue
         printf 'Size (100/250/500/1000/all, blank for all): '
         read -r sz || exit 0
         # No array here, for the same bash 3.2 reason as the
@@ -490,25 +784,29 @@ if [ "$CMD" = "menu" ]; then
         fi
         ;;
       2)
-        mapping_ready_for "SeTeR Rediscover" || continue
+        ensure_mapping_for "SeTeR Rediscover" || continue
         bash "$ROOT/run.sh" rediscover || notify "SeTeR Shuffle: rediscover failed"
         ;;
       3)
-        printf 'Playlist: '
-        read -r pl || exit 0
+        menu_pick_playlist dedupe
+        pl="$MENU_PICKED"
         [ -n "$pl" ] || { echo "dedupe needs a playlist name."; continue; }
-        mapping_ready_for "$pl" || continue
+        # No pre-check here (v3.0.4): dedupe handles its own
+        # mapping, because a doubled playlist fails the
+        # self-probe on duplicate entries and would deadlock the
+        # menu otherwise. A fresh mapping is used directly;
+        # otherwise the trial path tries forward then reversed.
         bash "$ROOT/run.sh" dedupe "$pl" || notify "SeTeR Shuffle: dedupe failed"
         ;;
       4)
-        printf 'Playlist: '
-        read -r pl || exit 0
+        menu_pick_playlist undo
+        pl="$MENU_PICKED"
         [ -n "$pl" ] || { echo "undo needs a playlist name."; continue; }
-        mapping_ready_for "$pl" || continue
+        ensure_mapping_for "$pl" || continue
         bash "$ROOT/run.sh" undo "$pl" || notify "SeTeR Shuffle: undo failed"
         ;;
       5)
-        mapping_ready_for "SeTeR Flow" || continue
+        ensure_mapping_for "SeTeR Flow" || continue
         bash "$ROOT/run.sh" flow || notify "SeTeR Shuffle: flow failed"
         ;;
       6)
@@ -527,35 +825,90 @@ if [ "$CMD" = "menu" ]; then
   done
 fi
 
-# Sort-probe command: measure the mapping on a user-sorted throwaway
-# FOR ONE TARGET. Since .5 the target and the sort label are
-# required arguments, and the mapping is recorded per-target
-# (mapping_file_for): a mapping measured for target X can never
-# authorize a build on target Y. The user MUST set the throwaway's
-# sort in Music to the target's sort before running this; run.sh
-# cannot set or verify a playlist's UI sort, so a throwaway with
-# the wrong sort measures the wrong mapping, and the STEP line
-# below records exactly what was declared. Worked example of why
-# this matters (2026-10-29, mode 35): the main playlist sorts
-# Playlist Order descending (mapping reversed), while a brand-new
-# "SeTeR Flow" playlist sorts default/manual (mapping forward);
-# reusing the main playlist's mapping for Flow landed backwards
-# and verify correctly refused it. Flow therefore needs its OWN
-# sortprobe, on a throwaway set to SeTeR Flow's sort, before any
-# Flow build, even when a main-playlist mapping already exists.
-if [ "$CMD" = "sortprobe" ]; then
-  THROWAWAY="${2:-}"
-  PROBE_TARGET="${3:-}"
-  PROBE_SORT="${4:-}"
-  if [ -z "$THROWAWAY" ] || [ -z "$PROBE_TARGET" ] || [ -z "$PROBE_SORT" ]; then
-    echo "usage: $0 sortprobe <throwaway-playlist> <target-playlist> <sort-label>" >&2
-    echo "  example: $0 sortprobe 'Throwaway' 'My New Sandwich Recipe' 'Playlist Order descending'" >&2
-    echo "  the throwaway must be set in Music to the target's sort BEFORE running; the sort label is your declaration of that sort, e.g. 'Playlist Order descending', 'Playlist Order ascending', or 'Manual (default)'" >&2
-    exit 2
+# Sort-probe command: measure the mapping FOR ONE TARGET. Since .5
+# the target and the sort label are required arguments, and the
+# mapping is recorded per-target (mapping_file_for): a mapping
+# measured for target X can never authorize a build on target Y.
+# Two forms, same probe script, same safety:
+#   * sortprobe <throwaway> <target> <sort-label>: the user MUST
+#     set the throwaway's sort in Music to the target's sort before
+#     running this; run.sh cannot set or verify a playlist's UI
+#     sort, so a throwaway with the wrong sort measures the wrong
+#     mapping, and the STEP line below records exactly what was
+#     declared. Worked example of why this matters (2026-10-29,
+#     mode 35): the main playlist sorts Playlist Order descending
+#     (mapping reversed), while a brand-new "SeTeR Flow" playlist
+#     sorts default/manual (mapping forward); reusing the main
+#     playlist's mapping for Flow landed backwards and verify
+#     correctly refused it. Flow therefore needs its OWN
+#     sortprobe, on a throwaway set to SeTeR Flow's sort, before
+#     any Flow build, even when a main-playlist mapping already
+#     exists.
+#   * selfprobe <target> (v3.0.2, preferred): the probe runs on
+#     the target itself, under the target's own sort, which Music
+#     remembers per playlist. There is no throwaway sort to match
+#     and no mapping transfer is possible: the measured mapping is
+#     the target's own. sortprobe with throwaway == target is the
+#     same self-probe; its sort label is replaced by the
+#     self-probe label below, and mapping_for_build accepts that
+#     label like any other non-empty sort label (it is the
+#     THROWAWAY field, equal to the target, that marks it).
+# In both forms the probe snapshots first, builds a rotation,
+# restores the snapshot under the measured mapping, and verifies
+# the restore before returning OK. The duplicate-entry refusal
+# is unchanged: a probe on a playlist with duplicate entries
+# refuses and changes nothing, so a doubled playlist cannot be
+# probed (self or throwaway) until it is trial-deduped
+# (v3.0.4: dedupe verifies its own mapping, it does not
+# probe); the refusal is NOT weakened to work around
+# that deadlock.
+# Failure handling, and the ONE exception to "a failed probe
+# deletes the mapping": a probe that measured forward/reversed
+# but could not verify its own restore leaves the probed
+# playlist holding the rotation order. Deleting the mapping
+# there would block the only recovery path (./run.sh restore
+# needs a fresh mapping), so that case RECORDS the measured
+# mapping and logs a loud warning naming the snapshot, and the
+# caller (daily.sh included) still exits non-zero: no build
+# runs until the playlist is restored from the snapshot and a
+# clean probe passes. Every other failure (other mapping,
+# duplicate refusal, unreadable playlist, pre-build failure)
+# deletes the per-target mapping as before, because the sort
+# is then unknown and a stale mapping must never authorize a
+# build. Other targets' mappings are untouched in all cases.
+if [ "$CMD" = "sortprobe" ] || [ "$CMD" = "selfprobe" ]; then
+  SELF_PROBE_LABEL="self-probe: target's own sort"
+  if [ "$CMD" = "selfprobe" ]; then
+    THROWAWAY="${2:-}"
+    PROBE_TARGET="${2:-}"
+    PROBE_SORT="$SELF_PROBE_LABEL"
+    if [ -z "$THROWAWAY" ]; then
+      echo "usage: $0 selfprobe <playlist>" >&2
+      echo "  example: $0 selfprobe 'My New Sandwich Recipe'" >&2
+      exit 2
+    fi
+  else
+    THROWAWAY="${2:-}"
+    PROBE_TARGET="${3:-}"
+    PROBE_SORT="${4:-}"
+    if [ -z "$THROWAWAY" ] || [ -z "$PROBE_TARGET" ] || [ -z "$PROBE_SORT" ]; then
+      echo "usage: $0 sortprobe <throwaway-playlist> <target-playlist> <sort-label>" >&2
+      echo "  example: $0 sortprobe 'Throwaway' 'My New Sandwich Recipe' 'Playlist Order descending'" >&2
+      echo "  the throwaway must be set in Music to the target's sort BEFORE running; the sort label is your declaration of that sort, e.g. 'Playlist Order descending', 'Playlist Order ascending', or 'Manual (default)'" >&2
+      echo "  or run: $0 selfprobe 'My New Sandwich Recipe' (probe the target itself under its own sort)" >&2
+      exit 2
+    fi
+    if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+      PROBE_SORT="$SELF_PROBE_LABEL"
+    fi
   fi
   SNAPSHOT="$STATE/sort-probe-snapshot.txt"
   MAP_FILE="$(mapping_file_for "$PROBE_TARGET")"
-  log "STEP: sort-probe mapping on throwaway '$THROWAWAY' for target '$PROBE_TARGET' (declared sort: '$PROBE_SORT'; set the throwaway to this sort in Music before running)"
+  if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+    log "STEP: self-probe mapping on target '$PROBE_TARGET' itself (its own sort, as Music remembers it; snapshot at $SNAPSHOT; the probe restores the target to its snapshot and verifies before returning OK)"
+  else
+    log "STEP: sort-probe mapping on throwaway '$THROWAWAY' for target '$PROBE_TARGET' (declared sort: '$PROBE_SORT'; set the throwaway to this sort in Music before running)"
+  fi
   if osascript "$BRIDGE/sort-probe.applescript" "$THROWAWAY" "$SNAPSHOT" 2>&1 | tee -a "$LOG" "$WORK/sortprobe.out"; then
     mapping="$(grep '^MAPPING: ' "$WORK/sortprobe.out" | head -n 1 | sed 's/^MAPPING: //')"
     if [ "$mapping" = "forward" ] || [ "$mapping" = "reversed" ]; then
@@ -568,8 +921,33 @@ if [ "$CMD" = "sortprobe" ]; then
       } > "$MAP_FILE.tmp"
       mv -f "$MAP_FILE.tmp" "$MAP_FILE"
       log "GATE OK: sort-probe mapping $mapping recorded for target '$PROBE_TARGET' (valid 48 hours; throwaway '$THROWAWAY', sort '$PROBE_SORT')"
-      log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build for '$PROBE_TARGET'"
+      if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+        log "self-probe done; target '$PROBE_TARGET' restored to its snapshot and verified; then run the build for '$PROBE_TARGET'"
+      else
+        log "sortprobe done; throwaway restored to its snapshot; verify it in Music if you want, then run the build for '$PROBE_TARGET'"
+      fi
       exit 0
+    fi
+  fi
+  # Measured-mapping-but-restore-failed exception (see the header
+  # above): the probe output names a forward/reversed mapping and
+  # a restore that could not be verified. Record that mapping so
+  # ./run.sh restore can run, warn loudly, and still exit
+  # non-zero so no build follows a half-restored probe.
+  if grep -q 'MAPPING: reversed' "$WORK/sortprobe.out" 2>/dev/null || grep -q 'MAPPING: forward' "$WORK/sortprobe.out" 2>/dev/null; then
+    if grep -qi 'restore.*could not be verified\|restore to its snapshot could not be verified' "$WORK/sortprobe.out" 2>/dev/null; then
+      if grep -q 'MAPPING: reversed' "$WORK/sortprobe.out" 2>/dev/null; then mapping="reversed"; else mapping="forward"; fi
+      {
+        printf 'MAPPING: %s\n' "$mapping"
+        printf 'THROWAWAY: %s\n' "$THROWAWAY"
+        printf 'TARGET: %s\n' "$PROBE_TARGET"
+        printf 'SORT: %s\n' "$PROBE_SORT"
+        printf 'TIMESTAMP: %s\n' "$(date +%s)"
+      } > "$MAP_FILE.tmp"
+      mv -f "$MAP_FILE.tmp" "$MAP_FILE"
+      log "GATE FAILED: sort-probe measured mapping $mapping for target '$PROBE_TARGET' but could not verify restoring it to its snapshot; the probed playlist may still hold the rotation order. Its snapshot is at $SNAPSHOT: restore it first with ./run.sh restore '$PROBE_TARGET' '$SNAPSHOT', then re-run the probe. No build will run until a clean probe passes."
+      notify "SeTeR Shuffle: sortprobe restore failed for $PROBE_TARGET"
+      exit 1
     fi
   fi
   # Fail-closed on the mapping itself: a failed re-probe must not
@@ -580,7 +958,11 @@ if [ "$CMD" = "sortprobe" ]; then
   # failed probe for one target never invalidates another's.
   rm -f "$MAP_FILE"
   log "GATE FAILED: sort-probe did not return a usable mapping; any previously recorded mapping for target '$PROBE_TARGET' was deleted, no build for that target will run until a clean sort-probe passes"
-  log "check the throwaway '$THROWAWAY' in Music: if the probe could not restore it, its snapshot is at $SNAPSHOT"
+  if [ "$THROWAWAY" = "$PROBE_TARGET" ]; then
+    log "self-probe on '$PROBE_TARGET': if the probe returned 'other', the target's own sort is not one the bridge can build into, so no build will run for it until its sort changes and a clean self-probe passes; if it refused on duplicate entries, the target is unchanged, dedupe it first. Snapshot (when written) is at $SNAPSHOT"
+  else
+    log "check the throwaway '$THROWAWAY' in Music: if the probe could not restore it, its snapshot is at $SNAPSHOT"
+  fi
   notify "SeTeR Shuffle: sortprobe failed for $PROBE_TARGET"
   exit 1
 fi
@@ -601,6 +983,7 @@ if [ "$CMD" = "undo" ]; then
     ls -t "$STATE"/backup-*.txt 2>/dev/null | head -n 10 | while read -r f; do log "  $f"; done
     exit 1
   fi
+  ensure_mapping_for "$PLAYLIST" || exit 1
   MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
   mapping_info_for "$PLAYLIST"
   log "undo $PLAYLIST from $BACKUP (mapping $MAPPING; pre-undo snapshot will be saved at $BACKUP.pre-undo)"
@@ -617,7 +1000,8 @@ fi
 # osascript call to it bypasses the freshness check (the script
 # cannot know when the mapping was measured), so direct calls are
 # expert-only and must be given a mapping measured within 48 hours
-# on a throwaway carrying the target's sort.
+# on a throwaway carrying the target's sort, or by a self-probe
+# on the target itself.
 if [ "$CMD" = "restore" ]; then
   PLAYLIST="${2:-}"
   BACKUP="${3:-}"
@@ -626,6 +1010,7 @@ if [ "$CMD" = "restore" ]; then
     log "GATE FAILED: backup file $BACKUP does not exist; restore refuses, playlist untouched"
     exit 1
   fi
+  ensure_mapping_for "$PLAYLIST" || exit 1
   MAPPING="$(mapping_for_build "$PLAYLIST")" || exit 1
   mapping_info_for "$PLAYLIST"
   log "restore $PLAYLIST from $BACKUP (mapping $MAPPING; pre-fix snapshot will be saved at $BACKUP.fix-snapshot)"
@@ -673,6 +1058,26 @@ if [ "$CMD" = "shuffle" ]; then
   fi
 fi
 
+# Automatic self-probe before any dump (v3.0.3): the build
+# target for this command gets ensure_mapping_for first, so a
+# missing or stale mapping is refreshed from the target itself
+# and a failed probe aborts before the dump, the compute, or
+# the apply. Audit and preview commands never reach this block
+# with a build target, so they probe nothing. apply_order still
+# re-checks with mapping_for_build as its final gate.
+# Dedupe is EXEMPT from this block (v3.0.4): a doubled playlist
+# fails the self-probe on duplicate entries, so probing first
+# would deadlock dedupe exactly as it did on 2026-10-29. The
+# dedupe case below handles its own mapping: a fresh mapping
+# is used directly, otherwise dedupe_trial_apply() tries
+# forward then reversed with verify-after as the oracle.
+case "$CMD" in
+  shuffle) ensure_mapping_for "${SHUFFLE_PLAYLIST:-SeTeR Shuffle}" || exit 1 ;;
+  dedupe) [ -n "${2:-}" ] || { echo "usage: $0 dedupe <playlist>" >&2; exit 2; } ;;
+  flow) ensure_mapping_for "SeTeR Flow" || exit 1 ;;
+  rediscover) ensure_mapping_for "SeTeR Rediscover" || exit 1 ;;
+esac
+
 # Dump: whole library, or one playlist for shuffle/dedupe. The dump
 # lives in a fresh temporary directory per run, so a failed dump can
 # never leave a stale dump file for the next step to mistake for a
@@ -696,11 +1101,30 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # Validate an order, then apply it, with restore-on-failure. The
 # bridge also validates and verifies on its own side; this function
-# is the runner's half: read the recorded sort-matched mapping,
-# catch a bad order before Music is touched, and recover if the
-# apply step itself fails after changes start. The mapping is read
-# before validation on purpose: a missing or stale mapping costs
-# nothing, and an unmapped apply must never run.
+# is the runner's half: catch a bad order before Music is touched,
+# and recover if the apply step itself fails after changes start.
+# apply_order() is the normal entry point: it reads the recorded
+# sort-matched mapping first (a missing or stale mapping costs
+# nothing, and an unmapped apply must never run), then calls
+# apply_order_mapped(). Trial-dedupe (v3.0.4) calls
+# apply_order_mapped() directly with an explicit trial mapping,
+# because its mapping is what is being tested, not what is
+# recorded. Return codes from apply_order_mapped(): 0 on a
+# verified apply; 1 on an apply failure whose playlist was
+# restored (or never changed), so a trial caller may safely try
+# the other mapping; 2 on an apply failure whose restore failed
+# under BOTH mappings inside apply-order and inside undo
+# (v3.0.5, mode 41) and left the playlist possibly partial, so
+# a trial caller must NOT try the other mapping on top of a
+# partial state. A restore failure no longer means "the one
+# mapping tried was wrong": both were tried, each verified
+# against the snapshot, before code 2 is returned. Normal
+# callers run under set -e, so any non-zero return stops the
+# run, exactly as the old exit 1 did.
+# APPLY_LAST_RUN_BACKUP and APPLY_RESTORE_FAILED are globals
+# set here for trial callers: the per-run snapshot to name in a
+# hard error, and whether the last attempt's restore failed
+# critically (partial), as opposed to merely failing to verify.
 #
 # BACKUP CHAIN (2026-10-29 doubling failure): the apply script
 # writes its pre-change snapshot to a FRESH PER-RUN file, never to
@@ -712,14 +1136,23 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 # state and only .prev saved the original, and one more failed run
 # would have overwritten .prev too. Per-run snapshots are kept
 # (newest 10) as a chain, so recovery never depends on a single
-# previous file.
+# previous file. The per-run filename also carries $RANDOM, so
+# two trial attempts inside the same second can never share a
+# snapshot file and overwrite each other's restore point.
 apply_order() {
-  local target="$1" mode="$2" backup run_backup lib_songs allow_dupes build_mapping
-  local -a apply_args
-  backup="$(backup_path_for "$target")"
-  run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$.txt"
+  local target="$1" mode="$2" build_mapping
   build_mapping="$(mapping_for_build "$target")" || exit 1
   mapping_info_for "$target"
+  apply_order_mapped "$target" "$mode" "$build_mapping" || exit 1
+}
+
+apply_order_mapped() {
+  local target="$1" mode="$2" build_mapping="$3" backup run_backup lib_songs allow_dupes
+  local -a apply_args
+  backup="$(backup_path_for "$target")"
+  run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.txt"
+  APPLY_LAST_RUN_BACKUP="$run_backup"
+  APPLY_RESTORE_FAILED=0
   # A size-capped whole-library shuffle is a subset by design
   # (N songs into the generated "SeTeR Shuffle" playlist), so it
   # validates under "shuffle-size" (presence/multiplicity only),
@@ -729,7 +1162,7 @@ apply_order() {
   if [ "$mode" = "shuffle" ] && [ -z "${SOURCE_PLAYLIST:-}" ] && [ -n "${SHUFFLE_SIZE:-}" ] && [ "$SHUFFLE_SIZE" != "all" ]; then
     validate_mode="shuffle-size"
   fi
-  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" || exit 1
+  step "validate order ($mode) for $target" "$PY" -m seter_shuffle.cli validate-order --library "$DUMP" --order-txt "$ORDER_TXT" --order-json "$ORDER" --mode "$validate_mode" --dedupe-match "$DEDUPE_MATCH" || return 1
   log "GATE: order validated for $target"
   # Duplicate allowance: "1" only for a one-playlist shuffle whose
   # dump itself repeats an ID (duplicate playlist entries, preserved
@@ -749,28 +1182,39 @@ apply_order() {
       allow_dupes="1"
     fi
   else
-    lib_songs="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")" || { log "GATE FAILED: could not count songs in dump"; exit 1; }
+    lib_songs="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")" || { log "GATE FAILED: could not count songs in dump"; return 1; }
   fi
   if [ "$mode" = "dedupe" ]; then
     allow_dupes="0"
   fi
-  # Description stamp (v2.6 "Last reshuffled" parity): only for
-  # shuffle and flow, only as the 7th bridge argument, and only
-  # after verification passes inside apply-order. The bridge
-  # stamps best-effort: if Music's scripting does not expose a
-  # settable playlist description, the stamp step logs skipped
-  # and the already-verified apply still succeeds. Undo and
-  # restore never stamp (they do not call this function), and
-  # dedupe/rediscover do not stamp either, because neither is a
-  # reshuffle.
+  # Description stamp (v2.6 "Last reshuffled" parity): for
+  # shuffle, flow, and rediscover, only as the 7th bridge
+  # argument, and only after verification passes inside
+  # apply-order. The bridge stamps "Last reshuffled: <Mac
+  # local date/time at the verified apply>", best-effort: if
+  # Music's scripting does not expose a settable playlist
+  # description, the stamp step logs skipped and the
+  # already-verified apply still succeeds. Undo and restore
+  # never stamp (they do not call this function), and dedupe
+  # does not stamp, because dedupe is not a reshuffle or a
+  # refresh. Rediscover stamps from v3.0.9: a daily refresh
+  # should leave its own last-refresh time on its description,
+  # not a stale manual-run time.
   stamp_flag="0"
-  if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ]; then
+  if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ] || [ "$mode" = "rediscover" ]; then
     stamp_flag="1"
   fi
+  # Verify mode (v3.0.8): dedupe verifies presence only, per
+  # Spencer's 2026-10-30 answer that dedupe need not keep the
+  # original order. Every other mode verifies exact order.
+  verify_mode="exact"
+  if [ "$mode" = "dedupe" ]; then
+    verify_mode="presence"
+  fi
   if [ -n "$lib_songs" ]; then
-    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag")
+    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "$lib_songs" "$stamp_flag" "$verify_mode")
   else
-    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "" "$stamp_flag")
+    apply_args=("$target" "$ORDER_TXT" "$run_backup" "$build_mapping" "$allow_dupes" "" "$stamp_flag" "$verify_mode")
   fi
   if step "apply order to $target" osascript "$BRIDGE/apply-order.applescript" "${apply_args[@]}"; then
     # Install the per-run snapshot as the main backup ONLY now,
@@ -790,8 +1234,28 @@ apply_order() {
   else
     log "GATE FAILED: apply failed for $target"
     notify "SeTeR Shuffle: apply failed for $target ($mode)"
+    # Skip the redundant undo restore (v3.0.7, 2026-10-29 21:01
+    # trial-dedupe): apply-order's own error message says whether
+    # its internal restore succeeded ("playlist restored from
+    # backup") or failed under both mappings ("CRITICAL"). When
+    # it already restored, the playlist is back at the per-run
+    # snapshot, and running undo on top of it only rebuilds the
+    # same snapshot again, under the wrong mapping first, then
+    # under the opposite one: 3 extra rebuilds for no change,
+    # and undo's "restored to pre-undo state" exit then looks
+    # like a critical restore failure and stops a trial-dedupe
+    # before it ever tries the other mapping. Only lines since
+    # this apply's STEP line count, so an older run cannot
+    # false-positive here. A CRITICAL apply still falls through
+    # to undo below, because then the playlist is not known to
+    # be back at the snapshot.
+    apply_step_line="$(grep -n "STEP: apply order to $target" "$LOG" | tail -n 1 | cut -d: -f1)"
+    if [ -n "$apply_step_line" ] && tail -n +"$apply_step_line" "$LOG" | grep -q "restored from backup" && ! tail -n +"$apply_step_line" "$LOG" | grep -q "CRITICAL"; then
+      log "apply already restored the playlist from its per-run snapshot at $run_backup; skipping the redundant undo restore (v3.0.7); main backup at $backup was NOT overwritten by this failed run"
+      return 1
+    fi
     if [ -f "$run_backup" ]; then
-      log "per-run snapshot exists at $run_backup; attempting restore via undo (same recorded mapping); main backup at $backup was NOT overwritten by this failed run"
+      log "per-run snapshot exists at $run_backup; attempting restore via undo (undo itself tries both mappings, v3.0.5); main backup at $backup was NOT overwritten by this failed run"
       if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "$build_mapping"; then
         log "restore from per-run snapshot succeeded; playlist is back to its pre-run state"
       else
@@ -807,13 +1271,163 @@ apply_order() {
           log "restore from per-run snapshot failed while reading the playlist before any change (PLAYLIST_UNTOUCHED); playlist is untouched, NOT partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
         else
           log "CRITICAL: restore from per-run snapshot also failed; playlist may be partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+          APPLY_RESTORE_FAILED=1
         fi
       fi
     else
       log "no per-run snapshot was written, so the apply failed before any playlist change; playlist untouched and main backup at $backup untouched"
     fi
-    exit 1
+    if [ "${APPLY_RESTORE_FAILED:-0}" = "1" ]; then
+      return 2
+    fi
+    return 1
   fi
+  return 0
+}
+
+# Record a mapping verified by a trial-dedupe apply (v3.0.4).
+# This is NOT a probe result: no rotation was built, and the
+# mapping was proven by verify-after on the actual deduped
+# order. It is recorded in the same per-target file format so
+# the next build can reuse it directly, with a SORT label that
+# says exactly how it was obtained. Trial callers record ONLY
+# on success; a failed trial records nothing, so a total trial
+# failure leaves no mapping behind for a later build to trust.
+record_trial_mapping() {
+  local target="$1" mapping="$2" map_file
+  map_file="$(mapping_file_for "$target")"
+  {
+    printf 'MAPPING: %s\n' "$mapping"
+    printf 'THROWAWAY: %s\n' "$target"
+    printf 'TARGET: %s\n' "$target"
+    printf 'SORT: trial-dedupe: verified by dedupe apply\n'
+    printf 'TIMESTAMP: %s\n' "$(date +%s)"
+  } > "$map_file.tmp"
+  mv -f "$map_file.tmp" "$map_file"
+  log "GATE: trial-dedupe verified mapping $mapping recorded for target '$target' (verified by dedupe apply, not by a rotation probe)"
+}
+
+# Trial-dedupe (v3.0.4): the dedupe path when no fresh mapping
+# is recorded. The rotation probe cannot help here: it refuses
+# on duplicate entries, and a doubled playlist is exactly a
+# playlist with duplicate entries. So dedupe tries its known
+# desired order (first occurrence of each song, computed before
+# this function runs) under mapping forward, verifies the list
+# read against it inside the apply, and on failure restores
+# from the per-run snapshot and tries reversed. The first
+# mapping that verifies wins and is recorded (see
+# record_trial_mapping). If neither verifies (for example an
+# "other" sort like Title ascending, where neither forward nor
+# reversed can land the desired order), the playlist is left
+# at its pre-dedupe order, no mapping is recorded, and this
+# returns 1. If an attempt's restore fails under BOTH mappings
+# (v3.0.5: apply-order's internal restore and undo's restore
+# each try the trial mapping first, then the opposite, each
+# verified against the snapshot), the playlist may be partial,
+# this returns 2 immediately, and the trial does NOT try the
+# other mapping on top of a partial state. A restore failure
+# after v3.0.5 therefore means neither mapping could return
+# the playlist to its snapshot, not merely that the trial
+# mapping was wrong: the opposite mapping was already tried
+# for the restore before the trial stopped.
+# The probe is never involved: this function must not be
+# generalized into a probe bypass, because the probe's job is
+# to classify a sort from a rotation without changing the
+# target's intended order, while dedupe's job is to change
+# the target to a known order and check the result.
+dedupe_trial_apply() {
+  local target="$1" trial_mapping
+  for trial_mapping in forward reversed; do
+    log "STEP: trial-dedupe apply for '$target' with mapping $trial_mapping (verify-after on the deduped order is the mapping oracle)"
+    APPLY_RESTORE_FAILED=0
+    if apply_order_mapped "$target" "dedupe" "$trial_mapping"; then
+      record_trial_mapping "$target" "$trial_mapping"
+      log "dedupe trial succeeded with mapping $trial_mapping; playlist deduped and mapping recorded"
+      return 0
+    fi
+    if [ "${APPLY_RESTORE_FAILED:-0}" = "1" ]; then
+      log "CRITICAL: trial-dedupe apply with mapping $trial_mapping failed AND its restore failed under both mappings; playlist may be partial; snapshot at $APPLY_LAST_RUN_BACKUP; not trying the other mapping"
+      return 2
+    fi
+    log "trial-dedupe apply with mapping $trial_mapping did not verify; playlist restored to its pre-dedupe order; trying the other mapping"
+  done
+  log "GATE FAILED: trial-dedupe for '$target': neither forward nor reversed mapping verified; playlist restored to its pre-dedupe order; change the sort to Playlist Order and re-run dedupe; no mapping was recorded"
+  return 1
+}
+
+# In-place dedupe (v3.0.9, superseding presence dedupe v3.0.8
+# before v3.0.8 was ever published). Spencer's cap, 2026-10-30:
+# dedupe must rebuild his playlist 1-2 times max. A rebuild is
+# the wrong tool for dedupe at all: deleting only the duplicate
+# entries in place costs 0 rebuilds on success, needs no
+# mapping, no probe, and no trial, because nothing is re-added
+# in any order. The bridge script snapshots (verified, atomic)
+# before deleting, deletes duplicate positions in descending
+# order, verifies presence only, and on failure restores from
+# the snapshot trying both mappings, exactly like apply-order.
+# Only that restore is a rebuild, and only on a failed run.
+# This function mirrors apply_order_mapped's backup chain:
+# the per-run snapshot becomes the main backup only after a
+# verified success, with the previous main backup kept as .prev.
+# Return codes: 0 on success; 1 on a failure whose playlist
+# was restored (or never changed); 2 on a CRITICAL failure
+# whose restore failed under both mappings.
+dedupe_in_place() {
+  local target="$1" backup run_backup delete_txt
+  backup="$(backup_path_for "$target")"
+  run_backup="${backup%.txt}.run-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.txt"
+  delete_txt="$WORK/delete-indices.txt"
+  # Duplicate positions, 1-based, strictly descending, computed
+  # from the same dump the dedupe order came from, with the
+  # same match rule (default "song", so same-song entries with
+  # a different persistent ID are included, not just exact
+  # ID repeats): the first occurrence of each song stays,
+  # every later occurrence is a position to delete. Descending
+  # order is what makes the bridge's deletions safe (a higher
+  # deletion never shifts a lower position still to delete).
+  # The bridge's own count check (snapshot count minus unique
+  # count equals delete count) refuses before deleting if
+  # these positions ever disagree with the dedupe order.
+  step "compute dedupe delete positions for $target" "$PY" -m seter_shuffle.cli dedupe-positions --library "$DUMP" --match "$DEDUPE_MATCH" --out "$delete_txt" || return 1
+  if step "dedupe in place for $target" osascript "$BRIDGE/dedupe-in-place.applescript" "$target" "$ORDER_TXT" "$delete_txt" "$run_backup"; then
+    if [ -f "$backup" ]; then
+      cp "$backup" "$backup.prev"
+      log "previous backup preserved at $backup.prev"
+    fi
+    cp "$run_backup" "$backup"
+    log "GATE: in-place dedupe verified for $target (pre-run snapshot installed as backup at $backup; per-run snapshot kept at $run_backup)"
+    ls -t "$STATE"/backup-*.run-*.txt 2>/dev/null | tail -n +11 | while read -r f; do rm -f "$f"; done || true
+    notify "SeTeR Shuffle: $target deduped in place"
+    return 0
+  fi
+  log "GATE FAILED: in-place dedupe failed for $target"
+  notify "SeTeR Shuffle: in-place dedupe failed for $target"
+  # Skip the redundant undo restore (v3.0.7 logic): if the
+  # bridge already restored from its snapshot, undo would
+  # only rebuild the same snapshot again. Only lines since
+  # this dedupe's STEP line count.
+  dedupe_step_line="$(grep -n "STEP: dedupe in place for $target" "$LOG" | tail -n 1 | cut -d: -f1)"
+  if [ -n "$dedupe_step_line" ] && tail -n +"$dedupe_step_line" "$LOG" | grep -q "restored from backup" && ! tail -n +"$dedupe_step_line" "$LOG" | grep -q "CRITICAL"; then
+    log "in-place dedupe already restored the playlist from its per-run snapshot at $run_backup; skipping the redundant undo restore (v3.0.7); main backup at $backup was NOT overwritten by this failed run"
+    return 1
+  fi
+  if [ -f "$run_backup" ]; then
+    log "per-run snapshot exists at $run_backup; attempting restore via undo (undo itself tries both mappings, v3.0.5); main backup at $backup was NOT overwritten by this failed run"
+    if step "restore $target from per-run snapshot" osascript "$BRIDGE/undo.applescript" "$target" "$run_backup" "forward"; then
+      log "restore from per-run snapshot succeeded; playlist is back to its pre-run state"
+    else
+      restore_step_line="$(grep -n "STEP: restore $target from per-run snapshot" "$LOG" | tail -n 1 | cut -d: -f1)"
+      if [ -n "$restore_step_line" ] && tail -n +"$restore_step_line" "$LOG" | grep -q "PLAYLIST_UNTOUCHED"; then
+        log "restore from per-run snapshot failed while reading the playlist before any change (PLAYLIST_UNTOUCHED); playlist is untouched, NOT partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+      else
+        log "CRITICAL: restore from per-run snapshot also failed; playlist may be partial; re-run undo with backup $run_backup (main backup at $backup is still the last good state)"
+        return 2
+      fi
+    fi
+  else
+    log "no per-run snapshot was written, so the in-place dedupe failed before any playlist change; playlist untouched and main backup at $backup untouched"
+  fi
+  return 1
 }
 
 case "$CMD" in
@@ -881,21 +1495,32 @@ case "$CMD" in
     ;;
   dedupe)
     TARGET_PLAYLIST="${TARGET_PLAYLIST:-}"
-    step "compute dedupe order" "$PY" -m seter_shuffle.cli dedupe --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" || exit 1
+    step "compute dedupe order" "$PY" -m seter_shuffle.cli dedupe --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --match "$DEDUPE_MATCH" || exit 1
     # Skip the apply entirely when there is nothing to remove: a
     # rebuild of an already-clean playlist is pure risk for zero
     # gain, and on a sorted playlist it would also re-exercise the
     # delete/re-add loop for nothing. The order count equals the
     # dump count exactly when the playlist holds no duplicates.
+    # A clean playlist needs no mapping at all: nothing is built.
     dump_count="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")"
     order_count="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["count"])' "$ORDER")"
     if [ "$order_count" = "$dump_count" ]; then
       log "dedupe done: no duplicate entries in \"$TARGET_PLAYLIST\" ($dump_count songs); nothing was applied"
       notify "SeTeR Shuffle: $TARGET_PLAYLIST already clean, nothing applied"
     else
-      log "dedupe: $dump_count entries, $order_count unique songs; applying unique order (first-occurrence order, NOT backup order)"
-      apply_order "$TARGET_PLAYLIST" "dedupe"
-      log "dedupe done"
+      # In-place dedupe (v3.0.9, superseding presence dedupe
+      # v3.0.8 before v3.0.8 was ever published): Spencer's
+      # cap is 1-2 rebuilds max, and deleting only the
+      # duplicate entries costs 0 rebuilds on success. No
+      # mapping is needed, probed, or trialled at all, and no
+      # mapping is recorded: the next shuffle or flow
+      # self-probes the now-clean playlist for its true
+      # mapping. Trial-dedupe (v3.0.4-3.0.7) and presence
+      # dedupe (v3.0.8) are retained in the code but no longer
+      # called for dedupe.
+      log "dedupe: $dump_count entries, $order_count unique songs; in-place delete of $((dump_count - order_count)) duplicate entries (0 rebuilds on success, no mapping recorded)"
+      dedupe_in_place "$TARGET_PLAYLIST" || exit 1
+      log "dedupe done: playlist holds the $order_count unique songs, deduped in place; no mapping was recorded from this run"
     fi
     ;;
 esac

@@ -147,10 +147,14 @@ class MenuTests(unittest.TestCase):
     def test_menu_shows_mapping_status_before_builds(self):
         self.assertIn("mapping_status_for", RUN_TEXT)
         self.assertIn("mapping status for", RUN_TEXT)
-        # The menu never probes: no sortprobe dispatch inside it.
+        # v3.0.3 supersedes the v3.0.2 menu rule: the menu now
+        # auto self-probes via ensure_mapping_for on a missing
+        # or stale mapping, instead of refusing outright, and it
+        # never dispatches a throwaway sortprobe itself.
         menu = RUN_TEXT.split('if [ "$CMD" = "menu" ]')[1].split(
             "# Sort-probe command"
         )[0]
+        self.assertIn("ensure_mapping_for", menu)
         self.assertNotIn("sortprobe", menu)
 
 
@@ -173,8 +177,8 @@ class StampTests(unittest.TestCase):
         self.assertNotIn("description", (BRIDGE / "undo.applescript").read_text())
         self.assertNotIn("description", (BRIDGE / "restore-original.applescript").read_text())
 
-    def test_run_passes_stamp_flag_only_for_shuffle_and_flow(self):
-        self.assertIn('if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ]; then', RUN_TEXT)
+    def test_run_passes_stamp_flag_for_shuffle_flow_and_rediscover(self):
+        self.assertIn('if [ "$mode" = "shuffle" ] || [ "$mode" = "flow" ] || [ "$mode" = "rediscover" ]; then', RUN_TEXT)
         self.assertIn('stamp_flag="1"', RUN_TEXT)
 
 

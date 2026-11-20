@@ -31,10 +31,24 @@
 --    order. There is NO mapping argument for "other": a
 --    sort-probe that returns anything but forward/reversed
 --    refuses the build upstream, and this script refuses any
---    other mapping string here. There is NO flip-on-failure: a
---    failed verify restores from backup and exits non-zero,
---    because a wrong flip on a real playlist is exactly the .4
---    bug. The old probe-order script is now a standalone manual
+--    other mapping string here. There is NO flip-on-failure
+--    for a BUILD: a failed verify never retries the desired
+--    order under the opposite mapping, because a wrong flip on
+--    a real playlist is exactly the .4 bug, and a failed build
+--    still exits non-zero and records nothing. A RESTORE is
+--    different, and that distinction is load-bearing (2026-10-29,
+--    mode 41): a restore's only job is to return to a KNOWN
+--    snapshot, and each restore attempt is verified against
+--    that snapshot before it counts. So a restore tries BOTH
+--    mappings, given first then opposite, and only declares
+--    CRITICAL if neither verifies (see tryRestoreBothMappings).
+--    Without that, a build that failed precisely because its
+--    mapping was wrong traps its own restore, which used the
+--    same wrong mapping: that is exactly what happened on
+--    2026-10-29 18:59 PT, when a forward trial-dedupe build
+--    verified-failed under the playlist's true reversed
+--    mapping, then its forward restore verified-failed too.
+--    The old probe-order script is now a standalone manual
 --    sanity check only; no build consults it.
 --  * Nothing is deleted until a backup exists AND has been verified:
 --    the pre-change IDs are written to a temporary file, atomically
@@ -79,8 +93,12 @@
 --    duplicates into a non-empty playlist can never happen from
 --    this script again, whatever made the delete lag.
 --  * Any error after changes start triggers a restore attempt, and
---    the script still exits non-zero. If the restore itself fails,
---    the error says so loudly and names the backup file, so the
+--    the script still exits non-zero. The restore tries BOTH
+--    mappings (see tryRestoreBothMappings): a restore under a
+--    wrong mapping cannot verify, by the same mechanism as the
+--    build failure, so a single-mapping restore would trap
+--    itself. If the restore fails under both mappings, the
+--    error says so loudly and names the backup file, so the
 --    user can re-run undo.applescript with it.
 --  * Non-song entries in the playlist (videos, etc.) are never
 --    deleted and are left in place; only song entries are managed,
@@ -164,10 +182,24 @@ on run argv
 	-- "0" or absent does not. The stamp is best-effort and never
 	-- fails an already-verified apply (see the stamp step after
 	-- verification, below). Undo/restore never call this script,
-	-- and run.sh passes "0" for dedupe/rediscover, so a stamp can
-	-- only ever follow a verified shuffle or flow apply.
+	-- and run.sh passes "0" for dedupe, so a stamp can only ever
+	-- follow a verified shuffle, flow, or rediscover apply.
 	set stampDescription to false
 	if (count of argv) > 6 and (item 7 of argv) is "1" then set stampDescription to true
+
+	-- Verify mode (8th argument, run.sh only, v3.0.8): "presence"
+	-- means the landed playlist must hold exactly the desired
+	-- song SET, in any order: same count, every desired ID
+	-- present. That is the dedupe contract Spencer stated
+	-- 2026-10-30: duplicates gone, order not cared about. Any
+	-- other value, including omission, means exact order, as
+	-- before: shuffle, flow, and every restore still verify
+	-- song by song in exact order, because there the order is
+	-- the result (flow arc, undo). A presence success proves
+	-- nothing about the sort mapping, so run.sh must never
+	-- record a mapping from a presence-verified apply.
+	set verifyPresenceMode to false
+	if (count of argv) > 7 and (item 8 of argv) is "presence" then set verifyPresenceMode to true
 
 	-- Validate the order BEFORE resolving or changing anything.
 	set orderIDs to my readOrderFile(orderPath, allowDuplicates)
@@ -214,7 +246,11 @@ on run argv
 	-- build could not be proven, and the only safe next step is
 	-- the backup restore. There is no flip: a failed verify never
 	-- retries with the opposite mapping.
-	set buildResult to my buildAndVerifyMapping(destPl, orderIDs, buildMapping)
+	if verifyPresenceMode then
+		set buildResult to my buildAndVerifyPresence(destPl, orderIDs, buildMapping)
+	else
+		set buildResult to my buildAndVerifyMapping(destPl, orderIDs, buildMapping)
+	end if
 	if not (ok of buildResult) then
 		set buildFailed to failed of buildResult
 		-- Delete-empty failure: nothing was duplicated (see
@@ -226,31 +262,35 @@ on run argv
 			if my verifyAgainst(destPl, backupIDs) then
 				error "apply-order: delete did not take effect after retries (playlist still holds song entries); nothing was duplicated and the playlist is unchanged. Backup at " & backupPath & ". Do not re-run until the delete works on a throwaway." number 1
 			end if
-			set restoreResult to my tryRestoreMapping(destPl, backupIDs, buildMapping)
+			set restoreResult to my tryRestoreBothMappings(destPl, backupIDs, buildMapping)
 			if ok of restoreResult then
 				error "apply-order: delete did not take effect after retries, so nothing was applied; playlist restored from backup at " & backupPath & "." number 1
 			else
-				error "apply-order: CRITICAL: delete did not take effect AND restore failed for \"" & playlistName & "\"; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
+				error "apply-order: CRITICAL: delete did not take effect AND restore failed under both mappings for \"" & playlistName & "\"; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
 			end if
 		end if
-		set restoreResult to my tryRestoreMapping(destPl, backupIDs, buildMapping)
+		set restoreResult to my tryRestoreBothMappings(destPl, backupIDs, buildMapping)
 		if ok of restoreResult then
 			if (count of buildFailed) > 0 then
 				error "apply-order: " & (count of buildFailed) & " song(s) were not found in the library (" & my joinList(buildFailed) & "); playlist restored from backup at " & backupPath & ", nothing applied." number 1
 			else
+				if verifyPresenceMode then
+				error "apply-order: verification failed for \"" & playlistName & "\" (final song set does not match the desired set: wrong count, a desired song missing, or a duplicate still present); playlist restored from backup at " & backupPath & "." number 1
+			else
 				error "apply-order: verification failed for \"" & playlistName & "\" (final song order does not match the desired order under mapping " & buildMapping & "); playlist restored from backup at " & backupPath & "." number 1
 			end if
+			end if
 		else
-			error "apply-order: CRITICAL: build/verification failed AND restore failed for \"" & playlistName & "\"; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
+			error "apply-order: CRITICAL: build/verification failed AND restore failed under both mappings for \"" & playlistName & "\"; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
 		end if
 	end if
 	set libAfter to my librarySize()
 	if libAfter < libBefore then
-		set restoreResult to my tryRestoreMapping(destPl, backupIDs, buildMapping)
+		set restoreResult to my tryRestoreBothMappings(destPl, backupIDs, buildMapping)
 		if ok of restoreResult then
 			error "apply-order: library shrank during the run; playlist restored from backup at " & backupPath & ", nothing applied." number 1
 		else
-			error "apply-order: CRITICAL: library shrank during the run AND restore failed; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
+			error "apply-order: CRITICAL: library shrank during the run AND restore failed under both mappings; playlist may be partial. Re-run undo.applescript with backup " & backupPath & "." number 1
 		end if
 	end if
 
@@ -406,9 +446,12 @@ end deletePlaylistSongs
 
 -- Build a desired list-read order under the measured mapping and
 -- verify it exactly. Returns {ok:boolean, failed:list}. A false
--- result is never retried with the opposite mapping here: that
--- would be guessing, and the 2026-10-28 runs are what guessing
--- buys. The caller restores from backup on false.
+-- result is never retried with the opposite mapping HERE: that
+-- would be guessing a build, and the 2026-10-28 runs are what
+-- guessing buys. The caller restores from backup on false, and
+-- the restore handler (tryRestoreBothMappings) is the only
+-- place the opposite mapping is tried, verified against the
+-- snapshot, never to land a desired order.
 on buildAndVerifyMapping(pl, desiredIDs, buildMapping)
 	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
 	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
@@ -436,6 +479,36 @@ on tryRestoreMapping(pl, snapshotIDs, buildMapping)
 	end try
 	return my buildAndVerifyMapping(pl, snapshotIDs, buildMapping)
 end tryRestoreMapping
+
+-- The opposite of a mapping: the only other value parseMapping
+-- accepts, so this can never invent a third mapping.
+on oppositeMapping(buildMapping)
+	if buildMapping is "reversed" then return "forward"
+	return "reversed"
+end oppositeMapping
+
+-- Restore from a list-read snapshot trying BOTH mappings, given
+-- first then opposite, each verified against the snapshot.
+-- Returns the first successful result, or the second result if
+-- both failed. This is a RESTORE retry, not a build flip: it
+-- never lands a desired order, it only returns to a snapshot
+-- that already existed, and an unverified attempt counts for
+-- nothing. It exists because a restore under a wrong mapping
+-- cannot verify, by the same mechanism as a build failure
+-- under that mapping: on 2026-10-29 18:59 PT a forward
+-- trial-dedupe build verified-failed under a reversed sort,
+-- then its forward-only restore verified-failed too, and the
+-- run declared CRITICAL even though every song was still
+-- present (the pre-undo snapshot was the exact reverse of
+-- the backup). A second restore attempt under the opposite
+-- mapping would have verified. Callers treat a both-failed
+-- result as CRITICAL and must not build on top of it.
+on tryRestoreBothMappings(pl, snapshotIDs, buildMapping)
+	set firstResult to my tryRestoreMapping(pl, snapshotIDs, buildMapping)
+	if ok of firstResult then return firstResult
+	set otherMapping to my oppositeMapping(buildMapping)
+	return my tryRestoreMapping(pl, snapshotIDs, otherMapping)
+end tryRestoreBothMappings
 
 -- Resolve a playlist by name without ever guessing. Music can hold
 -- two playlists with the same name; a bare `playlist "Name"` lookup
@@ -558,6 +631,43 @@ on verifyAgainst(pl, expectedIDs)
 	set actualIDs to my playlistIDs(pl)
 	return my listsEqual(actualIDs, expectedIDs)
 end verifyAgainst
+
+-- Presence verification (v3.0.8, dedupe only): the landed
+-- playlist must hold exactly the desired song SET, in any
+-- order. Count equality plus every desired ID present implies
+-- set equality when the desired IDs are unique, which a
+-- dedupe order is by construction: a leftover duplicate or
+-- an extra song breaks the count, a missing song breaks
+-- presence. Order is deliberately ignored here, so a build
+-- under either mapping verifies, and no mapping is proven.
+on verifyPresence(pl, expectedIDs)
+	set actualIDs to my playlistIDs(pl)
+	if (count of actualIDs) is not (count of expectedIDs) then return false
+	repeat with expectedID in expectedIDs
+		if not (actualIDs contains (contents of expectedID)) then return false
+	end repeat
+	return true
+end verifyPresence
+
+-- Build a desired song set under the given mapping and verify
+-- presence only, never exact order. Mirrors
+-- buildAndVerifyMapping except for the final check; the
+-- restore handlers still verify exactly against snapshots.
+on buildAndVerifyPresence(pl, desiredIDs, buildMapping)
+	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
+	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
+	set verified to false
+	try
+		set verified to my verifyPresence(pl, desiredIDs)
+	on error
+		set verified to false
+	end try
+	if verified then
+		return {ok:true, failed:{}}
+	else
+		return {ok:false, failed:{}}
+	end if
+end buildAndVerifyPresence
 
 on joinList(idList)
 	set AppleScript's text item delimiters to ", "

@@ -289,8 +289,9 @@ until Spencer approves the exact change list.
   `setup-python.sh`). UNPROVEN: no launchd daily run on a Mac
   yet, and the daily run refuses without fresh (<48h)
   per-target mappings for both the daily playlist and "SeTeR
-  Rediscover" (it never auto-probes). That mapping-freshness
-  requirement is a real stable gap: v2.6 daily needed no probe.
+  Rediscover". v3.0.2 closes the manual-probe part of that gap
+  with daily auto self-probes (see the v3.0.2 steps below);
+  the mapping gate itself stays.
 - Version naming: PROPOSED v3.0 (major bump: AppleScript to
   Python, and the mapping model changed). Recorded as a
   proposal in the installer (`3.0-proposed`); no v3.0 tag or
@@ -319,13 +320,12 @@ until Spencer approves the exact change list.
    marker, no error). Then schedule: `bash setup-python.sh`
    (8:00 AM). Pass: `com.seter.python.daily.plist` exists with
    Hour 8, and `com.seter.daily.plist` still exists untouched.
-3. Daily dry check: `bash daily.sh "My New Sandwich Recipe"`
-   with no fresh mappings must refuse with a sortprobe
-   instruction and change nothing. Then sortprobe both targets
-   (daily playlist and "SeTeR Rediscover") on throwaways set
-   to each target's sort, and run `daily.sh` by hand once:
-   pass is manifest written, dedupe no-op or clean, shuffle
-   APPLY OK, rediscover APPLY OK, history recorded.
+3. Daily dry check (v3.0.2): `bash daily.sh "My New Sandwich Recipe"`
+   with no fresh mappings must auto self-probe both targets
+   first and then proceed: pass is manifest written, dedupe
+   no-op or clean, shuffle APPLY OK, rediscover APPLY OK,
+   history recorded. A daily run whose self-probe fails must
+   refuse before any build and change nothing.
 4. Migration dry-run: `bash migrate-to-python.sh --dry-run`
    must change nothing. Only with Spencer's explicit approval:
    `--confirm`, then verify the v2.6 job is disabled (plist
@@ -366,11 +366,170 @@ until Spencer approves the exact change list.
    must refuse before any dump.
 5. Dedupe names: dedupe a doubled throwaway. Pass: the log
    names every removed duplicate by artist and title.
-6. 48h daily precondition: sortprobe both daily targets one
-   evening, then confirm the next two mornings' 8am runs
-   would pass the mapping check (a 47h-old mapping passes,
-   a 49h-old one refuses; test by hand with the recorded
-   timestamps, do not wait two days if a faster check works).
+6. 48h daily precondition (v3.0.2 superseded): the daily run
+   now auto self-probes each morning, so no evening probe is
+   needed. The 48h mapping freshness gate still applies at
+   build time: a 47h-old mapping passes, a 49h-old one
+   refuses (test by hand with the recorded timestamps, do not
+   wait two days if a faster check works); in normal daily
+   operation the fresh self-probe mapping makes this moot.
+
+## One-click Mac steps (v3.0.1)
+
+1. Fresh or update: download the stable zip, unzip, double-click
+   `SeTeR-Shuffle-Install.command`, answer yes once. Pass: the
+   install dir lands at `~/Documents/SeTeRShufflePython` with
+   marker `3.0.1`, the 8am `com.seter.python.daily` plist exists
+   and is loaded, and the v2.6 plist is renamed to
+   `.disabled-<timestamp>` (script and backups untouched).
+   An update from a `3.0-proposed` or `3.0` install must succeed
+   and keep differing files as `.bak` copies.
+1b. One-click no-argument regression (v3.0.1): run the installer
+   with no --playlist/--hour/--minute/--force arguments, exactly
+   as the v3.0 run that died at Step 1 with an unbound-variable
+   error on macOS bash 3.2. Pass: it proceeds past Step 1, with
+   no unbound-variable error and no empty-array expansion.
+1c. Stripped modes: if the unzipped helpers arrive mode 660
+   (no execute bit), double-clicking must still work, because
+   the installer chmods +x its own helpers at the start of a
+   run. Pass: no "permission denied" from the entry point.
+2. Decline: answer anything but yes. Pass: nothing changes.
+3. Rollback: `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
+   Pass: the v2.6 plist is restored and loaded, the Python
+   install stays in place.
+4. First scheduled run (v3.0.2 supersedes the throwaway
+   precondition): the daily run now auto self-probes both
+   daily targets itself. Pass: the daily run proceeds with no
+   manual probe in the previous 48 hours; a run whose
+   self-probe fails must refuse before any build, never
+   shuffle blind.
+
+## Self-probe and daily auto-probe Mac steps (v3.0.2)
+
+1. Self-probe on a clean target: `./run.sh selfprobe
+   "<target>"` on a playlist with distinct entries. Pass: it
+   returns a forward or reversed mapping, records THROWAWAY as
+   the target name and SORT as "self-probe: target's own
+   sort", and the target's order in Music is unchanged
+   afterwards (snapshot restored and verified). A following
+   build on that target must apply under the self-probe
+   mapping with no throwaway involved.
+2. Daily auto-probe: run `daily.sh` by hand with no manual
+   probe in the previous 48 hours. Pass: the log shows an
+   auto self-probe OK for the daily playlist AND for "SeTeR
+   Rediscover" before the mapping check, then manifest,
+   dedupe, shuffle APPLY OK, rediscover APPLY OK.
+3. Other-mapping abort: self-probe a target whose sort is not
+   buildable (e.g. a title-sorted playlist, if Music lets
+   the probe run on it). Pass: the probe returns "other",
+   deletes that target's mapping, changes nothing else, and
+   no build runs for the target until its sort changes and a
+   clean self-probe passes.
+4. Restore from snapshot after a failed probe restore: this
+   is hard to stage deliberately; if a self-probe ever
+   reports that its restore could not be verified, pass is:
+   the target's snapshot path is named in the log, the
+   measured mapping is still recorded, `./run.sh restore
+   "<target>" "<snapshot>"` returns the target to its
+   pre-probe order, and no build runs until a clean
+   self-probe passes afterwards.
+5. Doubled-playlist deadlock (expected failure, not a bug):
+   self-probe a doubled playlist. Pass: it refuses on
+   duplicate entries, changes nothing, and the daily run
+   fails closed on that target. Dedupe it by hand (or under
+   a mapping obtained another way) before it can be
+   auto-probed; do not weaken the refusal to get past this.
+
+## Trial-dedupe Mac steps (v3.0.4)
+
+1. Menu dedupe on the doubled main playlist: from the
+   v3.0.4 install, open `./run.sh menu`, choice 3,
+   "My New Sandwich Recipe". Pass: no probe is attempted
+   (the log must NOT show a sort-probe duplicate refusal);
+   the dedupe tries forward, then reversed if the first
+   does not verify, and applies the first-occurrence
+   order: 1612 entries become 806 unique songs, the log
+   names each removed duplicate, the main backup holds
+   the pre-dedupe doubled order, and a trial-dedupe
+   mapping is recorded for the target.
+2. Shuffle after trial-dedupe: run a shuffle on the same
+   playlist immediately afterwards. Pass: it reuses the
+   trial-dedupe mapping directly, with no probe and no
+   trial, and applies.
+3. Failed trial on an other-sorted playlist: dedupe a
+   doubled playlist whose sort is Title ascending (or any
+   sort that is neither forward nor reversed). Pass:
+   neither mapping verifies, the playlist is restored to
+   its doubled pre-dedupe order, no mapping is recorded,
+   and no main backup is installed.
+4. Undo after trial-dedupe: run `./run.sh undo` on the
+   deduped playlist. Pass: it returns to the doubled
+   pre-dedupe order from the main backup.
+5. Daily run on a doubled daily playlist: with the daily
+   playlist doubled, run `./daily.sh` by hand. Pass: the
+   daily probe refuses on duplicates, trial-dedupe cleans
+   the playlist and records a mapping, and the daily run
+   then continues to shuffle and rediscover.
+
+Note: step 5 of the v3.0.2 section above ("doubled-playlist
+deadlock: dedupe it by hand") is SUPERSEDED by these
+steps: trial-dedupe is now the supported path, and the
+probe's duplicate refusal itself is unchanged.
+
+## Restore-both-mappings Mac steps (v3.0.5)
+
+These steps supersede the v3.0.4 trial-dedupe steps for
+the restore behaviour only; the trial design itself is
+unchanged. Do NOT re-run trial-dedupe on v3.0.4: it
+repeats the forward-then-restore trap below.
+
+1. Trial-dedupe on the doubled main playlist: from the
+   v3.0.5 install, run `./run.sh dedupe "My New
+   Sandwich Recipe"` (or menu choice 3). Pass: the
+   forward trial apply verifies-fails under the
+   playlist's true reversed mapping, its restore
+   succeeds under the opposite (reversed) mapping, the
+   trial then proceeds to reversed, applies the
+   first-occurrence order (1612 entries become 806
+   unique songs), the main backup holds the pre-dedupe
+   doubled order, and a trial-dedupe mapping
+   (reversed) is recorded for the target. The log must
+   NOT declare CRITICAL for the forward trial.
+2. Restore that fails under both mappings: this step is
+   hard to stage deliberately and is not required to
+   pass by staging it; the pass condition, if it ever
+   occurs, is: the log names the snapshot, says the
+   restore failed under both mappings, the trial stops
+   without trying the other trial mapping, and no
+   further build runs until the playlist is restored
+   from that snapshot by hand.
+3. Subsequent shuffle after trial-dedupe: run a shuffle
+   on the same playlist immediately after step 1. Pass:
+   it reuses the trial-dedupe mapping directly, with no
+   probe and no trial, and applies.
+
+## Menu and direct auto-probe Mac steps (v3.0.3)
+
+1. Menu shuffle with no mapping: open `./run.sh menu`,
+   choice 1, a clean target playlist, no fresh mapping
+   recorded. Pass: the menu auto self-probes the target
+   itself (log shows the self-probe, then a fresh mapping),
+   then the shuffle applies; it does NOT print the old
+   "never probes" gate refusal.
+2. Menu shuffle on a doubled playlist: same menu path on a
+   playlist with duplicate entries. Pass: the auto
+   self-probe refuses on duplicates, changes nothing, the
+   menu loops back with the probe error visible, and no
+   dump or apply ran.
+3. Direct shuffle with a stale mapping: record a mapping
+   older than 48 hours, then run `./run.sh shuffle
+   "<target>"` directly. Pass: the run re-probes the
+   target itself before any dump, then applies under the
+   refreshed mapping.
+4. Direct shuffle with a fresh mapping: pass: the run
+   applies with NO re-probe (no extra rebuild time), and
+   the log says the mapping is fresh and the probe was
+   skipped.
 
 ## Stable-promotion gaps STILL open (not fixed by this prep package)
 
@@ -384,3 +543,20 @@ until Spencer approves the exact change list.
   was still unconfirmed when this package was built; a daily
   auto run needs a clean per-target mapping for the main
   playlist, and sortprobe refuses a doubled playlist.
+
+## Same-song dedupe Mac steps (v3.0.6)
+
+1. After the v3.0.6 one-click install, run
+   `./run.sh dedupe "My New Sandwich Recipe"` on the real
+   doubled playlist. Pass: trial-dedupe completes (forward
+   trial restores under reversed, reversed trial applies),
+   exact-ID duplicates are removed, and any same-song
+   entries (same artist + title, within 3 seconds when
+   lengths are known) are also removed, first copy kept,
+   with a "(same song)" reason in the log.
+2. Re-run dedupe: pass, it applies nothing (already clean
+   under the song rule).
+3. If a same-song removal was wrong (two versions the user
+   wants to keep), re-run with `SETER_DEDUPE_MATCH=id`:
+   pass, only exact-ID duplicates are removed, and the
+   log notes how many same-song entries id mode left.

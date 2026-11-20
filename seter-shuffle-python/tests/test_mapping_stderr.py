@@ -107,7 +107,9 @@ class MappingStderrTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertEqual(out, "")
         self.assertIn("GATE FAILED", err)
-        self.assertIn("sortprobe", err)
+        # v3.0.3: the gate failure names the automatic self-probe
+        # that was attempted, not a manual sortprobe to run first.
+        self.assertIn("selfprobe", err)
 
     def test_bad_mapping_word_fails_on_stderr_not_stdout(self):
         rc, out, err = _run_mapping(

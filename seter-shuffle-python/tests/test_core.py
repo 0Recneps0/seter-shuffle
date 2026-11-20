@@ -68,18 +68,19 @@ def make_track(pid: str, **overrides) -> Track:
 
 class ArtistKeyTests(unittest.TestCase):
     def test_featuring_counts_as_main_artist(self):
-        self.assertEqual(artist_key("Vector feat. Luna"), "Vector")
-        self.assertEqual(artist_key("Vector (ft. Luna)"), "Vector")
-        self.assertEqual(artist_key("Vector featuring Luna"), "Vector")
+        # Keys are lowercased (2026-11-03): comparison only, never displayed.
+        self.assertEqual(artist_key("Vector feat. Luna"), "vector")
+        self.assertEqual(artist_key("Vector (ft. Luna)"), "vector")
+        self.assertEqual(artist_key("Vector featuring Luna"), "vector")
 
     def test_featuring_off_keeps_full_name(self):
         self.assertEqual(
             artist_key("Vector feat. Luna", featuring_is_same_artist=False),
-            "Vector feat. Luna",
+            "vector feat. luna",
         )
 
     def test_plain_names_and_empty_unchanged(self):
-        self.assertEqual(artist_key("Noor"), "Noor")
+        self.assertEqual(artist_key("Noor"), "noor")
         self.assertEqual(artist_key(""), "")
         self.assertEqual(artist_key(None), "")
 
@@ -269,8 +270,10 @@ class RediscoverTests(unittest.TestCase):
     def test_weight_formula(self):
         settings = Settings()
         never = make_track("n", played_count=0, date_added=datetime(2020, 1, 1, tzinfo=timezone.utc))
-        # 0.4 base x forgotten multiplier capped at 5.
-        self.assertAlmostEqual(rediscover_weight(never, NOW, settings), 0.4 * 5)
+        # 1.0 base x forgotten multiplier capped at 5 (2026-11-18
+        # experimental: was 0.4, which capped a never-played song
+        # at 2.0 against a 10-play song's 30.0).
+        self.assertAlmostEqual(rediscover_weight(never, NOW, settings), 1.0 * 5)
         loved = make_track(
             "l", played_count=10, favorited=True, rating=100,
             played_date=datetime(2024, 1, 1, tzinfo=timezone.utc),

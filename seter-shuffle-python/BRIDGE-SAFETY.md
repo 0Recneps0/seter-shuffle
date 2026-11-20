@@ -489,13 +489,195 @@ sortprobe in the previous 48 hours, it refuses before touching
 Music and logs which sortprobe to run by hand. That refusal is
 correct under the current rules, but it means the Python daily
 job is NOT yet a drop-in replacement for v2.6's daily job.
-`daily.sh` deliberately never auto-probes: an automated probe
-would measure a throwaway whose sort nobody just verified, which
-is exactly the mapping-transfer failure of 2026-10-29 (mode 35).
-Do not "fix" this gap by auto-probing or by borrowing another
-target's mapping; settling the mapping rule is a decision for
-Spencer before any stable publish, and the daily job must keep
-failing closed until then.
+`daily.sh` deliberately never auto-probed a throwaway: an
+automated probe would measure a throwaway whose sort nobody
+just verified, which is exactly the mapping-transfer failure
+of 2026-10-29 (mode 35). Do not "fix" this gap by
+auto-probing a throwaway or by borrowing another target's
+mapping. SUPERSEDED 2026-10-29 by mode 39: Spencer settled
+the mapping rule himself (probe the target itself), and the
+daily job now auto self-probes; the throwaway auto-probe ban
+stands.
+
+## Failure mode 39: automatic self-probing (2026-10-29, Spencer's correction)
+
+Spencer corrected the throwaway-only rule: Apple Music
+remembers each playlist's own sort, so probe the actual
+target playlist itself, not a different throwaway. The
+earlier ban on using the target as the throwaway was
+over-cautious for sortprobe specifically (it still holds
+for test shuffles: never shuffle a real playlist as a test).
+A mapping measured on the target under its own sort is, by
+construction, the mapping for that target and sort, so no
+throwaway sort needs matching and no mapping transfer is
+possible. That is also why an automated probe is safe in
+this form when it was not as a throwaway probe (mode 37):
+the self-probe's sort is the target's own, not an
+unverified imitation of it.
+
+Safety properties, unchanged except as noted:
+- The probe snapshots the target first, builds a rotation
+  (never the snapshot order nor its reverse, for 5+
+  distinct songs), restores the snapshot under the measured
+  mapping, and verifies the restore before returning OK.
+  A failed restore leaves the target holding the rotation
+  order, with the snapshot file named in the log,
+  recoverable via `./run.sh restore <target> <snapshot>`.
+- An "other" mapping is still an abort, never a build, and
+  still deletes the target's mapping (the sort is then
+  unknown). For a self-probe, "other" means the target's
+  own sort is not one the bridge can build into.
+- The duplicate-entry refusal is unchanged: a self-probe on
+  a playlist with duplicate entries refuses and changes
+  nothing. A currently doubled playlist (the main playlist
+  was 1612 entries / 806 unique on 2026-10-29) therefore
+  cannot be auto-probed until it is deduped by hand, or
+  under a mapping obtained another way. The refusal is NOT
+  weakened to work around that deadlock.
+- One deliberate exception to "a failed probe deletes the
+  mapping": a probe that measured forward/reversed but
+  could not verify its own restore RECORDS that mapping,
+  so `./run.sh restore` (which needs a fresh mapping) can
+  run, while the probe still exits non-zero and no build
+  follows until the target is restored and a clean probe
+  passes. Every other probe failure still deletes it.
+- `daily.sh` auto self-probes the daily playlist AND
+  "SeTeR Rediscover" before the mapping check and before
+  any build, in that order. A first-target probe failure
+  stops the run before the second probe (the two probes
+  share one snapshot file, `$STATE/sort-probe-snapshot.txt`,
+  so a second probe would overwrite the snapshot needed
+  to restore the first target) and before any build. The
+  mapping gate itself is not dropped: after the probes,
+  each target still needs a fresh, correctly-targeted,
+  forward/reversed mapping.
+- `run.sh` records a self-probe as THROWAWAY == target and
+  SORT == "self-probe: target's own sort". A throwaway
+  sortprobe with throwaway == target is the same self-probe
+  (its sort label is replaced). The old throwaway form
+  keeps working exactly as before, and a fresh throwaway
+  probe is never used by any build or by the daily run.
+- v3.0.3 extends the same auto self-probe to every other
+  build path, closing the v3.0.2 gap Spencer hit in the
+  menu: `run.sh` menu choices, and direct shuffle /
+  rediscover / dedupe / flow / undo / restore, now call
+  ensure_mapping_for before any dump or apply. A fresh
+  mapping is reused with NO re-probe; a missing or stale
+  mapping triggers ./run.sh selfprobe on the target
+  itself, then a re-check; a failed probe aborts with
+  the probe error named, before any dump or apply, and
+  the menu loops back. Gate-failure messages no longer
+  tell the user to run a manual sortprobe first when
+  the automatic self-probe just failed; they name the
+  self-probe that was attempted. The menu's old "never
+  probes" rule is superseded: it auto-probes, and never
+  overrides a refusal or borrows another target's mapping.
+
+## Failure mode 40: trial-dedupe breaks the doubled-playlist deadlock (2026-10-29, proven on the Mac)
+
+On 2026-10-29 18:44 PT Spencer ran the v3.0.3 menu on the
+real main playlist and the auto self-probe refused on
+duplicate entries (1612 entries, 806 unique), target
+untouched, no dump or apply. Dedupe needs a mapping, and
+the probe cannot measure one on a doubled playlist: that
+is the deadlock mode 39 left open, and trial-dedupe
+(v3.0.4) breaks it WITHOUT weakening the probe.
+
+The distinction matters and must not be blurred later:
+the probe classifies a sort from a rotation WITHOUT
+changing the target's intended order, so a duplicate entry
+makes its read-back ambiguous and it must refuse. Dedupe
+changes the target to a KNOWN order (first occurrence of
+each song) and checks the result, so its mapping oracle
+is verify-after on that actual desired order, not a
+rotation. Trial-dedupe therefore tries the deduped order
+under mapping forward, verifies the list read against it,
+and on failure restores from the per-run snapshot and
+tries reversed. The first mapping that verifies wins and
+is recorded as a trial-dedupe mapping (SORT label says
+exactly that), so the next build reuses it directly. If
+neither verifies (for example an "other" sort like Title
+ascending), the playlist is restored to its pre-dedupe
+order, no mapping is recorded, and dedupe exits non-zero.
+If an attempt's restore itself fails critically
+(playlist possibly partial), the trial stops immediately
+and does NOT try the other mapping on top of a partial
+state; the per-run snapshot is named in the log.
+
+What trial-dedupe does NOT do, by design:
+- It never calls the rotation probe, and it never changes
+  the probe's duplicate refusal: sortprobe/selfprobe on a
+  doubled playlist still refuse and change nothing.
+- It never borrows another target's mapping, and it never
+  flips on failure: a failed verify restores, then the
+  other mapping is tried as a fresh, verified attempt,
+  not as a silent correction of the first.
+- A fresh mapping, when one exists, is used directly with
+  no trial. A clean playlist applies nothing and needs no
+  mapping at all.
+- Menu dedupe (choice 3) and direct dedupe use this path;
+  the daily run attempts trial-dedupe only when the daily
+  playlist's probe refused on duplicate entries specifically
+  (the probe output wording is checked, not just the exit
+  code), and a failed trial-dedupe stops the daily run
+  before shuffle/rediscover. Any other probe failure still
+  stops the daily run immediately, with no dedupe attempt.
+
+UNPROVEN ON A MAC: trial-dedupe on the real doubled
+playlist, the mapping recorded by a successful trial, and
+a subsequent shuffle after trial-dedupe. The sort-probe
+AppleScript's own "other"
+error text still says to set "the throwaway sort"; for a
+self-probe that wording is stale (there is no throwaway),
+and run.sh's failure log carries the corrected meaning.
+
+## Failure mode 41: a restore under a wrong mapping cannot verify (2026-10-29, proven on the Mac)
+
+On 2026-10-29 18:59 PT trial-dedupe (v3.0.4) on the real
+main playlist tried forward first (1612 entries, 806
+unique). The playlist's true mapping is reversed, so the
+forward dedupe build verified-failed, as it should. Then
+apply-order's internal restore rebuilt the pre-dedupe
+snapshot with the SAME forward mapping, so it
+verified-failed too and declared CRITICAL, and the
+run.sh undo restore failed the same way. The pre-undo
+snapshot file proved all 1612 entries were present at
+undo start, in the exact reverse of the snapshot, and a
+read-only diagnostic at 19:08 PT proved the current
+list-read order is exactly the pre-dedupe snapshot order
+(1612, first EC60833070C7D0B1, last 6471F2089E4E7F7D).
+No songs were lost; the playlist was back at doubled
+order and needed no restore. The trap is mechanical: a
+restore under a wrong mapping cannot verify, by the same
+mechanism as a build failure under that mapping, so a
+single-mapping restore traps itself and wrongly declares
+a playlist partial when every song is present, merely
+reversed.
+
+The fix (v3.0.5) is a RESTORE retry, not a build flip,
+and the distinction must not be blurred later. A build
+never retries its desired order under the opposite
+mapping, and a failed build still exits non-zero and
+records nothing. A restore's only job is to return to a
+known snapshot, and each restore attempt is verified
+against that snapshot before it counts, so every restore
+now tries both mappings, given first then opposite:
+apply-order's internal restore (failed build,
+delete-empty failure, library shrink), undo's pre-undo
+restore, and restore-original's snapshot put-back (the
+same trap in the run.sh restore path). Only if neither
+verifies does a script declare CRITICAL, with the
+snapshot named. In run.sh, a trial-dedupe attempt whose
+restore fails now means neither mapping restored, so the
+trial stops critical with the snapshot named and does
+not try the other trial mapping on top of a possibly
+partial state; if the restore succeeds under either
+mapping, the trial proceeds to the next mapping.
+
+UNPROVEN ON A MAC: trial-dedupe completing on the real
+doubled playlist under v3.0.5, the mapping recorded by
+a successful trial, and a subsequent shuffle after
+trial-dedupe.
 
 ## Failure mode 38: drop-in gaps closed, and the one left open (2026-10-29)
 
@@ -509,7 +691,9 @@ drop-in package closes them, with the guards intact:
   refused run, never a corrupted playlist. No other guard moved.
 - `./run.sh menu` re-invokes run.sh per choice, so menu builds
   keep every gate; the menu prints mapping status before a
-  build and never probes or overrides a refusal.
+  build and, since v3.0.3, auto self-probes on a missing
+  or stale mapping instead of refusing outright, and never
+  overrides a refusal.
 - The "Last reshuffled" stamp runs only in apply-order, only
   after verification and the library-shrink check, only for
   shuffle/flow (run.sh stamp flag), and best-effort: an

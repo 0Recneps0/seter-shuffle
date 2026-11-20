@@ -1,19 +1,551 @@
-# SeTeR Shuffle, Python experimental core
+# SeTeR Shuffle, Python core (v3.0.11)
 
-Experimental only. Stable v2.6 (AppleScript) is untouched, and the daily
-launchd run still uses it, unless and until Spencer approves the exact
-stable change list. This Python version is opt-in: nothing here
-installs itself, schedules itself, or replaces the stable install
-on its own. The stable-preparation package (installer, daily run,
-migration) is built on this branch but has never run on a Mac; see
-"Stable preparation (proposed v3.0)" below and the changelog audit.
+This tree is the v3.0.11 experimental tree: Claude's v3.0.11
+candidate (bug fixes + optional AI tagging) merged 2026-11-20
+into the 2026-11-19 experimental staging. The v2.6
+AppleScript build on main is not edited by this tree; it is only
+disabled, by an explicit migration step, when the user runs the
+one-click installer below.
 
-## Stable preparation (proposed v3.0, NOT a stable release)
+## One-click install or update (v3.0.11)
 
-Proposed stable name: v3.0. Proposed daily time: 8:00 AM, matching
-v2.6. Neither is a decision until Spencer approves the exact change
-list; the installer records `3.0-proposed`, and no v3.0 tag or
-release exists.
+Download the stable zip, unzip it, double-click
+`SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
+and answer yes once. That one confirmation installs or updates
+`~/Documents/SeTeRShufflePython` to v3.0.11, writes and loads the
+8:00 AM `com.seter.python.daily` plist, and switches the daily
+job from v2.6 to Python (migration), unless v2.6 is already
+disabled. Backups, logs, and Rediscover history are kept; the
+v2.6 script and backups are never deleted or edited; rollback
+is `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
+
+EXPERIMENTAL 2026-11-20: Claude's v3.0.11 candidate merged into the experimental line
+(not stable, not installed anywhere, on top of the 2026-11-19
+experimental staging). What it adds: a real time-skew fix (the
+dump writes local wall-clock time labelled Z, so every age was off
+by 7-8 hours; "now" is now measured in the same frame), a
+single-run lock for run.sh and daily.sh (a second run is refused
+with exit 3 instead of interleaving with the first), an optional
+probe cadence (SETER_PROBE_MAX_AGE_HOURS skips a self-probe while
+the mapping is fresh), optional AI tagging for Flow through macOS
+`fm` (off by default; on-device, fail-soft, cached), an optional
+--split-collabs artist rule (off by default), and local-date
+Rediscover history. Three of its fixes already existed in the
+experimental line (artist case keys, artist-key whitespace trim,
+Rediscover weight-ordered fill); the merge keeps the stricter
+implementation of each (NFKC + casefold comparison keys, the
+weight-ordered fill pinned by the experimental fill test). Version
+is 3.0.11 throughout, so an install stamps itself 3.0.11, not
+3.0.10. Nothing here has run on a Mac yet: the lock, the probe
+cadence, and the `fm` self-test are all unproven on real hardware,
+and the AI path needs `sudo fm license` once before first use.
+
+EXPERIMENTAL 2026-11-19: Shuffle repair scans for a fixing swap when random tries miss it
+(not stable, not installed anywhere, on top of the 2026-11-18
+experimental staging). The repair pass fixes a same-artist clash by
+swapping the clashing song with a random partner, but with 30 tries
+over a big list a rare good partner is usually never drawn, so the
+pass gave up on clashes a single swap would have fixed: one artist
+on 45 of 100 songs left 1.60 clashes on average. When the random
+tries fail now, the pass scans partners in order and takes the first
+swap that reduces the local clash count, on its own 5,000-evaluation
+budget so it cannot starve later clashes: that pool comes back 1.12
+average (zero-clash runs 9 to 15 of 40), and a 846-song pool with one
+artist on 300 comes back 77.1 to 74.8. Same-artist partners are still
+skipped, the output is still a permutation of the same songs, and the
+pass is still best effort. Mac spot check if he wants it: run the
+tests inside the unzipped experimental tree (`python3 -m unittest
+discover -s tests -q`), which prints only and changes nothing; do not
+run `./run.sh shuffle` on a real playlist to see it, that rebuilds
+the playlist. Still unproven on a Mac until a real shuffle runs
+through it. Nothing else in this build changes: only shuffle.py, one
+new test file, and one updated expectation in
+test_spread_same_key_skip.py were touched, no bridge, run.sh,
+daily.sh, cli.py, or installer file.
+
+EXPERIMENTAL 2026-11-18: Rediscover's never-played songs start at the played-song base
+(not stable, not installed anywhere, on top of the 2026-11-17
+experimental staging). A never-played song added long ago is the most
+forgotten song possible, but the old 0.4 base capped it at 2.0 against
+a 10-play song's 30.0, a 15:1 ratio no amount of forgottenness could
+close: in an even 50/50 pool never-played songs took 47 of 600 picks
+(7.8%) over 20 seeds. The base is now 1.0, the same base every played
+song starts from, so the plays tier (not a 60% unplayed discount) is
+what separates played from unplayed: a never-played song tops out at
+5.0, still below a once-played song's 7.5 at the same forgottenness.
+Measured live here after the change: the same even pools come back
+105 of 600 (17.5%) against 10-play songs and 251 of 600 (41.8%)
+against once-played songs. No eligibility, history, cap, or ordering
+rule changes, and favorited/rated/skip boosts still multiply the base
+exactly as before. Mac spot check if he wants it: run the tests
+inside the unzipped experimental tree (`python3 -m unittest discover
+-s tests -q`), which prints only and changes nothing; do not run
+`./run.sh rediscover` on a real playlist to see it, that rebuilds the
+Rediscover playlist and records history. Still unproven on a Mac until
+a real Rediscover runs through it. Nothing else in this build changes:
+only rediscover.py, one new test file, and one updated expectation in
+test_core.py were touched, no bridge, run.sh, daily.sh, cli.py, or
+installer file.
+
+EXPERIMENTAL 2026-11-17: Flow's greedy walk stops stranding hot songs at the end
+(not stable, not installed anywhere, on top of the 2026-11-16
+experimental staging). On the fall the walk could spend a slot on a
+cold song that fits a later target perfectly, leaving a hot song with
+no target left to land on, so the playlist ended on that hot song
+after the cold tail: a 7-song pool [40, 44, 56, 69, 72, 87, 91] came
+back [44, 56, 72, 91, 69, 40, 87], ending on the 87. The walk now
+checks each slot for a stranded song, one that fits this slot clearly
+better than any later slot and fits no later slot well (best later
+fit at least 20 off, and at least 10 worse than its fit now), and
+picks it now, so the fall keeps falling. Over 2,000 random pools the
+rule improves the total arc error in 445 pools, worsens it in none,
+and cuts playlists ending 20+ hotter than they start from 811 to
+488 (the rest have no cold tail at all). Dense pools are untouched,
+artist spacing still beats it, and it uses the rescaled targets under
+the relative arc too. Mac spot check if he wants it: run the tests
+inside the unzipped experimental tree (`python3 -m unittest discover
+-s tests -q`), which prints only and changes nothing; do not run
+`./run.sh flow` on a real playlist to see it, that rebuilds the Flow
+playlist. Still unproven on a Mac until a real Flow runs through it.
+Nothing else in this build changes: only flow.py, one new test file,
+and one updated expectation in the relative-arc test were touched, no
+bridge, run.sh, daily.sh, cli.py, or installer file.
+
+EXPERIMENTAL 2026-11-16: Rediscover's last-resort fill takes the highest-weight songs left
+(not stable, not installed anywhere, on top of the 2026-11-15
+experimental staging). When the staged sampling passes cannot fill the
+Rediscover target, the fill took the front of the candidate list in
+library order, so a weak song sitting early in the dump could take a
+slot over a stronger song sitting later. Verified live here with a
+rigged draw stream that starves sampling: a 6-song pool with weights
+rising down the library order came back with the 7.5-weight song
+instead of the 20-weight one. The fill now takes the highest-weight
+unpicked candidates, ties keeping library order, so an equal-weight
+pool fills exactly as before; the sampling passes are untouched. Mac
+spot check if he wants it: run the tests inside the unzipped
+experimental tree (`python3 -m unittest discover -s tests -q`), which
+prints only and changes nothing; do not run `./run.sh rediscover` on a
+real playlist to see it, that rebuilds the Rediscover playlist and
+records history. Still unproven on a Mac until a real Rediscover runs
+through it. Nothing else in this build changes: only rediscover.py,
+one new test file, and one docstring line in the staged-relaxation
+test were touched, no bridge, run.sh, daily.sh, cli.py, or installer
+file.
+
+EXPERIMENTAL 2026-11-15: `record-history` prints a confirmation
+(not stable, not installed anywhere, on top of the 2026-11-14
+experimental staging). Every other daily step leaves a trace in the
+run log, but record-history appended the picked IDs to the cooldown
+history file and printed nothing, so the log had no visible proof the
+cooldown was recorded after a successful Rediscover apply, and an empty
+IDs file passed through just as silently. It now prints one line:
+"History recorded: N IDs appended to <history file> (cooldown 14
+days).", with honest variants for an empty IDs file and for a cooldown
+under 1 day. It is print-only, the history rule and file content are
+unchanged, and run.sh already tees this step's stdout into the run log.
+Mac spot check if he wants it: run the tests inside the unzipped
+experimental tree (`python3 -m unittest discover -s tests -q`), which
+prints only and changes nothing; do not run `./run.sh rediscover` on a
+real playlist to see it, that rebuilds the Rediscover playlist and
+records history. Still unproven on a Mac until a real Rediscover runs
+through it. Nothing else in this build changes: only cli.py,
+rediscover.py (now returns the appended count), and one new test file
+were touched, no bridge, run.sh, daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-14: the real `rediscover` command prints the pick summary
+(not stable, not installed anywhere, on top of the 2026-11-13
+experimental staging). rediscover-preview has printed the "Rediscover picks:
+N songs, X never played, Y favorited, Z rated 4-5 stars, forgotten A..B days,
+max C per artist." line since 2026-11-07, but the real `rediscover` command
+printed only the first 25 picks, so the daily run log hid what the applied
+picks were actually made of: how much was never played, how much was
+favorited or highly rated, how long the picks were forgotten, and whether one
+artist dominates the list. It now prints the same line after the preview list,
+inside the existing non-quiet output. It is print-only, describes picks
+already computed, and changes no playlist and no file; --quiet still prints
+nothing. Mac spot check if he wants it: run the tests inside the unzipped
+experimental tree (`python3 -m unittest discover -s tests -q`), which prints
+only and changes nothing; do not run `./run.sh rediscover` on a real playlist
+to see it, that rebuilds the Rediscover playlist and records history. Still
+unproven on a Mac until a real Rediscover runs through it. Nothing else in
+this build changes: only cli.py, rediscover.py (docstring), and one existing
+test file were touched, no bridge, run.sh, daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-13: the real `flow` command prints the arc summary
+(not stable, not installed anywhere, on top of the 2026-11-12
+experimental staging). flowPreview has printed the "Flow arc: N songs,
+energies lo..hi, starts A, peaks P at #K, ends B." line since 2026-11-02,
+but the real `flow` command printed only the first 25 songs, so the daily
+run log hid whether the applied order actually rose and fell: a flat first
+page, or a pool that cannot fall after the peak, showed nothing about the
+full order. It now prints the same line after the preview list, inside the
+existing non-quiet output. It is print-only, describes an order already
+computed, and changes no playlist and no file; --quiet still prints
+nothing. Mac spot check if he wants it: run the tests inside the unzipped
+experimental tree (`python3 -m unittest discover -s tests -q`), which
+prints only and changes nothing; do not run `./run.sh flow` on a real
+playlist to see it, that rebuilds the Flow playlist. Still unproven on a
+Mac until a real Flow runs through it. Nothing else in this build changes:
+only cli.py and one existing test file were touched, no bridge, run.sh,
+daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-12: shuffle prints a full-list spacing summary
+(not stable, not installed anywhere, on top of the 2026-11-11
+experimental staging). shuffle used to print only the first 25 songs,
+so the first page hid whether the full order actually held its artist
+spacing: the repair pass is best effort, and when one artist dominates
+the list clashes remain with nothing in the output saying so. It now
+prints one extra line after the preview list covering the whole order:
+"Shuffle: N songs, X artists, C same-artist clashes within spacing S,
+max M by one artist." The clash count uses the same rule the repair
+pass uses, and the summary describes an order already computed, so it
+changes no playlist and no file. Mac spot check if he wants it: run
+the tests inside the unzipped experimental tree (`python3 -m unittest
+discover -s tests -q`), which prints only and changes nothing; do not
+run `./run.sh shuffle` on a real playlist to see it, that shuffles the
+playlist. Still unproven on a Mac until a real shuffle runs through
+it. Nothing else in this build changes: only shuffle.py, cli.py, and
+one new test file were touched, no bridge, run.sh, daily.sh, or
+installer file.
+
+EXPERIMENTAL 2026-11-11: artist keys ignore leading/trailing
+whitespace (not stable, not installed anywhere, on top of the
+2026-11-10 experimental staging). Rips and taggers leave stray
+spaces in artist metadata, and the 2026-11-03 case fix did not cover
+them: "Drake" and "Drake " counted as different artists, so they
+could land back-to-back in a shuffle or Flow and count separately
+toward Rediscover's max-per-artist. The featuring truncation only
+stripped the tail, so " Drake feat. X" kept its leading space, and a
+whitespace-only artist ("   ") counted as a real artist instead of
+never clashing like "" and None. artist_key now strips the raw
+string up front and maps whitespace-only to "". Mac spot check if
+he wants it: none needed, this is pure Python tested here, no Mac
+run proves anything extra. Nothing else in this build changes: only
+artists.py and one new test file were touched, no bridge, run.sh,
+daily.sh, cli.py, or installer file.
+
+EXPERIMENTAL 2026-11-10: in-memory dedupe validation accepts a
+same-song order when given the kept set (not stable, not installed
+anywhere, on top of the 2026-11-09 experimental staging). The safety
+gate has two forms of the same dedupe rule, and they disagreed: the
+file form recomputes the kept set from the dump, but the in-memory
+form only saw IDs, so it demanded every unique ID exactly once and
+refused a correct dedupe order whenever two IDs were the same song
+stored twice. validate_order_text now takes an optional
+dedupe_kept_ids (the kept set split_duplicates computes); with it,
+the check matches the file form, and without it the old ID-level
+rule stays and is documented. Mac spot check if he wants it: none
+needed, this is pure Python tested here, no Mac run proves anything
+extra. Nothing else in this build changes: only validate.py and one
+new test file were touched, no bridge, run.sh, daily.sh, cli.py, or
+installer file.
+
+EXPERIMENTAL 2026-11-09: audit counts genre strings
+case-insensitively (not stable, not installed anywhere, on top of
+the 2026-11-08 experimental staging). The audit's top-genres list
+exists so the next genre-map edit is driven by real data, but it
+counted raw genre strings, so "Rock", "rock", and "ROCK" were three
+genres: genre_distinct was inflated and one genre split across
+three lines. Flow itself matches genres case-insensitively, so the
+audit's counting contradicted how genres are actually used. Genre
+strings are now grouped by their lowercased form, and the displayed
+label keeps the first-seen casing so the list still reads as the
+library wrote it. Mac spot check if he wants it: `./run.sh audit`
+prints the report and changes nothing. Still unproven on a Mac
+until he runs it on a real library dump. Nothing else in this build
+changes: only audit.py and one new test file were touched, no
+bridge, run.sh, daily.sh, cli.py, or installer file.
+
+EXPERIMENTAL 2026-11-08: audit's Flow energy range now uses the real
+clock (not stable, not installed anywhere, on top of the 2026-11-07
+experimental staging). The audit's "Flow energies (eligible)" line
+used to score every track clock-free, while Flow itself scores with
+the real clock, so for a library with recently played or recently
+added songs the audit's range was wrong by up to 5 points against
+what flowPreview actually builds (a song played 5 days ago scores
+56 in Flow but 53 in a clock-free audit). audit_library now takes
+an optional reference time and the CLI passes the real clock, so
+the audit's range is the range Flow builds; without a reference
+time the old deterministic behaviour is unchanged, and the BPM
+path never uses the clock either way. Mac spot check if he wants
+it: `./run.sh audit` prints the report and changes nothing. Still
+unproven on a Mac until he runs it on a real library dump. Nothing
+else in this build changes: only audit.py, cli.py, and one new test
+file were touched, no bridge, run.sh, daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-07: rediscover-preview prints a full-list pick
+summary (not stable, not installed anywhere, on top of the
+2026-11-06 experimental staging). rediscover-preview used to print
+only the first 25 picks, so the first page hid what the full list is
+actually made of. It now prints one extra line after the preview list
+covering the whole pick list: "Rediscover picks: N songs, X never
+played, Y favorited, Z rated 4-5 stars, forgotten A..B days, max C
+per artist." The forgotten range is left out when no pick has a usable
+date. The plain rediscover command is unchanged, and the summary
+describes picks already computed, so it changes no playlist. Mac spot
+check if he wants it: `./run.sh rediscover-preview` prints picks and
+the summary line and writes nothing. Still unproven on a Mac until he
+runs it on a real library dump. Nothing else in this build changes:
+only rediscover.py, cli.py, and one new test file were touched, no
+bridge, run.sh, daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-06: shuffle repair stops wasting tries on
+same-artist swaps (not stable, not installed anywhere, on top of
+the 2026-11-05 experimental staging). The spacing repair pass
+tried up to 30 random swap partners per clash, but swapping two
+songs by the same artist can never change the clash count, so
+those tries were always wasted, worst when one artist dominates
+the list. Same-artist partners are now skipped without burning a
+try, and draws per clash are capped at 300 so the loop cannot
+spin. Mac spot check if he wants it: `python3 -m unittest
+discover -s tests -q` inside the unzipped experimental tree
+prints only and changes nothing; there is no preview-only shuffle
+command, so do not run a shuffle on a real playlist to test this.
+Still unproven on a Mac until a real library shuffle runs
+through it. Nothing else in this build changes: only shuffle.py
+and one new test file were touched, no bridge, run.sh, daily.sh,
+or installer file.
+
+EXPERIMENTAL 2026-11-05: Flow stops jumping ahead of its own arc
+(not stable, not installed anywhere, on top of the 2026-11-04
+experimental staging). The walk's distance term is symmetric, so on
+a near-tie it could pick a song hotter than the target on the rise
+or colder than the target on the fall, zigzagging around the arc
+instead of tracking it; one pinned case ended a playlist on its
+hottest song against a falling tail. Each step now adds a small +5
+when a candidate sits on the wrong side of the target for the arc's
+direction at that slot: above it while rising, below it while
+falling. The +5 only breaks near-ties, a candidate 6+ closer still
+wins, artist spacing still wins over everything, and a flat pool is
+unaffected. Mac spot check if he wants it: `./run.sh flowPreview`
+prints the order and the arc summary line and writes nothing.
+Still unproven on a Mac until he runs it on a real library dump.
+Nothing else in this build changes: only flow.py, one new test
+file, and one updated test expectation were touched, no bridge,
+run.sh, daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-04: Rediscover relaxes its variety rules one
+at a time (not stable, not installed anywhere, on top of the
+2026-11-03 experimental staging). When a Rediscover pool was too
+small to fill under both the per-artist cap and the cooldown, the
+picker dropped both rules at once, so it could repeat a recently
+picked song even when an extra song by an already-picked artist
+would have filled the slot. Now it relaxes one rule at a time:
+both rules, then cooldown only, then artist cap only, then
+neither, then the usual front-of-list fill. A pool that fills
+under both rules behaves exactly as before. Mac spot check if he
+wants it: `./run.sh rediscover-preview` prints picks and writes
+nothing; on a normal-size library it will likely never reach the
+new passes, so that check is safe, not proof. Still unproven on
+a Mac until a small pool actually hits the staged passes. Nothing
+else in this build changes: only rediscover.py and one new test
+file were touched, no bridge, run.sh, daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-03: artist keys are case-insensitive
+(not stable, not installed anywhere, on top of the 2026-11-02
+experimental staging). The artists module always documented
+case-insensitive matching, but the Python port compared keys with
+==, so the same artist spelled differently across rips ("Drake"
+vs "drake") counted as two artists and defeated spacing in shuffle
+and Flow and the max-per-artist count in Rediscover. artist_key
+now returns a lowercased key; keys are only compared, never
+displayed, so no output text changes. Mac spot check if he wants
+it: `./run.sh rediscover-preview` prints picks and writes nothing.
+Still unproven on a Mac until he runs it on a real library dump.
+Nothing else in this build changes: only artists.py, test_core.py
+expectations, and one new test file were touched, no bridge, run.sh,
+daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-02: flowPreview prints a full-list arc summary
+(not stable, not installed anywhere, on top of the 2026-11-01
+experimental staging). flowPreview used to print only the first 25
+songs, so a flat first page hid whether the full Flow order actually
+rises and falls. It now prints one extra line after the preview list
+covering the whole order: "Flow arc: N songs, energies lo..hi, starts
+X, peaks Y at #P, ends Z." The plain flow command is unchanged, and
+the summary describes an order already computed, so it changes no
+playlist. Mac test if he wants it: `./run.sh flowPreview` and read
+the last line. Still unproven on a Mac until he runs it on a real
+library dump. Nothing else in this build changes: only flow.py,
+cli.py, and one new test file were touched, no bridge, run.sh,
+daily.sh, or installer file.
+
+EXPERIMENTAL 2026-11-01: audit counts same-song library copies
+(not stable, not installed anywhere, on top of the 2026-10-31
+experimental staging). The audit command now reports how many
+library tracks are extra copies of the same song (same artist +
+title stored as different library tracks, same rule dedupe uses),
+as two numbers: extra copies and how many songs have them. That
+explains a dedupe total that lands below the library size instead
+of looking like songs went missing. Mac test if he wants it:
+`./run.sh audit` on his library dump prints one new line,
+"Same-song duplicates: N extra copies across M songs". Audit
+changes nothing, so it is safe to try without touching any
+playlist. Nothing else in this build changes: only audit.py and
+one new test file were touched, no bridge, run.sh, daily.sh, or
+installer file.
+
+EXPERIMENTAL 2026-10-31: daily dedupe fallback for all three
+targets (not stable, not installed anywhere, on top of v3.0.9
+plus the 2026-10-30 Flow relative arc). On 2026-10-31 the
+v3.0.9 daily run cleaned the main playlist, then exited at
+the SeTeR Rediscover probe's duplicate refusal before shuffle,
+flow, or rediscover ran, because only the main playlist had
+a fallback. Now a duplicate-only probe refusal for the main
+playlist, SeTeR Rediscover, or SeTeR Flow triggers one
+in-place dedupe for that target (snapshot before, verified
+after, 0 rebuilds, no mapping recorded) plus one re-probe of
+the clean target for a fresh mapping, and the daily run then
+continues. Any other probe failure, a failed dedupe, or a
+re-probe that still refuses stops the run with no second
+dedupe attempt. Mac test if he wants it: dedupe "SeTeR
+Rediscover" by hand, then re-run daily.sh, is no longer the
+only way past a doubled generated playlist; the next daily
+run should clean it and finish on its own. Still unproven on
+a Mac until a real daily run hits a doubled Rediscover or
+Flow playlist and completes.
+
+EXPERIMENTAL 2026-10-30: Flow relative arc (not stable, not
+installed anywhere, on top of v3.0.9). This is the 2026-10-29
+held build, ported unchanged onto v3.0.9; it is not in stable
+v3.0.9. On Spencer's 2026-10-29 audit his library had BPM
+missing on 100% of tracks and fallback energies spanning only
+47..68, so the fixed 45..90..40 arc aimed at a peak the pool
+cannot reach. When every Flow pool track is BPM-missing and
+the pool energy range is at least 10, the arc is now rescaled
+into the pool's own [min, max] range: start near the pool
+floor, peak at the pool max, end at the pool floor. A pool
+with any BPM track keeps the fixed arc exactly, and a narrow
+fallback range keeps it too. Mac test if he wants it:
+`./run.sh flowPreview` on a BPM-less library should show a
+rise and fall inside the pool's own energy range, not a climb
+toward 90 that never arrives. Preview changes nothing, so it
+is safe to try without touching any playlist. Nothing else in
+this build changes: no bridge, run.sh, daily.sh, or installer
+file was touched for this change.
+
+NEW IN v3.0.2: the 8am daily run AUTO SELF-PROBES. Before it
+builds anything, it runs `./run.sh selfprobe` on the daily
+playlist and on "SeTeR Rediscover", measuring each mapping on
+the target itself under its own sort (Music remembers each
+playlist's own sort, so no throwaway sort needs matching and
+no mapping can transfer between targets). The 48-hour manual
+probe chore is gone; the mapping gate stays: a failed
+self-probe fails the whole daily run closed before any build,
+and an "other" mapping still aborts. A self-probe on a
+playlist with duplicate entries refuses and changes nothing,
+so a doubled playlist cannot be auto-probed; since v3.0.4
+it is cleaned by trial-dedupe instead (see NEW IN v3.0.4
+below), which verifies its own mapping without probing.
+You can also self-probe by hand any time:
+`./run.sh selfprobe "My New Sandwich Recipe"`.
+
+NEW IN v3.0.3: menu and direct builds AUTO SELF-PROBE too.
+v3.0.2 only auto-probed the daily run, so the menu still
+refused on a missing mapping. Now every build path (menu,
+direct shuffle, rediscover, dedupe, flow, undo, restore)
+self-probes the target itself first when no fresh mapping
+is recorded, and reuses a fresh mapping with no re-probe.
+A failed probe aborts before any dump or apply, with the
+probe error named. A doubled playlist still fails closed
+at the probe (duplicate refusal unchanged) until deduped.
+
+NEW IN v3.0.4: trial-dedupe breaks that deadlock. Dedupe
+no longer probes first: a clean playlist applies nothing
+and needs no mapping, a fresh mapping is used directly,
+and otherwise dedupe tries its known deduped order
+(first occurrence of each song) under mapping forward,
+verifies the list read against it, and on failure
+restores from the per-run snapshot and tries reversed.
+The first mapping that verifies wins and is recorded, so
+the next build reuses it; if neither verifies, the
+playlist is restored to its pre-dedupe order and no
+mapping is recorded. The probe itself is untouched by
+this: sortprobe/selfprobe on a doubled playlist still
+refuse, because the probe's oracle is a rotation
+classification, while dedupe's oracle is verify-after on
+the actual desired order. The daily run attempts
+trial-dedupe only when the daily playlist's probe refused
+on duplicate entries specifically.
+
+NEW IN v3.0.5: restores try BOTH mappings before declaring
+CRITICAL. On 2026-10-29 18:59 PT trial-dedupe tried forward
+first on the real main playlist (1612 entries, 806 unique);
+its true mapping is reversed, so the forward build
+verified-failed, as it should, and then the restore inside
+that same apply rebuilt the snapshot with the SAME forward
+mapping, so it verified-failed too, and the undo restore
+failed the same way. No songs were lost: the pre-undo file
+proved all 1612 entries were present, in the exact reverse
+of the snapshot, and a read-only diagnostic afterwards
+proved the current list-read order is exactly the
+pre-dedupe snapshot order, so the playlist needs no
+restore. The trap was that a restore under a wrong mapping
+cannot verify, by the same mechanism as the build failure.
+Now every restore (apply-order, undo's pre-undo restore,
+and restore-original's snapshot put-back) tries the given
+mapping first, then the opposite, each verified against
+the snapshot it is returning to, and only declares
+CRITICAL if neither verifies. This is NOT a build flip:
+a failed build still exits non-zero and records nothing;
+a restore retries only to return to a known snapshot.
+A trial-dedupe attempt whose restore fails under both
+mappings stops critical with the snapshot named and does
+not try the other trial mapping on top of a possibly
+partial state.
+
+NEW IN v3.0.6: same-song dedupe, plus setup fixes. Dedupe now
+removes a song stored as a different library track, not just an
+exact-ID repeat: same artist + title after case/accent/space
+normalisation, and within 3 seconds of length when both lengths
+are known (the dump now carries duration). Titles are never
+trimmed, so a live or remastered version is a different song,
+and a track with no artist or no title is matched by ID only.
+The first copy in the playlist stays. To go back to exact-ID
+matching only: `SETER_DEDUPE_MATCH=id ./run.sh dedupe
+"Playlist"`. The Rediscover picker also gives one slot to a
+song that exists twice in the library. Tradeoff, stated
+plainly: same artist + title within 3 seconds merges, first
+copy stays, and a dump with unknown durations merges on
+names alone. Setup fixes: warn() actually prints its
+message, re-running setup from the installed copy no longer
+hits a same-file copy error, uninstall refuses a directory
+that is not a SeTeR install, and the installer note now
+states the daily self-probe behaviour instead of the stale
+manual sortprobe instruction.
+
+NEW IN v3.0.7: no more redundant undo restore. When an apply
+fails but apply-order's own error says it already restored the
+playlist from its per-run snapshot, run.sh now skips the undo
+restore and returns to the caller, so a trial-dedupe moves
+straight to the other mapping instead of rebuilding the same
+snapshot 3 more times and then stopping on undo's "restored to
+pre-undo state" exit. A CRITICAL apply, where the internal
+restore failed under both mappings, still runs undo as before.
+This fixes the 2026-10-29 21:01 trial-dedupe, which rebuilt
+the playlist 5 times and stopped at 1612 without ever trying
+reversed, even though both restores had succeeded.
+
+NEW IN v3.0.9: dedupe in place, plus a fuller daily run. Daily now refreshes three playlists in order: dedupe + shuffle the main playlist, refresh SeTeR Flow, then refresh SeTeR Rediscover, each with its own self-probe and mapping check first, and a failure stops the run before the next refresh. Shuffle, Flow, and Rediscover each stamp their description "Last reshuffled: <Mac local date/time at the verified apply>", so the daily run leaves that morning's time on all three, not a stale manual-run time; dedupe does not stamp.
+
+NEW IN v3.0.9: dedupe in place. Spencer set a 1-2 rebuild cap for dedupe on 2026-10-30, and a rebuild is the wrong tool for it: dedupe now deletes only the duplicate entries, in descending position order, and leaves every other song exactly where it was. That is 0 rebuilds on success, no mapping, no probe, no trial, and no mapping recorded; a rebuild happens only if a failed run needs its snapshot restore. Presence dedupe (v3.0.8) was built but never published and is superseded by this; its presence verify code remains in apply-order, unused by dedupe.
+
+NEW IN v3.0.8 (built, never published, superseded by v3.0.9): dedupe verifies presence only. Per Spencer
+2026-10-30, dedupe need not keep the original order, so a
+dedupe apply now checks the landed song set, same count and
+every desired song present, in any order. That makes dedupe
+need no mapping, no probe, and no trial: one build lands
+the unique songs and passes, under either mapping. A
+presence success proves nothing about the sort, so dedupe
+records no mapping; the next shuffle or flow self-probes
+the now-clean playlist for its true mapping. Shuffle,
+flow, and every restore still verify exact order.
+
+## Stable preparation (v3.0.9)
+
+Stable name: v3.0.9. Daily time: 8:00 AM, matching v2.6. The
+installer records `3.0.9`. No tag or release is created by
+this tree itself; publishing is a separate, explicit step.
 
 ```bash
 bash setup-python.sh                     # install + 8:00 AM daily run
@@ -30,11 +562,11 @@ dir `~/Documents/SeTeRShufflePython`; new plist label
 `com.seter.python.daily`; the daily hour lives in exactly one place
 (`DAILY_HOUR`/`DAILY_MINUTE` at the top of `setup-python.sh`).
 Daily facts: `daily.sh` writes a daily library manifest (kept 14
-days), dedupes, shuffles, then refreshes "SeTeR Rediscover"; it
-REFUSES without fresh (<48h) per-target mappings for both targets
-and never auto-probes, so an evening sortprobe covers the next
-two mornings' 8am runs, and a run without a probe in the previous
-48 hours fails closed. The former stable-prep gaps are closed in
+days), auto self-probes both targets, then dedupes, shuffles,
+and refreshes "SeTeR Rediscover"; it still REFUSES without a
+fresh (<48h) per-target mapping for each target after the
+self-probes, and a failed self-probe fails the run closed
+before any build. The former stable-prep gaps are closed in
 the drop-in package: `./run.sh menu` (Terminal menu; it
 pre-checks the target's mapping and refuses before any dump
 when none is recorded, and a blank size no longer crashes on
@@ -278,7 +810,7 @@ edit `run.sh` if you want different ones baked in.
 
 ## What was actually tested, and what was not
 
-Tested here, for real (141 tests, all passing):
+Tested here, for real (518 tests, all passing):
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -305,7 +837,7 @@ for the delete-empty handler in all four bridge scripts, the
 per-run backup chain, the sort-probe mapping deletion on
 failure, and the restore command, plus the .3 mapping-gate
 error visibility, plus the .5 per-target mapping guard and
-the undo/restore -1728 empty fallback (161 tests total):
+the undo/restore -1728 empty fallback (518 tests total):
 failures in `mapping_for_build` and
 `probe_mode` (both called inside `$(...)`) now go to the log
 file AND stderr via `logerr()`, never to stdout, so a refused
@@ -342,13 +874,15 @@ BRIDGE-SAFETY.md mode 29):
 Suggested Mac verification order: `./check-python.sh` first, then
 the BRIDGE-SAFETY.md Stage 0 sequence: the read-only diagnostic on
 the target, the UI sort check in Music, then
-`./run.sh sortprobe "<throwaway>" "<target>" "<sort-label>"`
-on a throwaway set to the target's sort (Playlist Order
-descending for the 2026-10-28 failure), which must return a
-forward or reversed mapping and restore the throwaway; an
-"other" mapping aborts everything by design. The mapping is
-recorded for that target only; a build for any other target
-refuses until that target has its own sortprobe. The old `./run.sh probe` (fresh 3-song probe) is a
+`./run.sh selfprobe "<target>"` (v3.0.2, preferred: the target
+itself, under its own sort), or `./run.sh sortprobe
+"<throwaway>" "<target>" "<sort-label>"` on a throwaway set to
+the target's sort (Playlist Order descending for the 2026-10-28
+failure), which must return a forward or reversed mapping and
+restore the probed playlist; an "other" mapping aborts
+everything by design. The mapping is recorded for that target
+only; a build for any other target refuses until that target
+has its own probe. The old `./run.sh probe` (fresh 3-song probe) is a
 standalone sanity check only and does not substitute for the
 sort-matched probe. Then `./run.sh audit` (changes nothing, and
 answers whether BPM is truly missing or the dump is failing), then
@@ -371,3 +905,26 @@ this procedure runs on a real playlist first, and nothing runs on
 - Artist spacing is best effort. With spacing=2, at least 2 songs must
   sit between repeats, so a library dominated by one or two artists
   cannot be fully separated, and the pass gives up rather than looping.
+
+
+## What counts as a duplicate (dedupe)
+
+`./run.sh dedupe <playlist>` and the daily dedupe step remove a playlist
+entry when it is
+
+- the same Music track as an earlier entry (same persistent ID), or
+- the same song stored as a different library track: same artist and
+  title after ignoring case, accents-as-written and extra spaces, and,
+  when the dump knows both lengths, within 3 seconds of each other.
+
+The first copy in the playlist stays. Titles are never trimmed, so
+"Song (Live)" or "Song - Remastered" are different songs, and a live or
+radio-edit version with a clearly different length is kept. Tracks with
+no artist or no title are matched by ID only. Only playlist entries are
+removed; nothing leaves your library, and the usual backup / verify /
+restore gates apply.
+
+To go back to exact-ID matching only: `SETER_DEDUPE_MATCH=id ./run.sh dedupe "Playlist"`
+(for the daily run, add `SETER_DEDUPE_MATCH=id` to the launchd plist's
+`EnvironmentVariables`). The Rediscover picker also gives one slot to a
+song that exists twice in the library.

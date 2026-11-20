@@ -247,14 +247,16 @@ class TestPerTargetMappingStructure(unittest.TestCase):
     def test_sortprobe_records_target_and_sort(self):
         self.assertIn("TARGET: ", RUN_TEXT)
         self.assertIn("SORT: ", RUN_TEXT)
-        block = RUN_TEXT.split('if [ "$CMD" = "sortprobe" ]; then')[1]
-        block = block.split("\nfi\n", 1)[0]
+        block = RUN_TEXT.split('if [ "$CMD" = "sortprobe" ] || [ "$CMD" = "selfprobe" ]; then')[1]
+        block = block.split("# Undo needs no dump", 1)[0]
         self.assertIn("PROBE_TARGET", block)
         self.assertIn("PROBE_SORT", block)
+        # v3.0.2: the self-probe label is recorded for self-probes.
+        self.assertIn("SELF_PROBE_LABEL", block)
 
     def test_sortprobe_failure_deletes_per_target_file_only(self):
-        block = RUN_TEXT.split('if [ "$CMD" = "sortprobe" ]; then')[1]
-        block = block.split("\nfi\n", 1)[0]
+        block = RUN_TEXT.split('if [ "$CMD" = "sortprobe" ] || [ "$CMD" = "selfprobe" ]; then')[1]
+        block = block.split("# Undo needs no dump", 1)[0]
         self.assertIn('rm -f "$MAP_FILE"', block)
 
     def test_build_callers_pass_target_and_print_provenance(self):

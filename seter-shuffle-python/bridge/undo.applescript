@@ -24,8 +24,20 @@
 --    which mirrors seter_shuffle/order_direction.py's mapping
 --    section exactly). Verification ALWAYS compares the list read
 --    against the backup order, never against the duplicate order.
---    There is NO flip-on-failure: a failed verify restores the
---    pre-undo snapshot and exits non-zero.
+--    There is NO flip-on-failure for a BUILD: a failed verify
+--    never retries the backup order under the opposite mapping
+--    to land it, and still exits non-zero. A RESTORE is
+--    different (2026-10-29, mode 41): its only job is to return
+--    to a KNOWN snapshot, each attempt verified against that
+--    snapshot, so the pre-undo restore tries BOTH mappings,
+--    given first then opposite (see tryRestoreBothMappings),
+--    and only declares CRITICAL if neither verifies. Without
+--    that, a restore under a wrong mapping cannot verify, by
+--    the same mechanism as the build failure, and traps itself:
+--    on 2026-10-29 18:59 PT a forward trial-dedupe build
+--    verified-failed under a reversed sort, then its
+--    forward-only restore and the undo restore both
+--    verified-failed too, even though every song was present.
 --  * The backup file is validated BEFORE anything is deleted: it
 --    must exist and be readable, with no blank lines in the middle
 --    and no whitespace inside an ID. A missing or corrupt backup
@@ -152,14 +164,14 @@ on run argv
 			if my verifyAgainst(destPl, currentIDs) then
 				error "undo: delete did not take effect after retries (playlist still holds song entries); nothing was duplicated and the playlist is unchanged. Pre-undo state saved at " & preUndoPath & ". Do not re-run until the delete works on a throwaway." number 1
 			end if
-			set restoreResult to my tryRestoreMapping(destPl, currentIDs, buildMapping)
+			set restoreResult to my tryRestoreBothMappings(destPl, currentIDs, buildMapping)
 			if ok of restoreResult then
 				error "undo: delete did not take effect after retries, so the backup was not applied; playlist restored to its pre-undo state from " & preUndoPath & "." number 1
 			else
-				error "undo: CRITICAL: delete did not take effect AND pre-undo restore failed; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+				error "undo: CRITICAL: delete did not take effect AND pre-undo restore failed under both mappings; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
 			end if
 		end if
-		set restoreResult to my tryRestoreMapping(destPl, currentIDs, buildMapping)
+		set restoreResult to my tryRestoreBothMappings(destPl, currentIDs, buildMapping)
 		if ok of restoreResult then
 			if (count of buildFailed) > 0 then
 				error "undo: restored " & ((count of backupIDs) - (count of buildFailed)) & " of " & (count of backupIDs) & " songs to \"" & playlistName & "\"; " & (count of buildFailed) & " song(s) were not found in the library (" & my joinList(buildFailed) & "). Playlist restored to its pre-undo state from " & preUndoPath & "; the missing songs cannot be restored until they are back in the library." number 1
@@ -168,9 +180,9 @@ on run argv
 			end if
 		else
 			if (count of buildFailed) > 0 then
-				error "undo: CRITICAL: " & (count of buildFailed) & " song(s) not found AND pre-undo restore failed; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+				error "undo: CRITICAL: " & (count of buildFailed) & " song(s) not found AND pre-undo restore failed under both mappings; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
 			else
-				error "undo: CRITICAL: verification failed AND pre-undo restore failed for \"" & playlistName & "\"; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
+				error "undo: CRITICAL: verification failed AND pre-undo restore failed under both mappings for \"" & playlistName & "\"; playlist may be partial. Backups: original " & backupPath & ", pre-undo " & preUndoPath & "." number 1
 			end if
 		end if
 	end if
@@ -318,8 +330,10 @@ on deletePlaylistSongs(pl)
 end deletePlaylistSongs
 
 -- Build a desired list-read order under the measured mapping and
--- verify it exactly. Returns {ok:boolean, failed:list}. No flip on
--- failure: the caller restores from the pre-undo snapshot.
+-- verify it exactly. Returns {ok:boolean, failed:list}. No flip
+-- on failure for the build itself: the caller restores from the
+-- pre-undo snapshot, trying both mappings (tryRestoreBothMappings),
+-- each verified against that snapshot, before declaring CRITICAL.
 on buildAndVerifyMapping(pl, desiredIDs, buildMapping)
 	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
 	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
@@ -347,6 +361,31 @@ on tryRestoreMapping(pl, snapshotIDs, buildMapping)
 	end try
 	return my buildAndVerifyMapping(pl, snapshotIDs, buildMapping)
 end tryRestoreMapping
+
+-- The opposite of a mapping: the only other value parseMapping
+-- accepts, so this can never invent a third mapping.
+on oppositeMapping(buildMapping)
+	if buildMapping is "reversed" then return "forward"
+	return "reversed"
+end oppositeMapping
+
+-- Restore from a list-read snapshot trying BOTH mappings, given
+-- first then opposite, each verified against the snapshot.
+-- Returns the first successful result, or the second result if
+-- both failed. This is a RESTORE retry, not a build flip: it
+-- never lands a desired order, it only returns to a snapshot
+-- that already existed, and an unverified attempt counts for
+-- nothing. It exists for the 2026-10-29 mode 41 trap: a restore
+-- under a wrong mapping cannot verify, by the same mechanism
+-- as a build failure under that mapping, so a single-mapping
+-- restore traps itself and wrongly declares a playlist partial
+-- when every song is still present, merely reversed.
+on tryRestoreBothMappings(pl, snapshotIDs, buildMapping)
+	set firstResult to my tryRestoreMapping(pl, snapshotIDs, buildMapping)
+	if ok of firstResult then return firstResult
+	set otherMapping to my oppositeMapping(buildMapping)
+	return my tryRestoreMapping(pl, snapshotIDs, otherMapping)
+end tryRestoreBothMappings
 
 on playlistIDs(pl)
 	-- Bulk read under a generous timeout, like the build loops:

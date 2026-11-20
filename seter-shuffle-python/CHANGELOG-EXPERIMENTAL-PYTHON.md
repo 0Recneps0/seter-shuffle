@@ -8,6 +8,1652 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-11-20 — EXPERIMENTAL: v3.0.10 menu playlist picker grafted in (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-20.1 staging
+(exp-2026-11-20.1, 503 tests). Spencer approved adding the picker
+because the experimental line never had it: publishing without it
+would regress the menu from a numbered playlist list back to typed
+names. This closes that one known divergence from stable v3.0.10.
+
+What was ported, nothing else: bridge/list-playlists.applescript
+as-is from v3.0.10 (read-only, verified: it only reads the name
+of every user playlist and prints one per line), the
+menu_pick_playlist function plus its header comment, and the
+menu call sites for shuffle, dedupe, and undo in run.sh
+(numbered list, 0 to type a name, L for whole-library shuffle,
+falls back to typing if the listing fails or is empty).
+run.sh was NOT copied wholesale: the experimental run.sh keeps
+its own single-run lock and everything else, only the picker
+was grafted in. The picker changes nothing in Music and
+authorizes nothing: every caller still runs its own gates
+afterwards (shuffle's and undo's ensure_mapping_for, dedupe's
+own no-precheck path). Version stays 3.0.11. Tests: 518 total
+(503 + the 15 picker tests from v3.0.10), all passing here.
+Mutation-checked: neutering the numbered pick fails the pick
+test, removing the call sites fails the wiring test. The
+playlist-listing script itself is still unproven end to end on
+a real Mac (already true for v3.0.10): if it fails, the menu
+falls back to typing a name.
+
+## 2026-11-20 — EXPERIMENTAL: Claude's v3.0.11 candidate merged into the experimental line (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-19
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command + the 2026-11-14 rediscover pick summary in the real
+`rediscover` command + the 2026-11-15 record-history
+confirmation + the 2026-11-16 Rediscover weight-ordered fill +
+the 2026-11-17 Flow stranded-song rule + the 2026-11-18
+Rediscover never-played base + the 2026-11-19 shuffle repair
+scan fallback), plus everything in Claude's v3.0.11 candidate
+zip (sha256 23fdf5d8c01ebe5eb1bf700092d944383550b24631846c3c9ceb4c673c41fcf4,
+reviewed 2026-11-20, 385 tests passing on its own v3.0.10 base).
+
+What the candidate brings in, nothing dropped:
+- Time-skew fix: `tracks.dump_now()` measures "now" in the same
+  frame as the dump's dates. The bug is real, verified in the
+  bridge: dump-library.applescript `jsonDate` writes local
+  wall-clock components with a trailing Z, and `parse_date`
+  reads it as UTC, so every age was off by the Mac's UTC offset
+  (7-8 hours in Seattle). Flow, the audit, and Rediscover's
+  forgottenness math now use dump_now().
+- Single-run lock in run.sh and daily.sh: one lock directory per
+  state folder (mkdir is atomic; macOS has no flock(1)), pid +
+  start time recorded, stale takeover when the owner is dead or
+  the lock is older than 12 hours, refusal exits 3, trap
+  releases on exit, read-only commands (audit, previews, menu)
+  and dry runs skip it, child run.sh calls inherit
+  SETER_LOCK_HELD=1.
+- Probe cadence in daily.sh: SETER_PROBE_MAX_AGE_HOURS=N (1..40,
+  default 0 = probe every target every day, as before) skips a
+  target's self-probe while its recorded mapping is younger than
+  N hours. The 48-hour mapping check still applies.
+- Optional AI tagging for Flow (`seter_shuffle/ai_tags.py`, off
+  by default): Apple's on-device `fm` CLI tags pool songs with
+  energy 0..100 and a mood bucket, cached by persistent ID with
+  a metadata signature, blended into Flow at Settings.ai_blend
+  with a mood-continuity walk cost. Fail-soft throughout: no
+  `fm`, unaccepted license, timeout, or bad JSON leaves songs
+  on heuristic energy and Flow runs as before. Turned on with
+  --ai, SETER_AI=1, or the ~/Documents/SeTeRShuffle/ai-enabled
+  marker file (the marker also covers the daily run). The
+  `ai-selftest` subcommand checks the `fm` CLI on the Mac
+  before anything is turned on.
+- Optional --split-collabs (off by default): "A & B", "A, B",
+  "A x B" and similar count as artist "A" for spacing and caps.
+- Rediscover history dates now use the local date instead of UTC.
+
+Overlaps, reconciled (one implementation each, no test deleted):
+- Artist case-insensitive keys (exp 2026-11-03) and whitespace
+  trim (exp 2026-11-11) vs Claude's artist_compare_key: kept
+  the experimental line's normalized artist_key and built
+  Claude's artist_compare_key on top of it (NFKC + casefold +
+  internal-whitespace collapse + split_collabs). All core call
+  sites now use artist_compare_key. One assertion in Claude's
+  test_v3011_fixes.py was updated to the merged contract:
+  artist_key("ABBA") is "abba" in this line (the experimental
+  test_core pins the normalized key; Claude's "keeps case" claim
+  was true only of v3.0.10's test_core). The test itself stays.
+- Rediscover weight-ordered fill (exp 2026-11-16) vs Claude's:
+  identical ordering (heaviest first, ties keep library order);
+  kept the experimental implementation. Ordering is pinned by
+  the experimental test_rediscover_fill_weight.py: reverting
+  the fill to library order fails 2 of its 4 tests (verified
+  on a copy this run). Claude's own fill test does not pin
+  ordering and is kept as a reach-the-target guard only.
+- The experimental never-played base 1.0 (2026-11-18) is kept;
+  Claude's tree still had the old 0.4 and was not carried over.
+
+Version is 3.0.11 throughout: seter_shuffle/__init__.py,
+setup-python.sh VERSION_MARKER, install-or-update.sh and
+SeTeR-Shuffle-Install.command banners, so an install stamps
+installed-version.txt as 3.0.11. The six installer tests that
+pinned "3.0.9" now pin "3.0.11". Historical "v3.0.9"
+attributions in comments are untouched. README test counts
+fixed (141 / 161 were stale) to the new total, 503.
+
+Note for the publish-time merge: stable has since moved to
+v3.0.10, which includes the daily fallback and the menu picker.
+This build still does NOT include the v3.0.10 menu picker
+(no bridge/list-playlists.applescript, no picker in run.sh, no
+test_menu_picker.py): the experimental line forked from v3.0.9
+and the picker was never carried over. That gap predates this
+merge and is left open deliberately; the stable-promotion merge
+must close it, or a later experimental build must. Everything
+else in this build is a delta on the experimental line, not on
+stable. Tests: 503 passed here (443 baseline + 60 new).
+
+## 2026-11-19 — EXPERIMENTAL: Shuffle repair scans for a fixing swap when random tries miss it (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-18
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command + the 2026-11-14 rediscover pick summary in the real
+`rediscover` command + the 2026-11-15 record-history
+confirmation + the 2026-11-16 Rediscover weight-ordered fill +
+the 2026-11-17 Flow stranded-song rule + the 2026-11-18
+Rediscover never-played base). Note for the publish-time merge:
+stable has since moved to v3.0.10, which includes the daily
+fallback and the menu picker but not the relative arc, the audit
+change, the preview changes, the artist-key changes, the
+staged-relaxation fix, the directional-cost fix, the repair fix,
+the rediscover-preview summary, the audit clock fix, the
+genre-case fix, the kept-set fix, the whitespace fix, the shuffle
+summary, the flow summary, the rediscover summary, the
+record-history confirmation, the weight-ordered fill, the
+stranded-song rule, or the never-played base, so this build is
+still a delta on the experimental line, not on stable.
+
+**Why, from a real measured gap, not a guess.** The repair pass
+fixes a same-artist clash by swapping the clashing song with a
+random partner, keeping the swap only when it strictly reduces
+the local clash count. Random draws can miss a reducing partner
+that exists: with 30 tries over a big list, a rare good partner
+is usually never drawn, so the pass gave up on a clash a single
+swap would have fixed. Verified live here before the fix: in a
+100-song pool with one artist on 45 songs, spacing 1, the pass
+left 1.60 clashes on average over 40 seeds (only 9 runs
+clash-free), and in a 846-song pool with one artist on 300 songs,
+spacing 2, it left 77.1 on average over 10 seeds.
+
+**What changed.** When the random tries fail on a clash,
+`spread_artists` now scans the partners in order and takes the
+first swap that strictly reduces the local clash count. The scan
+has its own budget (5,000 swap evaluations per call), separate
+from the 20,000 random-try budget, so a long scan on one clash
+cannot starve the random tries for later clashes: a prototype
+sharing the 20,000 budget made the 846-song pool worse (77.1 to
+91.0 average clashes), while the separate budget makes it better
+(77.1 to 74.8). Same-artist partners are still skipped, the same
+local-clash measure decides, and the pass is still best effort:
+a list one artist dominates cannot be fully separated, and the
+pass still gives up rather than looping. Only
+seter_shuffle/shuffle.py changed, plus one new test file and one
+updated expectation in tests/test_spread_same_key_skip.py (the
+pinned order there is now clash-free, [1, 2, 0, 3] instead of
+[2, 1, 0, 3], because the scan also fixes the later clash the
+old code left); no bridge, run.sh, daily.sh, cli.py, rediscover,
+flow, installer, or other file was touched.
+Tests here: full suite 443 passed, 0 failed (438 baseline + 5
+new in tests/test_spread_scan_fallback.py: the scan fixes a clash
+a stuck random stream cannot, same-artist partners are still
+skipped, the dominated-pool improvement, the large-pool
+no-starvation check, and the guards; the 3 behaviour tests were
+run against the unmodified code first and failed, confirming they
+test the new behaviour, while the 2 guards passed on the old code
+too, as designed).
+Measured live here after the change, same pools and seeds: 45
+of 100, spacing 1, 1.60 to 1.12 average clashes left (zero-clash
+runs 9 to 15 of 40); 40 of 100, spacing 1, 0.05 to 0.00 (38 to
+40 zero); 30 of 100, spacing 2, 2.83 to 2.35; 300 of 846,
+spacing 2, 77.1 to 74.8; 380 of 846, spacing 1, 18.9 to 17.0.
+UNPROVEN ON A MAC: the scan on a real library; it only changes
+which swaps the repair pass tries, the output is still a
+permutation of the same songs, and `./run.sh shuffle` on a real
+playlist must not be used as the spot check, since that rebuilds
+the playlist (the unit tests are the safe check).
+
+## 2026-11-18 — EXPERIMENTAL: Rediscover's never-played songs start at the played-song base (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-17
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command + the 2026-11-14 rediscover pick summary in the real
+`rediscover` command + the 2026-11-15 record-history
+confirmation + the 2026-11-16 Rediscover weight-ordered fill +
+the 2026-11-17 Flow stranded-song rule). Note for the
+publish-time merge: stable has since moved to v3.0.10, which
+includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview changes, the
+artist-key changes, the staged-relaxation fix, the
+directional-cost fix, the repair fix, the rediscover-preview
+summary, the audit clock fix, the genre-case fix, the kept-set
+fix, the whitespace fix, the shuffle summary, the flow summary,
+the rediscover summary, the record-history confirmation, the
+weight-ordered fill, or the stranded-song rule, so this build is
+still a delta on the experimental line, not on stable.
+
+**Why, from a real measured skew, not a guess.** A never-played
+song added long ago is the most forgotten song possible, but the
+old 0.4 base capped it at 2.0 against a 10-play song's 30.0, a
+15:1 ratio no amount of forgottenness could close: the forgotten
+multiplier caps at 5x for everyone, so the base ratio is the
+final ratio. Verified live here before the fix: in an even 50/50
+pool (50 never-played, 50 played-10, all added/played 3 years
+ago, distinct artists, target 30) never-played songs took 47 of
+600 picks (7.8%) over 20 seeds, and a never-played song's weight
+was 2.0 against a once-played song's 7.5 at the same
+forgottenness.
+
+**What changed.** The never-played base in `rediscover_weight`
+is now 1.0, the same base every played song starts from, so the
+plays tier (not a 60% unplayed discount) is what separates
+played from unplayed. A never-played song tops out at 5.0, still
+below a once-played song's 7.5 at the same forgottenness, so
+played songs still win at equal forgottenness and unplayed songs
+just stop being nearly invisible. The favorited (x3), rating
+(x2 / x0.25), and skip (divided by 1 + skips) terms multiply the
+new base exactly as they multiplied the old one. No eligibility,
+history, artist-cap, staged-relaxation, fill, or ordering rule
+changed: the same weights feed the same sampler, and the fill
+(2026-11-16) already takes the highest-weight songs left, so it
+picks up the new base with no further change. Only
+seter_shuffle/rediscover.py changed, plus one new test file and
+one updated expectation in tests/test_core.py (the pinned
+never-played weight, 0.4 x 5 to 1.0 x 5); no bridge, run.sh,
+daily.sh, cli.py, installer, or other file was touched.
+Tests here: full suite 438 passed, 0 failed (430 baseline + 8
+new in tests/test_rediscover_never_played_weight.py: the weight
+value, never-played still below once-played at the same
+forgottenness, favorited and rated boosts on the new base, skips
+still dividing, recently-added still weight 0, the two even-pool
+distributions, and an all-never-played pool still filling the
+target; the 6 behaviour tests were run against the unmodified
+code first and failed, confirming they test the new behaviour,
+while the 2 guards passed on the old code too, as designed).
+Measured live here after the change, same pools and seeds: 105
+of 600 picks (17.5%, expected 14.3%) against 10-play songs and
+251 of 600 (41.8%, expected 40%) against once-played songs.
+UNPROVEN ON A MAC: the new base on a real library; it only
+changes pick probabilities, and `./run.sh rediscover` on a real
+playlist must not be used as the spot check, since that rebuilds
+the Rediscover playlist and records history (the unit tests are
+the safe check).
+
+## 2026-11-17 — EXPERIMENTAL: Flow's greedy walk stops stranding hot songs at the end (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-16
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command + the 2026-11-14 rediscover pick summary in the real
+`rediscover` command + the 2026-11-15 record-history
+confirmation + the 2026-11-16 Rediscover weight-ordered fill).
+Note for the publish-time merge: stable has since moved to
+v3.0.10, which includes the daily fallback and the menu picker
+but not the relative arc, the audit change, the preview
+changes, the artist-key changes, the staged-relaxation fix,
+the directional-cost fix, the repair fix, the rediscover-preview
+summary, the audit clock fix, the genre-case fix, the kept-set
+fix, the whitespace fix, the shuffle summary, the flow summary,
+the rediscover summary, the record-history confirmation, or
+the weight-ordered fill, so this build is still a delta on the
+experimental line, not on stable.
+
+**Why, from a real stranded ending, not a guess.** The greedy
+walk is short-sighted about the tail: on the fall it can spend
+a slot on a cold song that fits a later target perfectly,
+leaving a hot song with no target left to land on, so the
+playlist ends on that hot song after the cold tail. Verified
+live here: a 7-song pool [40, 44, 56, 69, 72, 87, 91] came
+back [44, 56, 72, 91, 69, 40, 87], ending on the 87, hotter
+than everything except the 91 at the peak. Over 2,000 random
+pools the old walk ended 811 of them 20+ hotter than they
+started, even though the pools had a cold tail to end on.
+
+**What changed.** At each slot `flow_order` now checks the
+unused songs against the later arc targets (rescaled ones
+when arc_lo/arc_hi are set): a song is stranded when its best
+fit among the later targets is bad (at least 20 off) and
+clearly worse than its fit at this slot (at least 10 worse),
+and any other candidate costs an extra 500 while a stranded
+song exists, so the stranded song is picked now. The 500 sits
+between the vibe terms (at most ~21 combined) and artist
+spacing (1000): it forces the stranded pick over any vibe
+consideration, but spacing still beats it, so a stranded song
+by a recently used artist still waits. The rule only fires
+when a song genuinely has no good home later: a dense pool
+never triggers it, a pool with no cold tail at all is
+unchanged (the rule cannot invent one), and with no later
+slots the set is empty, so the last slot is untouched. Only
+seter_shuffle/flow.py changed, plus one new test file and one
+updated expectation in tests/test_flow_relative_arc.py (the
+rescaled walk now lands the 80 at the peak slot instead of one
+slot late; total arc distance unchanged at 33, peak placement
+fixed). No bridge, run.sh, daily.sh, cli.py, installer, or
+other file was touched, and no pick, weight, eligibility, or
+ordering rule changed except the walk itself.
+Tests here: full suite 430 passed, 0 failed (421 baseline + 9
+new in tests/test_flow_stranded_songs.py: the pinned 7-song
+stranding, a minimal 5-song fall case, a dense pool with lower
+arc error and a colder end, spacing still beating stranding,
+the rule under the relative arc, a dense relative pool
+unchanged, an all-hot pool unchanged, the last slot inert, and
+a prepare_flow end-to-end check; the 5 behaviour tests were
+run against the unmodified code first and failed, confirming
+they test the new behaviour, while the 4 guards passed on the
+old code too, as designed). The random-pool probe on the real
+implementation: over 2,000 pools the rule improves the total
+arc error in 445 pools, worsens it in none, total arc error
+139,748 to 129,904, playlists ending 20+ hotter than they
+start 811 to 488; a 400-track pool builds a 50-song Flow in
+0.07s, so the per-slot scan costs nothing measurable.
+UNPROVEN ON A MAC: the walk change on a real library; it
+changes only the order Flow picks, and `./run.sh flow` on a
+real playlist must not be used as the spot check, since that
+rebuilds the Flow playlist (the unit tests are the safe check).
+
+## 2026-11-16 — EXPERIMENTAL: Rediscover's last-resort fill takes the highest-weight songs left (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-15
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command + the 2026-11-14 rediscover pick summary in the real
+`rediscover` command + the 2026-11-15 record-history
+confirmation). Note for the publish-time merge: stable has since
+moved to v3.0.10, which includes the daily fallback and the menu
+picker but not the relative arc, the audit change, the preview
+changes, the artist-key changes, the staged-relaxation fix, the
+directional-cost fix, the repair fix, the rediscover-preview
+summary, the audit clock fix, the genre-case fix, the kept-set
+fix, the whitespace fix, the shuffle summary, the flow summary,
+the rediscover summary, or the record-history confirmation, so
+this build is still a delta on the experimental line, not on
+stable.
+
+**Why, from the fill's own job.** The staged sampling passes
+(2026-11-04) pick by weight, but when even the neither-rules pass
+cannot fill the target, the fill took the front of the candidate
+list in library order: the weights that ranked every sampled pick
+were ignored for the last slots, so a weak song sitting early in
+the dump could take a slot over a stronger song sitting later.
+The fill only fires when sampling is starved, which is exactly
+when the pool is skewed, so the songs it reaches for are the
+ones the weights already ranked lowest. Verified live here with
+a rigged draw stream that always lands on candidate 0, so
+sampling picks only the first song and the fill supplies the
+rest: a 6-song pool with weights 2.0, 180, 7.5, 10, 15, 20 in
+library order came back with the 7.5-weight song instead of the
+20-weight one.
+
+**What changed.** The fill in `pick_rediscover` now takes the
+highest-weight unpicked candidates, ties keeping library order,
+so a pool of equal-weight songs fills exactly as before (the
+2026-11-04 staged-relaxation pools all weigh the same, and
+their tests pass unchanged). The sampling passes, the staged
+relaxation order, the weights, the eligibility, and the history
+rules are untouched, and the fill still guarantees a full
+playlist when sampling alone cannot reach the target. Only
+seter_shuffle/rediscover.py changed, plus one new test file and
+one docstring line in the staged-relaxation test (its "front-of-
+list fill" line now says "weight-ordered fill"); no bridge,
+run.sh, daily.sh, cli.py, installer, or other file was touched.
+Tests here: full suite 421 passed, 0 failed (417 baseline + 4
+new in tests/test_rediscover_fill_weight.py: the rigged-stream
+fill takes the strongest remaining songs, a single fill slot
+goes to the heaviest song, equal weights keep library order,
+and a pool that fills under both rules still respects the cap
+and the cooldown across seeds; the two fill-behaviour tests
+were run against the unmodified code first and failed,
+confirming they test the new behaviour). UNPROVEN ON A MAC: the
+fill change on a real library; it only fires when sampling
+cannot fill the target, so a normal-size library preview will
+likely never reach it, and `./run.sh rediscover` on a real
+playlist must not be used as the spot check, since that rebuilds
+the Rediscover playlist and records history (the unit tests are
+the safe check).
+
+## 2026-11-15 — EXPERIMENTAL: `record-history` prints a confirmation (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-14
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command + the 2026-11-14 rediscover pick summary in the real
+`rediscover` command). Note for the publish-time merge: stable has
+since moved to v3.0.10, which includes the daily fallback and the
+menu picker but not the relative arc, the audit change, the
+preview changes, the artist-key changes, the staged-relaxation
+fix, the directional-cost fix, the repair fix, the rediscover-preview
+summary, the audit clock fix, the genre-case fix, the kept-set
+fix, the whitespace fix, the shuffle summary, the flow summary,
+or the rediscover summary, so this build is still a delta on the
+experimental line, not on stable.
+
+**Why, from the run log's own job.** Every other step of the daily
+run leaves a trace in the run log: shuffle, flow, and rediscover
+print a header plus a full-list summary, dedupe prints each removed
+duplicate, validate-order and validate-backup print their verdict,
+library-manifest prints its count. `record-history` was the
+exception: it appended the picked IDs to the cooldown history file
+and printed nothing, so the log had no visible proof the cooldown
+was actually recorded after a successful Rediscover apply, and an
+empty IDs file would have passed through just as silently. Verified
+live here: 3 IDs came back with "History recorded: 3 IDs appended
+to /tmp/hist-2026-11-15.tsv (cooldown 14 days)." and the file holds
+the three dated lines, while an empty IDs file prints "History
+recorded: 0 IDs; nothing appended (empty IDs file)." and writes no
+file.
+
+**What changed.** `record_rediscover_history` now returns the
+number of IDs appended (0 when nothing was written: no picks, or a
+cooldown under 1 day), and the `record-history` CLI prints one
+confirmation line from that return: "History recorded: N IDs
+appended to <history file> (cooldown D days).", singular "1 ID"
+when one, "History recorded: 0 IDs; nothing appended (empty IDs
+file)." when the IDs file is empty, and "History not recorded:
+cooldown is 0 days, nothing was written." when the cooldown is
+under 1 day. It is print-only: the history rule, the pruned
+entries, and the file content are unchanged, and run.sh already
+tees this step's stdout into the run log, so the line lands there
+with no runner change. Only cli.py, rediscover.py, and one new
+test file were touched; no bridge, run.sh, daily.sh, installer,
+or other file was touched. Tests here: full suite 417 passed,
+0 failed (410 baseline + 7 new; the new tests were run against
+the unmodified code first and all 7 failed, confirming they test
+the new behaviour). UNPROVEN ON A MAC: the confirmation is pure
+Python and was tested here; no Mac run has exercised it, and the
+unit tests are the safe check (the line also lands in the run log
+whenever a real Rediscover runs).
+
+## 2026-11-14 — EXPERIMENTAL: the real `rediscover` command prints the pick summary (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-13
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary + the 2026-11-13 flow arc summary in the real `flow`
+command). Note for the publish-time merge: stable has since moved
+to v3.0.10, which includes the daily fallback and the menu picker
+but not the relative arc, the audit change, the preview changes,
+the artist-key changes, the staged-relaxation fix, the
+directional-cost fix, the repair fix, the rediscover-preview
+summary, the audit clock fix, the genre-case fix, the kept-set
+fix, the whitespace fix, the shuffle summary, or the flow summary,
+so this build is still a delta on the experimental line, not on
+stable.
+
+**Why, from the preview's own job.** rediscover-preview has
+printed the "Rediscover picks: N songs, X never played, Y
+favorited, Z rated 4-5 stars, forgotten A..B days, max C per
+artist." line since 2026-11-07, because printing only the first
+25 picks hides what the full pick list is actually made of. The
+real `rediscover` command printed no such line: run.sh logs the
+CLI's stdout, so the daily run log showed only the first 25 picks
+of the applied order and hid how much of it was never played,
+how much was favorited or highly rated, how long the picks were
+forgotten, and whether one artist dominates the list. Verified
+live here on the sample fixture: a 4-song Rediscover came back
+with 1 never played, 1 favorited, 2 rated 4-5 stars, forgotten
+532..2510 days, max 2 per artist, and the old output showed
+nothing about that beyond the four listed songs.
+
+**What changed.** One condition in seter_shuffle/cli.py: the pick
+summary now prints for `rediscover` as well as
+`rediscover-preview`, after the preview list, inside the existing
+non-quiet output, and it is the last line printed. It reuses
+`rediscover_summary` unchanged, describes picks already computed,
+and no pick, weight, eligibility, or ordering rule changed and no
+playlist is touched. `--quiet` still prints nothing. The
+`rediscover_summary` docstring no longer says "for previews
+only", and the CLI help text now mentions the summary. Only
+cli.py and rediscover.py (docstring) changed, plus the existing
+rediscover summary test file (the old test asserted the real
+`rediscover` command printed no summary; it now asserts it prints
+the same line rediscover-preview prints, plus a --quiet test). No
+bridge, run.sh, daily.sh, installer, or other file was touched.
+Tests here: full suite 410 passed, 0 failed (409 baseline + 1
+net new test; the new rediscover-prints-summary test was run
+against the unmodified code first and failed, confirming it
+tests the new behaviour). UNPROVEN ON A MAC: the summary is pure
+Python and was tested here; no Mac run has exercised it, and
+`./run.sh rediscover` on a real playlist must not be used as the
+spot check, since that rebuilds the Rediscover playlist and
+records history (the unit tests are the safe check).
+
+## 2026-11-13 — EXPERIMENTAL: the real `flow` command prints the arc summary (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-12
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix + the 2026-11-12 shuffle spacing
+summary). Note for the publish-time merge: stable has since moved
+to v3.0.10, which includes the daily fallback and the menu picker
+but not the relative arc, the audit change, the preview changes,
+the artist-key changes, the staged-relaxation fix, the
+directional-cost fix, the repair fix, the rediscover-preview
+summary, the audit clock fix, the genre-case fix, the kept-set
+fix, the whitespace fix, the shuffle summary, or this fix, so this
+build is still a delta on the experimental line, not on stable.
+
+**Why, from the preview's own job.** flowPreview has printed the
+"Flow arc: N songs, energies lo..hi, starts A, peaks P at #K,
+ends B." line since 2026-11-02, because printing only the first
+25 songs hides what the full order actually is. The real `flow`
+command printed no such line: run.sh logs the CLI's stdout, so
+the daily run log showed only the first 25 songs of the applied
+order and hid whether it actually rose and fell. Verified live
+here on the sample fixture: a 6-song Flow came back ending at
+energy 88 after peaking at 98, the pool could not fall further,
+and the old output showed nothing about that beyond the six
+listed songs.
+
+**What changed.** One condition in seter_shuffle/cli.py: the arc
+summary now prints for `flow` as well as `flowPreview` /
+`flow-preview`, after the preview list, inside the existing
+non-quiet output, and it is the last line printed. It is
+print-only: it reuses `flow_arc_summary` unchanged, describes an
+order already computed, and no pick, weight, eligibility, or
+ordering rule changed and no playlist is touched. `--quiet`
+still prints nothing. Only cli.py changed, plus the existing
+flow arc test file (the old test asserted the real `flow`
+command printed no summary; it now asserts it prints the same
+line flowPreview prints, plus a --quiet test). No bridge, run.sh,
+daily.sh, installer, or other file was touched. Tests here: full
+suite 409 passed, 0 failed (408 baseline + 1 net new test; the
+new flow-prints-summary test was run against the unmodified code
+first and failed, confirming it tests the new behaviour).
+UNPROVEN ON A MAC: the summary is pure Python and was tested
+here; no Mac run has exercised it, and `./run.sh flow` on a real
+playlist must not be used as the spot check, since that rebuilds
+the Flow playlist (the unit tests are the safe check).
+
+## 2026-11-12 — EXPERIMENTAL: shuffle prints a full-list spacing summary (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-11
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix + the 2026-11-11
+artist-key whitespace fix). Note for the publish-time merge:
+stable has since moved to v3.0.10, which includes the daily
+fallback and the menu picker but not the relative arc, the audit
+change, the preview change, the artist-key changes, the
+staged-relaxation fix, the directional-cost fix, the repair fix,
+the rediscover-preview summary, the audit clock fix, the
+genre-case fix, the kept-set fix, the whitespace fix, or this
+fix, so this build is still a delta on the experimental line,
+not on stable.
+
+**Why, from the preview's own job.** flowPreview and
+rediscover-preview each print a one-line summary of the whole list
+they computed (2026-11-02, 2026-11-07), because printing only the
+first 25 songs hides what the full order actually is. shuffle
+printed no such line: the first page hid whether the full order
+held its artist spacing, and the repair pass is best effort, so
+when one artist dominates the list clashes remain with nothing in
+the output saying so. Verified live here on the sample fixture:
+an 8-song shuffle with one artist on 3 of the songs came back
+with 1 same-artist clash still in it after the repair pass, and
+the old output showed nothing about that.
+
+**What changed.** New `shuffle_summary` in seter_shuffle/shuffle.py
+takes the ordered tracks and the spacing and returns one line:
+"Shuffle: N songs, X artists, C same-artist clashes within spacing
+S, max M by one artist." The clash count reuses the repair pass's
+own `_clashes_at` rule, artist keys come from `artist_key` (so the
+case and whitespace fixes apply here too), tracks with no artist
+string never clash and do not count toward the per-artist max, and
+the max clause is left out when no track names an artist at all.
+The CLI prints the line after the preview list for the `shuffle`
+command only, inside the existing non-quiet output, and it is
+print-only: it is not added to the --out JSON, and it describes an
+order already computed, so no pick, weight, eligibility, or
+ordering rule changed and no playlist is touched. Only
+seter_shuffle/shuffle.py, seter_shuffle/cli.py, and one new test
+file were touched; no bridge, run.sh, daily.sh, installer, or
+other file was touched. Tests here: 14 new tests in
+tests/test_shuffle_summary.py (no clashes when well spread,
+back-to-back counts one clash position, spacing-2 clash not
+counted at spacing 1, three in a row counts two positions,
+empty artist never clashes and drops the max clause, max per
+artist, singular forms, case-insensitive and whitespace-variant
+keys count as one artist, summary does not change the order,
+end-to-end shuffle over 10 seeds reports 0 clashes, CLI prints
+the line, --quiet suppresses it), full suite 408 passed,
+0 failed (394 baseline + 14 new). The new test file was run
+against the unmodified code first and failed to import, confirming
+it tests the new code. UNPROVEN ON A MAC: the summary is pure
+Python and was tested here; no Mac run has exercised it, and
+`./run.sh shuffle` on a real playlist must not be used as the
+spot check, since that shuffles the playlist (the unit tests are
+the safe check).
+
+## 2026-11-11 — EXPERIMENTAL: artist keys ignore leading/trailing whitespace (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-10
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix +
+the 2026-11-10 in-memory dedupe kept-set fix). Note for
+the publish-time merge: stable has since moved to v3.0.10, which
+includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview change, the artist-key
+change, the staged-relaxation fix, the directional-cost fix, the
+repair fix, the rediscover-preview summary, the audit clock fix,
+the genre-case fix, the kept-set fix, or this fix, so this build
+is still a delta on the experimental line, not on stable.
+
+**Why, from the artist key's own job.** The key exists only for
+equality comparisons (shuffle/Flow spacing, Rediscover
+max-per-artist), and the 2026-11-03 case fix made "Drake" and
+"drake" one artist. But rips and taggers also leave stray spaces,
+and the key did not strip them: "Drake " and " Drake" were different
+keys from "Drake", so those tracks could land back-to-back in a
+shuffle or Flow and count separately toward Rediscover's
+max-per-artist. The featuring truncation only stripped the tail,
+so " Drake feat. X" kept its leading space even after the marker
+was cut, and a whitespace-only artist string ("   ") returned a
+non-empty key, so it counted as a real artist instead of never
+clashing like "" and None. Verified live here before the fix:
+artist_key returned 'drake', 'drake ', ' drake', ' drake', and
+'   ' for "Drake", "Drake ", " Drake", " Drake feat. X", and
+"   " respectively.
+
+**What changed.** `artist_key` in seter_shuffle/artists.py now
+strips the raw artist string up front and maps a whitespace-only
+string to "". That covers both paths (featuring on and off), since
+both return from the stripped name; the marker truncation and its
+rstrip are unchanged, and internal spacing is untouched. Only
+seter_shuffle/artists.py changed, plus one new test file; no
+bridge, run.sh, daily.sh, cli.py, installer, or other file was
+touched, and no pick, weight, eligibility, or ordering rule
+changed. Tests here: 8 new tests in
+tests/test_artist_key_whitespace.py (trailing space is one key,
+leading space is one key, featuring truncation strips the leading
+space too, featuring-off strips too, whitespace-only is empty,
+empty/None still empty, shuffle separates whitespace variants over
+20 seeds, Flow separates whitespace variants), full suite 394
+passed, 0 failed (386 baseline + 8 new). The 8 new tests were
+run against the unmodified code first: 7 failed, confirming they
+test the fix and not the old behaviour. UNPROVEN ON A MAC: the
+artist-key change is pure Python and was tested here; no Mac run
+is needed to prove it, but no Mac run has exercised it either.
+
+## 2026-11-10 — EXPERIMENTAL: in-memory dedupe validation accepts a same-song order when given the kept set (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-09
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix + the 2026-11-09 audit genre-case fix). Note for
+the publish-time merge: stable has since moved to v3.0.10, which
+includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview change, the artist-key
+change, the staged-relaxation fix, the directional-cost fix, the
+repair fix, the rediscover-preview summary, the audit clock fix,
+the genre-case fix, or this fix, so this build is still a delta
+on the experimental line, not on stable.
+
+**Why, from the validator's own job.** The safety gate has two
+forms of the same dedupe rule: the file form
+(`validate_order_file`, the one run.sh and the CLI use) recomputes
+the kept set from the dump, and the in-memory form
+(`validate_order_text`, for tests and callers that already hold
+the IDs). Two different library IDs can be the same song (a
+single plus the album version), and dedupe keeps only one of
+them, so a correct dedupe order drops the second ID. The file
+form accepted that order; the in-memory form only saw IDs, so it
+demanded every unique ID exactly once and refused it. Verified
+live here before the fix: for a library of A + B (same song as A)
++ C, the file form accepted the dedupe order ["A", "C"] while the
+in-memory form refused it with "dedupe order must be exactly the
+library's unique songs (each once)". A safety gate that refuses a
+correct order is fail-closed, not dangerous, but the two forms
+are documented as the same rules, and they were not.
+
+**What changed.** `validate_order_text` in
+seter_shuffle/validate.py takes an optional `dedupe_kept_ids`
+(the kept set `split_duplicates` computes); in dedupe mode the
+check becomes "the order is exactly those kept IDs, each once,
+in any order", matching the file form's set rule. Without it the
+old ID-level behaviour is preserved and documented, not silently
+changed: an ID-only caller cannot know two IDs are the same song.
+Dropping a kept song, repeating one, inventing one, or using the
+parameter outside dedupe mode still fails exactly as before.
+Only seter_shuffle/validate.py changed, plus one new test file;
+no bridge, run.sh, daily.sh, cli.py, installer, or other file
+was touched, and no pick, weight, eligibility, or ordering rule
+changed. Tests here: 8 new tests in
+tests/test_validate_dedupe_kept.py (same-song order passes with
+the kept set, is refused without it, dropping/repeating/inventing
+still refused with it, kept set may reorder, parameter ignored
+outside dedupe mode, and the two forms agree on the same
+library), full suite 386 passed, 0 failed (378 baseline + 8
+new). UNPROVEN ON A MAC: the validator change is pure Python and
+was tested here; no Mac run is needed to prove it, but no Mac
+run has exercised it either.
+
+## 2026-11-09 — EXPERIMENTAL: audit counts genre strings case-insensitively (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-08
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary + the 2026-11-08
+audit clock fix). Note for the publish-time merge: stable has
+since moved to v3.0.10, which includes the daily fallback and
+the menu picker but not the relative arc, the audit change, the
+preview change, the artist-key change, the staged-relaxation
+fix, the directional-cost fix, the repair fix, the
+rediscover-preview summary, the audit clock fix, or this fix, so
+this build is still a delta on the experimental line, not on
+stable.
+
+**Why, from the audit's own job.** The audit's top-genres list
+exists so the next genre-map edit is driven by real data, but it
+counted raw genre strings: "Rock", "rock", and "ROCK" were three
+genres, so genre_distinct was inflated and one genre split across
+three lines in the list. Flow itself matches genres
+case-insensitively (a lowered substring check), so the audit's
+counting contradicted how genres are actually used. Verified live
+here before the fix: five tracks in two real genres reported
+genre_distinct 5, with counts split as Pop 1, ROCK 1, Rock 1,
+pop 1, rock 1.
+
+**What changed.** `audit_library` in seter_shuffle/audit.py now
+groups genre strings by their lowercased form; the displayed label
+keeps the first-seen casing, so the list still reads as the library
+wrote it ("Rock", not "rock"). genre_present / genre_missing are
+unchanged (presence is still any non-blank string), and the sort
+stays count-descending, then label. Only seter_shuffle/audit.py
+changed, plus one new test file; no bridge, run.sh, daily.sh,
+cli.py, installer, or other file was touched, and no pick, weight,
+eligibility, or ordering rule changed. Tests here: 6 new tests in
+tests/test_audit_genre_case.py (case variants are one genre with
+the first-seen label, mixed case keeps genres separate,
+whitespace plus case merges, present/missing counts unchanged,
+format_audit lists the merged genre once, CLI audit end-to-end
+lists it once), full suite 378 passed, 0 failed (372 baseline + 6
+new). UNPROVEN ON A MAC: the merged top-genres list on a real
+library dump; it only reads a dump and prints, and the Mac spot
+check below is read-only and safe, not proof.
+
+## 2026-11-08 — EXPERIMENTAL: audit's Flow energy range uses the real clock (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-07
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip +
+the 2026-11-07 rediscover-preview summary). Note for the
+publish-time merge: stable has since moved to v3.0.10, which
+includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview change, the artist-key
+change, the staged-relaxation fix, the directional-cost fix, the
+repair fix, the rediscover-preview summary, or this fix, so this
+build is still a delta on the experimental line, not on stable.
+
+**Why, from the audit's own job.** The audit exists to explain
+Flow behaviour, but its "Flow energies (eligible)" line scored
+every track clock-free (`flow_energy` with no reference time),
+while Flow itself scores with the real clock (played-date recency
+and date-added newness). For a library with recently played or
+recently added songs the audit's range was wrong by up to 5 points
+against what flowPreview actually builds: a song played 5 days
+ago scores 56 in Flow but 53 in a clock-free audit, and a song
+added a week ago scores 52 in Flow but 50 in the audit. The
+audit's range is the one Spencer reads when deciding whether his
+library can actually shape a wave, so it should be the range
+Flow builds.
+
+**What changed.** `audit_library` in seter_shuffle/audit.py now
+takes an optional `now`; when given, the Flow energies use it
+(recency/newness nudges apply), and the CLI `audit` command passes
+the real clock. With no `now` the old deterministic behaviour is
+unchanged (what the existing tests rely on), and the BPM path
+never uses the clock either way, so BPM energies are identical
+with or without it. Only seter_shuffle/audit.py and
+seter_shuffle/cli.py changed, plus one new test file; no bridge,
+run.sh, daily.sh, installer, or other file was touched, and no
+pick, weight, eligibility, or ordering rule changed. Tests here:
+5 new tests in tests/test_audit_now.py (clock-free audit ignores
+recency: 50..53; with a fixed clock the range is 51..56 and
+matches prepare_flow's energies exactly at the same reference
+time; a BPM track scores the same with or without the clock;
+format_audit prints the clock-based range; the CLI audit prints
+the clock-based range on a clock-stable fixture), full suite 372
+passed, 0 failed (367 baseline + 5 new). UNPROVEN ON A MAC: the
+audit line on a real library dump; it only reads a dump and
+prints, and the Mac spot check below is read-only and safe, not
+proof.
+
+## 2026-11-07 — EXPERIMENTAL: rediscover-preview prints a full-list pick summary (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-06
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost + the 2026-11-06 shuffle repair same-artist skip). Note for
+the publish-time merge: stable has since moved to v3.0.10, which
+includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview change, the artist-key
+change, the staged-relaxation fix, the directional-cost fix, the
+repair fix, or this fix, so this build is still a delta on the
+experimental line, not on stable.
+
+**Why, from the same gap the flowPreview summary fixed.** The
+2026-11-02 flowPreview arc summary fixed this for Flow, but
+rediscover-preview had the same blind spot: it prints only the
+first 25 picks, so the first page hid what the full pick list is
+actually made of, how much of it was never played at all, how
+much is favorited or highly rated, how long the picks were
+forgotten, and whether one artist dominates the list.
+
+**What changed.** New `rediscover_summary` in
+seter_shuffle/rediscover.py, printed by the CLI for
+`rediscover-preview` only, as the last line after the capped
+preview list: "Rediscover picks: N songs, X never played, Y
+favorited, Z rated 4-5 stars, forgotten A..B days, max C per
+artist." The forgotten range uses each pick's last-play (or
+added) date and is left out when no pick has a usable date or no
+reference time is given; future dates clamp to 0 days rather than
+going negative. Picks with no artist string do not count toward
+the per-artist max, and the max clause is left out when no pick
+names an artist. Featuring counts as the main artist, matching
+the 2026-11-03 artist-key rule. The plain `rediscover` command
+is unchanged and prints no summary. Only
+seter_shuffle/rediscover.py and seter_shuffle/cli.py changed,
+plus one new test file; no bridge, run.sh, daily.sh, installer,
+or other file was touched, and no pick, weight, eligibility, or
+ordering rule changed. Tests here: 11 new tests in
+tests/test_rediscover_preview_summary.py (empty returns None,
+single song, mixed counts with a hand-checked forgotten range of
+184..731 days, no-dates and no-now omit the forgotten clause,
+future date clamps to 0, empty artist does not inflate the max,
+no named artist omits the max clause, featuring counts as the
+main artist, CLI rediscover-preview prints the summary as the
+last line over the full 30-song list while showing only 25, plain
+rediscover prints none), full suite 367 passed, 0 failed (356
+baseline + 11 new). UNPROVEN ON A MAC: the summary line on a real
+library dump; it only describes picks already computed, and the
+Mac spot check below is preview-only and safe, not proof.
+
+## 2026-11-06 — EXPERIMENTAL: shuffle repair stops wasting tries on same-artist swaps (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-05
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation + the 2026-11-05 Flow directional
+cost). Note for the publish-time merge: stable has since moved to
+v3.0.10, which includes the daily fallback and the menu picker but
+not the relative arc, the audit change, the preview change, the
+artist-key change, the staged-relaxation fix, the directional-cost
+fix, or this fix, so this build is still a delta on the
+experimental line, not on stable.
+
+**Why, from the repair loop itself, not a guess.** The artist
+spacing repair pass tries up to 30 random swap partners per clash
+and keeps a swap only if it strictly reduces the local clash
+count. But swapping two songs by the same artist leaves every
+position's key unchanged, so the before/after check always ties
+and the swap is always reverted, while the loop still burned a
+try and one of the 20,000 global attempts on it. That waste lands
+exactly where the pass is already weakest: when one artist
+dominates the list, most random partners share that artist, so a
+clash could spend all 30 tries on swaps that could never fix it.
+
+**What changed.** `spread_artists` now skips a swap partner by
+the same artist as the clashing song (and the trivial j == p
+case) without counting it as a try or an attempt, so the 30 tries
+go to partners that could actually change the order. Draws per
+clash are capped at 300 (10x the try budget) so a degenerate draw
+stream cannot spin the loop; an artist owning ~90% of the list
+still gets its full 30 effective tries on average. Only
+seter_shuffle/shuffle.py changed, plus one new test file; no
+bridge, run.sh, daily.sh, installer, or other file was touched,
+and Rediscover uses the same repair pass so it gets the fix too.
+Tests here: 3 new tests in
+tests/test_spread_same_key_skip.py (a scripted draw stream
+burying the one useful partner behind 30 same-key draws now
+fixes the clash in pass 1 instead of never reaching it, an
+always-same-key stream still terminates promptly under the draw
+cap, a dominant-artist list never gets worse), full suite 356
+passed, 0 failed (353 baseline + 3 new). One hand-verified
+trace: with partners [1]*30 + [2] on keys A,A,B,B, the new code
+returns [2, 1, 0, 3] in 631 draws, where the old 30-try loop
+returned [0, 2, 1, 3]. UNPROVEN ON A MAC: the repair change on
+a real library shuffle; it changes only which swaps the pass
+tries, and the Mac spot check below runs tests only, not a
+playlist.
+
+## 2026-11-05 — EXPERIMENTAL: Flow walk stops jumping ahead of its own arc (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-04
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys + the 2026-11-04
+Rediscover staged relaxation). Note for the publish-time merge:
+stable has since moved to v3.0.10, which includes the daily
+fallback and the menu picker but not the relative arc, the audit
+change, the preview change, the artist-key change, the
+staged-relaxation fix, or this fix, so this build is still a delta
+on the experimental line, not on stable.
+
+**Why, from a real zigzag, not a guess.** The greedy walk's
+distance term is symmetric, so on a near-tie it could jump ahead
+of the arc on the rise (a hotter song than the target) or drop
+below it on the fall (a colder song than the target), making the
+actual sequence zigzag around the arc instead of tracking it. The
+relative-arc test pinned a case: a rescaled walk ended its
+playlist on 80, the hottest song, against a falling tail, because
+40 and 80 tied at the second-to-last slot and the tie-break took
+the earlier song. The sequence tracked the arc on distance but
+not on direction.
+
+**What changed.** Each walk step now adds a small +5 when a
+candidate sits on the wrong side of the arc target for the arc's
+direction at that position: above the target while the arc is
+rising, below it while the arc is falling. The direction comes
+from the arc targets themselves (next target vs current, previous
+target at the last slot), so the peak slot counts as falling and
+prefers not to undershoot the peak. +5 only breaks near-ties: a
+candidate 6+ closer to the target still wins, artist spacing
+(1000) still wins over everything, and a flat pool is unaffected
+because equal energies are penalised equally. Only
+seter_shuffle/flow.py changed (the new `_arc_direction` helper
+and the cost term), plus one new test file and one updated
+expectation in test_flow_relative_arc.py; no bridge, run.sh,
+daily.sh, installer, or other file was touched. Tests here: 10
+new tests in tests/test_flow_directional_cost.py (direction
+helper including the rescaled arc and last-slot arrival
+direction, rise/fall/peak near-ties, closer match still wins,
+flat pool unchanged, spacing still beats the penalty,
+prepare_flow end-to-end), full suite 353 passed, 0 failed (343
+baseline + 10 new). One existing expectation changed by hand
+after verifying the new order tracks the arc better (total arc
+distance 33 vs 53, and the walk now ends on the coldest song
+instead of the hottest). UNPROVEN ON A MAC: the walk change on
+a real library dump; it changes only the order Flow picks, and
+the Mac spot check below is preview-only and safe, not proof.
+
+## 2026-11-04 — EXPERIMENTAL: Rediscover relaxes its variety rules one at a time (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-03
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary +
+the 2026-11-03 case-insensitive artist keys). Note for the
+publish-time merge: stable has since moved to v3.0.10, which
+includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview change, the
+artist-key change, or this fix, so this build is still a delta
+on the experimental line, not on stable.
+
+**Why, from a real small-pool case, not a guess.** Rediscover
+picks under two variety rules: at most N songs per artist, and
+no song picked within the cooldown window. When the pool was
+too small to fill the target under both rules, the picker fell
+straight to a pass enforcing neither rule, so a slot could be
+filled by a song picked two weeks ago even when an extra song
+by an already-picked artist would have filled it, and a slot
+could break the artist cap even when a cooldown repeat would
+have. The cooldown is the point of Rediscover (do not repeat
+recent picks), so it should be the last rule broken, not the
+first one broken alongside the cap.
+
+**What changed.** `pick_rediscover` now relaxes one rule at a
+time, in this order: (1) both rules enforced, (2) cooldown
+enforced, artist cap relaxed, (3) artist cap enforced,
+cooldown relaxed, (4) neither enforced, and only then the
+existing front-of-list fill. The sampler's single
+`enforce_rules` flag became two independent flags
+(`enforce_history`, `enforce_artist`); no weight, eligibility,
+target, ordering, or history-recording rule changed, and a pool
+that can fill under both rules behaves exactly as before.
+This refines v2.6's single relaxed pass (both rules dropped at
+once) by keeping that pass as the last resort only. Only
+seter_shuffle/rediscover.py changed, plus one new test file;
+no bridge, run.sh, daily.sh, installer, or other file was
+touched. Tests here: 4 new tests in
+tests/test_rediscover_staged_relaxation.py (cap relaxes before
+any cooldown repeat, cooldown relaxes before the cap breaks
+twice, both relax only as a last resort to fill the playlist,
+strict pool still respects both rules), full suite 343 passed,
+0 failed (339 baseline + 4 new). UNPROVEN ON A MAC: the staged
+passes on a real library; they only fire when a pool cannot
+fill under both rules, so a normal-size library preview will
+likely never reach them, and the Mac spot check below is
+preview-only and safe, not proof.
+
+## 2026-11-03 — EXPERIMENTAL: artist keys are case-insensitive (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-02
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts + the 2026-11-02 flowPreview arc summary). Note
+for the publish-time merge: stable has since moved to v3.0.10,
+which includes the daily fallback and the menu picker but not the
+relative arc, the audit change, the preview change, or this fix,
+so this build is still a delta on the experimental line, not on
+stable.
+
+**Why, from a real mismatch, not a guess.** The artists module
+always documented case-insensitive matching (the AppleScript
+behaviour), but the Python port compared keys with ==, so the
+same artist spelled differently across rips ("Drake" vs "drake")
+counted as two different artists. That defeated artist spacing in
+shuffle and Flow and the max-per-artist count in Rediscover, all
+three of which go through artist_key.
+
+**What changed.** artist_key now returns a lowercased key. The key
+is used only for equality comparisons, never displayed, so no
+output text changes; only which tracks count as the same artist.
+Three existing test expectations in test_core.py were updated to
+the lowercased keys (they asserted the old case-preserving return).
+No bridge, run.sh, daily.sh, installer, or other file was touched.
+Tests here: 6 new tests in tests/test_artist_key_case.py (same
+artist in three cases is one key, featuring markers still
+case-insensitive, featuring-off still lowercases, empty/None
+still empty, shuffle separates case variants across 20 seeds,
+Flow greedy walk separates a case-variant repeat), full suite
+339 passed, 0 failed (333 baseline + 6 new). UNPROVEN ON A MAC: the spacing change on a
+real library dump; it changes no playlist by itself, and the Mac
+spot check is `./run.sh rediscover-preview`, which prints picks
+and writes nothing.
+
+## 2026-11-02 — EXPERIMENTAL: flowPreview prints a full-list arc summary (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-01
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback + the 2026-11-01 audit
+same-song counts). Note for the publish-time merge: stable has
+since moved to v3.0.10, which includes the daily fallback and
+the menu picker but not the relative arc, the audit change, or
+this preview change, so this build is still a delta on the
+experimental line, not on stable.
+
+**Why, from a real preview limit, not a guess.** flowPreview
+prints only the first 25 songs (preview_show), so a flat first
+page used to hide whether the full 50-song Flow order actually
+rises and falls. Spencer's 2026-10-28 preview came back flat
+for exactly that reason, and the fix then was judged on the
+first 25 energies alone.
+
+**What changed.** `./run.sh flowPreview` now prints one extra
+line after the preview list, covering the whole ordered list:
+"Flow arc: N songs, energies lo..hi, starts X, peaks Y at
+#P, ends Z." The peak position is the first position at the
+maximum energy. The plain `flow` command does not print it,
+so its JSON output is unchanged, and `--quiet` still prints
+nothing. Only seter_shuffle/flow.py (the new
+`flow_arc_summary` helper) and seter_shuffle/cli.py (print it
+for flowPreview only) changed, plus one new test file.
+Tests here: 7 new tests in
+tests/test_flow_preview_arc.py (empty, single song, rise and
+fall, flat list, tied peak, CLI flowPreview end-to-end with
+the summary as the last line, plain flow with no summary),
+full suite 333 passed, 0 failed. UNPROVEN ON A MAC: the
+summary line on a real library dump; it describes an order
+already computed and changes no playlist, so the Mac test is
+preview-only and safe.
+
+## 2026-11-01 — EXPERIMENTAL: audit counts same-song library copies (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-10-31
+experimental staging (v3.0.9 + the 2026-10-30 Flow relative arc +
+the 2026-10-31 daily dedupe fallback). Note for the publish-time
+merge: stable has since moved to v3.0.10, which includes the
+daily fallback and the menu picker but not the relative arc and
+not this audit change, so this build is still a delta on the
+experimental line, not on stable. Only seter_shuffle/audit.py
+changed, plus one new test file; no bridge, run.sh, daily.sh,
+installer, or other file was touched.
+
+**Why, from a real confusion, not a guess.** On 2026-10-29 a
+Mac run log showed the main playlist at 806 unique songs where
+Spencer expected 798: 12 entries were the same song stored as a
+different library track, and only the dedupe log explained the
+gap. The audit command is the tool for "is my data what I
+think it is", but it counted library tracks only, so a library
+holding the same recording twice (single + album, matched +
+uploaded) looked like more distinct songs than it holds, and a
+dedupe total landing below the library size looked like songs
+going missing.
+
+**What changed.** `audit_library` now reports two extra
+counts, computed with the exact same conservative rule dedupe
+uses (same artist + title after normalisation, lengths within
+3 seconds when both are known; titles never trimmed of
+"(Live)" or "- Remastered"; no-artist tracks never matched by
+name): `same_song_groups` (how many songs have 2+ library
+copies) and `same_song_extra` (extra copies beyond the first).
+A repeated persistent ID is a dump error, not a library copy,
+and is never counted here. `format_audit` prints one line
+with both numbers, so `./run.sh audit` (via the CLI audit
+command) answers the question directly. Tests here: 10 new
+tests in tests/test_audit_same_song.py (three-copy group,
+two groups, different artist, different lengths, live suffix,
+case/whitespace normalisation, missing artist, same-ID repeat
+excluded, zero case, and a CLI end-to-end run), full suite
+326 passed, 0 failed. UNPROVEN ON A MAC: the audit line on a
+real library dump; the counts use only fields already in the
+dump, so no bridge change was needed.
+
+## 2026-10-31 — EXPERIMENTAL: daily dedupe fallback for all three targets, on top of v3.0.9 + the 2026-10-30 Flow relative arc (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. This build INCLUDES the
+2026-10-30 Flow relative arc (which was prepared but never
+published, so no exp-2026-10-30.* tag exists to supersede on
+GitHub; this build supersedes that unpublished staging copy
+only). The base is the published v3.0.9 stable tree; against
+that base, the code changed is daily.sh plus tests, plus the
+2026-10-30 flow.py change. No bridge script, run.sh,
+installer, or other stable file was touched.
+
+**Why, from a real run, not a guess.** On 2026-10-31 the
+v3.0.9 daily run (10:21-10:24 PT) deduped the tripled main
+playlist in place (2386 entries to 798), then hit the
+SeTeR Rediscover probe's duplicate refusal at 10:24:05 and
+exited, because daily.sh only had the duplicate-fallback
+dedupe path for the main playlist probe and did
+`auto_self_probe || exit 1` for Rediscover and Flow. So
+shuffle, flow, and rediscover never ran that morning, and
+neither did their description stamps. The v3.0.9 header
+even stated the gap plainly ("a doubled generated playlist
+is a manual dedupe, not a daily-run repair"); the Oct 31
+run proved that manual-repair rule costs a whole daily run.
+
+**What changed.** daily.sh gained one helper,
+`probe_target`, used for all three targets in the same
+order as before (daily playlist, Rediscover, Flow). On a
+probe that refuses ONLY on duplicate entries (wording
+checked, never the exit code alone), it runs one in-place
+dedupe for that target (the v3.0.9 repair: snapshot
+before, verified after, deletes only duplicate entries in
+descending position order, 0 rebuilds on success, no
+mapping recorded), then re-probes the clean target ONCE
+for a fresh mapping. The re-probe is safe against the
+shared-snapshot rule: the refused probe changed nothing
+and wrote no snapshot, and the re-probe is on the same
+target, never a different target while a restore is
+pending. The main playlist gets the re-probe too now,
+instead of relying on a mapping that survived the refused
+probe for the later mapping check. Any other probe
+failure, a failed dedupe, or a re-probe that still
+refuses or fails stops the whole daily run before the
+next target is probed and before any build, with exactly
+one dedupe attempt per target and no second attempt. No
+cross-target mapping, no throwaway probe, no other
+fail-closed rule was weakened.
+
+**Tests here:** full suite in this staging copy, 316 tests
+passed, 0 failed (309 in the 2026-10-30 staging + 7 new in
+tests/test_daily_dedupe_fallback.py: Rediscover and Flow
+duplicate probes each dedupe, re-probe, and complete the
+daily run; main now re-probes after its dedupe; a failed
+dedupe stops before the Flow probe and before any build;
+a failed re-probe and a still-duplicate re-probe each stop
+with exactly one dedupe attempt; plus a structural test
+that probe_target is the only probe path). Two existing
+tests were updated for the intentional behavior change,
+not weakened: the main-duplicate daily test in
+tests/test_trial_dedupe.py now pins the re-probe call,
+and the probe-before-check structural test in
+tests/test_selfprobe.py now pins probe_target. Shell
+syntax and py_compile pass; no Python core or bridge file
+changed for this improvement.
+
+**Known limits, plainly.** UNPROVEN ON A MAC: the fallback
+for Rediscover and Flow, and the re-probe after any
+fallback dedupe, are proven only with stubbed run.sh calls
+here. They are not proven until a real daily run on his
+Mac hits a doubled Rediscover or Flow playlist and
+completes shuffle, flow, and rediscover with that
+morning's stamps. If a re-probe ever measures a different
+mapping than the pre-doubling one (it should not: in-place
+dedupe does not change a playlist's sort), verify-after
+still fails closed on the build, never a corrupted order.
+
+## 2026-10-30 — EXPERIMENTAL: Flow relative arc, on top of stable v3.0.9 (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. This is the 2026-10-29 held
+build, finally ported: it was prepared 2026-10-29 evening in a
+separate staging copy and never published (tag conflict that
+night), and it is NOT in stable v3.0.9. The base for this build
+is the published v3.0.9 stable tree; the only code changed
+against that base is seter_shuffle/flow.py, plus one new test
+file. No bridge script, run.sh, daily.sh, installer, or other
+stable file was touched for it.
+
+**Why.** Spencer's 2026-10-29 audit showed a real library with
+BPM missing on 100% of tracks and Flow fallback energies
+spanning only 47..68. The fixed 45..90..40 arc therefore aims
+at a peak (90) the pool cannot reach and a tail (40) below
+its floor: the walk climbs toward 90 and stops at the closest
+available song each step, instead of shaping a wave inside
+the range the pool actually has.
+
+**What changed.** `flow_order` takes optional `arc_lo` /
+`arc_hi`; when both are given and the range is at least 10,
+each fixed arc target is rescaled as
+lo + (fixed - 40) / 50 * (hi - lo), so the fixed start (45)
+lands near the pool floor, the fixed peak (90) lands on the
+pool max, and the fixed end (40) lands on the pool floor.
+`prepare_flow` passes the pool's own min/max only when every
+pool track is BPM-missing and the range is at least 10. A
+pool with any BPM track keeps the fixed arc exactly, so BPM
+scoring stays byte-for-byte the AppleScript behaviour, and
+a narrow fallback range (<10) keeps the fixed arc rather
+than amplifying noise. Existing `flow_order` callers without
+the new arguments behave exactly as before.
+
+**Tests here:** full suite in this staging copy, 309 tests
+passed, 0 failed (303 in the v3.0.9 base + 6 new in
+tests/test_flow_relative_arc.py: arc scaling math, fixed-arc
+behaviour without bounds or with a narrow range, rescaled
+vs fixed walk on the same pool, a fallback pool rising and
+falling inside its own range with its peak near the pool
+top, a BPM pool keeping the fixed arc, and a narrow
+fallback pool keeping the fixed arc). Shell syntax and
+py_compile also pass; no shell or bridge file changed.
+
+**Known limits, plainly.** UNPROVEN ON A MAC: the relative
+arc is proven only on synthetic pools here. It is not proven
+against Spencer's real library until he runs flowPreview on
+a Mac and the first 25 show a rise and fall inside the
+pool's own energy range. A library with only calm songs
+will still sound calm overall; the wave is relative, not
+louder. Flow preview changes nothing, so that Mac step is
+safe to try without touching any playlist.
+
+## 2026-10-29 — v3.0.6: same-song dedupe by default, plus setup fixes
+
+Dedupe now removes a song stored as a different library
+track, not just an exact-ID repeat: same artist + title
+after case/accent/space normalisation, and within 3 seconds
+of length when both lengths are known. The bridge dump now
+carries duration in integer milliseconds, so the length
+check has data. Titles are never trimmed, so "Song (Live)"
+or "Song - Remastered" are different songs, and a track
+with no artist or no title is matched by ID only. The
+first copy in the playlist stays, and only playlist
+entries are removed; nothing leaves the library. To go
+back to exact-ID matching only:
+`SETER_DEDUPE_MATCH=id ./run.sh dedupe "Playlist"` (for
+the daily run, add it to the launchd plist's
+EnvironmentVariables). The Rediscover picker also gives
+one slot to a song that exists twice in the library.
+Tradeoff, stated plainly: same artist + title within 3
+seconds merges, first copy stays, and a dump with unknown
+durations merges on names alone.
+
+Also in v3.0.6: setup fixes (warn() prints its message;
+re-running setup from the installed copy no longer hits a
+same-file copy error; uninstall refuses a directory that
+is not a SeTeR install); the installer final note now
+states the daily self-probe behaviour instead of the stale
+manual sortprobe instruction; daily.sh drops an unused
+history variable.
+
+Version marker bumped to `3.0.6`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.6 one-click run, same-song
+dedupe on a real playlist, trial-dedupe completing on the
+real doubled playlist, the mapping recorded by a
+successful trial, and a subsequent shuffle after
+trial-dedupe.
+
+## 2026-10-29 — v3.0.5: restores try both mappings before declaring CRITICAL (NOT yet a published release)
+
+On 2026-10-29 18:59-19:05 PT Spencer ran trial-dedupe
+(v3.0.4) on the real main playlist from the menu: 1612
+entries, 806 unique songs, first-occurrence order
+computed and logged, then the forward trial apply
+verified-failed. That part was correct: the playlist's
+true mapping is reversed, so a forward build cannot land
+the deduped order. The trap was the restore: apply-order
+rebuilt the pre-dedupe snapshot with the SAME forward
+mapping, so it verified-failed too and declared CRITICAL,
+and the run.sh undo restore failed the same way. The
+pre-undo snapshot file proved the playlist held all 1612
+entries at undo start, in the exact reverse of the
+snapshot, and a read-only diagnostic at 19:08 PT proved
+the current list-read order is exactly the pre-dedupe
+snapshot order (1612, first EC60833070C7D0B1, last
+6471F2089E4E7F7D). No songs were lost, and the playlist
+is back at doubled order and needs no restore. Do NOT
+re-run trial-dedupe on v3.0.4: it would repeat the same
+forward-then-restore trap.
+
+**What changed.** Every restore now tries BOTH mappings
+before declaring CRITICAL: bridge/apply-order.applescript
+(its internal restore after a failed build, a
+delete-empty failure, and a library shrink), bridge/
+undo.applescript (its pre-undo restore), and
+bridge/restore-original.applescript (its snapshot
+put-back, the same trap in the run.sh restore path).
+Each attempt is verified against the snapshot it is
+returning to; the first verified attempt wins, and only
+if neither verifies does the script declare CRITICAL
+with the snapshot named. This is NOT a build flip and
+must not be misread as one: a failed build still exits
+non-zero and records nothing, and the opposite mapping
+is never used to land a desired order. A restore retries
+only to return to a known snapshot that already existed.
+In run.sh, a trial-dedupe attempt whose restore fails
+now means neither mapping restored, so the trial stops
+critical with the snapshot named and does not try the
+other trial mapping on top of a possibly partial state;
+if the restore succeeds under either mapping, the trial
+proceeds to the next mapping as before.
+
+Version marker bumped to `3.0.5`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.5 one-click run, trial-dedupe
+completing on the real doubled playlist, the mapping
+recorded by a successful trial, and a subsequent shuffle
+after trial-dedupe.
+
+## 2026-10-29 — v3.0.4: trial-dedupe breaks the doubled-playlist deadlock (NOT yet a published release)
+
+On 2026-10-29 18:44 PT Spencer ran the v3.0.3 menu on the
+real main playlist and the auto self-probe refused on
+duplicate entries (1612 entries, 806 unique), target
+untouched, no dump or apply. Dedupe needs a mapping, and
+the probe cannot measure one on a doubled playlist. That
+deadlock is what this release breaks, without weakening
+the probe.
+
+**What changed.** `./run.sh dedupe` (menu choice 3 and
+direct) no longer probes first. A clean playlist applies
+nothing and needs no mapping. A fresh mapping, when one
+exists, is used directly with no trial. Otherwise dedupe
+trial-applies its known desired order (first occurrence
+of each song in list-read order, with one "Removed
+duplicate" line per removed entry as before): forward
+first, verify the list read against the deduped order,
+and on failure restore from the per-run snapshot and try
+reversed. The first mapping that verifies wins and is
+recorded as a trial-dedupe mapping, so the next build
+reuses it directly. If neither verifies, the playlist is
+restored to its pre-dedupe order, no mapping is recorded,
+and dedupe exits non-zero. If an attempt's restore itself
+fails critically (playlist possibly partial), the trial
+stops immediately and does not try the other mapping on
+top of a partial state; the per-run snapshot is named in
+the log. The daily run attempts trial-dedupe only when
+the daily playlist's probe refused on duplicate entries
+specifically (the probe output wording is checked, not
+just the exit code); any other probe failure still stops
+the daily run immediately, and a failed trial-dedupe stops
+it before shuffle/rediscover.
+
+**Snapshot/undo guarantee.** Every trial attempt writes
+its own per-run snapshot before any change (the filename
+now also carries $RANDOM, so two attempts in the same
+second cannot share a snapshot file), and the main backup
+is installed only after a verified successful dedupe, with
+the previous main backup preserved as .prev. Undo after a
+successful trial-dedupe therefore returns to the doubled
+pre-dedupe order.
+
+**Probe refusal, unchanged.** sortprobe/selfprobe on a
+doubled playlist still refuse and change nothing. The
+mapping oracle in trial-dedupe is verify-after on the
+actual desired deduped order, not a rotation
+classification, and this path must never be borrowed back
+into the probe.
+
+Version marker bumped to `3.0.4`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.4 one-click run, trial-dedupe
+on the real doubled playlist, the mapping recorded by a
+successful trial, and a subsequent shuffle after
+trial-dedupe.
+
+## 2026-10-29 — v3.0.3: automatic self-probing for menu and direct builds (NOT yet a published release)
+
+v3.0.2 only auto-probed the daily run. Spencer then ran the
+menu on 3.0.2 and still got the gate failure, correctly,
+because the menu code explicitly said it "never probes" and
+called mapping_ready_for || continue. That is the gap this
+release closes: probing is now automatic for menu and direct
+builds too, not just the daily run.
+
+**What changed.** `run.sh` gained ensure_mapping_for, called
+before any dump or apply by menu choices and by direct
+shuffle, rediscover, dedupe, flow, undo, and restore. A
+fresh (<48h), correctly-targeted, forward/reversed mapping
+is reused as-is, with NO re-probe, so a normal run costs no
+extra rebuild. A missing, stale, or otherwise unusable
+mapping triggers `./run.sh selfprobe` on the target itself,
+then a re-check; if it is still not ready after the probe,
+the run aborts with the probe error named, before any dump
+or apply, and the menu loops back. Gate-failure messages no
+longer tell the user to run a manual sortprobe first when
+the automatic self-probe just failed; they name the
+self-probe that was attempted. Manual sortprobe and
+selfprobe commands keep working exactly as before.
+
+**Safety, unchanged.** The probe snapshots first, rotates,
+restores under the measured mapping, and verifies the
+restore; "other" aborts and deletes the mapping; the
+duplicate-entry refusal is unchanged, so a doubled playlist
+still fails closed at the probe, documented plainly;
+verify-after still fails closed; no other target's mapping
+is ever borrowed; no fresh throwaway probe is ever used.
+The v3.0.2 restore-failed exception still applies inside
+the probe itself (mapping recorded so restore can run,
+probe exits non-zero, no build follows).
+
+Version marker bumped to `3.0.3`; no v2.6 file was changed.
+UNPROVEN ON A MAC: the v3.0.3 one-click run, a menu
+auto-probe on a real playlist, a direct-build auto-probe,
+and the doubled-playlist dedupe deadlock path.
+
+## 2026-10-29 — v3.0.2: automatic self-probing (NOT yet a published release)
+
+Spencer's correction, which supersedes the throwaway-only
+rule for sortprobe: Apple Music remembers each playlist's
+own sort, so probe the actual target playlist itself, not a
+different throwaway. He is right, and the earlier ban was
+over-cautious for sortprobe specifically (it still holds for
+test shuffles: never shuffle a real playlist as a test). A
+mapping measured on the target under its own sort is, by
+construction, the mapping for that target and sort, so no
+throwaway sort needs matching and no mapping transfer is
+possible.
+
+**What changed.** `./run.sh selfprobe <playlist>` (and
+`sortprobe` with throwaway == target, which is the same
+self-probe) snapshots the target, builds a rotation, restores
+the snapshot under the measured mapping, and verifies the
+restore before returning OK; it records THROWAWAY as the
+target name and SORT as "self-probe: target's own sort".
+`daily.sh` now auto self-probes the daily playlist AND
+"SeTeR Rediscover" before the mapping check, so the 48-hour
+manual-probe chore is gone; the mapping gate is NOT dropped
+(a failed self-probe fails the whole daily run closed before
+any build, before probing the other target, because the two
+probes share one snapshot file; an "other" mapping still
+aborts). One deliberate exception to "a failed probe deletes
+the mapping": a probe that measured forward/reversed but
+could not verify its own restore RECORDS that mapping, so
+`./run.sh restore <target> <snapshot>` can run, while the
+probe still exits non-zero and no build follows until the
+target is restored and a clean probe passes. Every other
+probe failure still deletes the mapping.
+
+**Deadlock, stated plainly.** The duplicate-entry refusal is
+unchanged: a self-probe on a playlist with duplicate entries
+refuses and changes nothing. A currently doubled playlist
+(the main playlist was 1612 entries / 806 unique on
+2026-10-29) therefore cannot be auto-probed until it is
+deduped by hand, or under a mapping obtained another way.
+The refusal is NOT weakened to work around this. Version
+marker bumped to `3.0.2`; no v2.6 file was changed. UNPROVEN
+ON A MAC: the v3.0.2 one-click run, a self-probe on a real
+playlist, the daily auto-probe on a Mac, and the
+doubled-playlist dedupe deadlock path.
+
+## 2026-10-29 — v3.0.1: one-click installer fix (NOT yet a published release)
+
+Proven on Spencer's Mac at ~17:32 PT, running the v3.0 one-click
+installer with no extra arguments: after "ok python3 check
+passed" and "Step 1 of 3: installing/updating…", it died with
+"install-or-update.sh: line 147: SETUP_ARGS[@]: unbound
+variable". Same bash 3.2 empty-array class as the .7 menu bug:
+macOS ships bash 3.2, where expanding an empty array under
+set -u is an error, unlike bash 5 on Linux, so the bug was
+invisible here. The installer stopped at Step 1, before any
+migration, so v2.6 and the existing install were untouched.
+
+**Fix.** `install-or-update.sh` contains no array at all now:
+setup arguments are rebuilt with `set --` / `"$@"`, which is
+safe when empty even on bash 3.2, and `--force` is always
+passed through (the user already confirmed once in the
+one-click script), so an update from a `3.0-proposed` or `3.0`
+install is allowed. A tree-wide audit found only one other
+`[@]` expansion, `apply_args` in `run.sh`, which is assigned
+all 7 elements in both branches before use and is provably
+non-empty, so it was left alone. The installer also chmods +x
+its own helpers at the start of every run, because the v3.0 zip
+shipped them mode 660 and double-clicking gave "permission
+denied". Installer marker bumped to `3.0.1`; no v2.6 file was
+changed. UNPROVEN ON A MAC: the v3.0.1 one-click run itself,
+including the no-argument path and the stripped-modes path.
+
+## 2026-10-29 — v3.0 stable-prep: one-click install-or-update (NOT a published release)
+
+Spencer approved publishing v3.0 stable and asked for almost a
+one-button click to install or update everything. This entry is
+the code preparation for that publish, not the publish itself:
+no v3.0 tag or release is created by this tree, and the parent
+publishes after verifying the main-branch push.
+
+**What was added.** `install-or-update.sh` (also shipped at the
+repository root, plus a double-clickable
+`SeTeR-Shuffle-Install.command` wrapper in both places): one
+confirmation prompt, then, in order, a real-python3 check,
+install or update of `~/Documents/SeTeRShufflePython` to v3.0
+(differing files get a timestamped `.bak` first; setup is run
+with `--force` so an update from a `3.0-proposed` experimental
+install is allowed), the 8:00 AM `com.seter.python.daily`
+plist written and loaded, `migrate-to-python.sh --dry-run`
+then `--confirm` only if the v2.6 daily job is still enabled,
+and a final verification (install dir present, Python plist
+present, v2.6 plist gone). Any failure stops before migration
+and prints the rollback command. Update mode re-runs migration
+only if v2.6 is still enabled. The installer marker is now
+`3.0` (was `3.0-proposed`); `setup-python.sh` also copies
+`install-or-update.sh` into the install dir.
+
+**What it deliberately does not do.** It does not auto-probe:
+the 8am daily run still refuses without a fresh (<48h)
+per-target mapping for the main playlist and Rediscover, so
+the tool prints the exact sortprobe reminder at the end, and
+the user must probe each target on a clean throwaway (never
+the main playlist itself) before the first scheduled run. It
+never deletes or edits the v2.6 script, backups, apps, or
+Rediscover history.
+
+**Still unproven on a Mac.** The one-click run itself,
+migration via one-click, the first scheduled daily run, and
+the still-open items from earlier entries (throwaway
+checklist, flow undo, the library-drop investigation).
+
 ## 2026-10-29 — Menu bug fix (bash 3.2 empty-array crash, pre-dump mapping gate)
 
 Spencer's Mac paste, 17:01 PT, from the .6 folder: `./run.sh
