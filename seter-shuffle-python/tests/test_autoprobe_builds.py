@@ -283,7 +283,11 @@ class DirectBuildAutoProbeTests(AutoProbeHarness):
 class AutoProbeStructuralTests(unittest.TestCase):
     def test_menu_uses_ensure_not_bare_ready(self):
         menu = RUN_TEXT.split('if [ "$CMD" = "menu" ]')[1].split("# Sort-probe command")[0]
-        for target in ('"$menu_target"', '"SeTeR Rediscover"', '"SeTeR Flow"', '"$pl"'):
+        # v3.0.11 exp 2026-11-20.5: the menu Flow choice pre-checks
+        # the configured target (options_flow_target, default
+        # "SeTeR Flow"), not a hardcoded name, so a Flow target
+        # set in Options is the one probed.
+        for target in ('"$menu_target"', '"SeTeR Rediscover"', '"$(options_flow_target)"', '"$pl"'):
             self.assertIn(f"ensure_mapping_for {target}", menu)
         self.assertNotIn("mapping_ready_for ", menu)
         self.assertNotIn("never probes", menu)
@@ -298,7 +302,10 @@ class AutoProbeStructuralTests(unittest.TestCase):
     def test_pre_dump_ensures_every_build_target(self):
         block = RUN_TEXT.split("# Automatic self-probe before any dump")[1].split("# Dump:")[0]
         self.assertIn('ensure_mapping_for "${SHUFFLE_PLAYLIST:-SeTeR Shuffle}"', block)
-        self.assertIn('ensure_mapping_for "SeTeR Flow"', block)
+        # v3.0.11 exp 2026-11-20.5: the flow pre-dump check covers
+        # the configured target (options_flow_target, default
+        # "SeTeR Flow").
+        self.assertIn('ensure_mapping_for "$(options_flow_target)"', block)
         self.assertIn('ensure_mapping_for "SeTeR Rediscover"', block)
         # v3.0.4: dedupe is exempt from the pre-dump ensure. It
         # must still be dispatched (usage check) but must not

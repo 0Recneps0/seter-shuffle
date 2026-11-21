@@ -1,4 +1,4 @@
-"""SeTeR Shuffle, Python experimental core.
+"""SeTeR Shuffle, Python core.
 
 Standard library only. The core computes orderings from a library JSON
 dump; it never touches the Music app itself. The AppleScript bridge in
@@ -6,4 +6,4 @@ dump; it never touches the Music app itself. The AppleScript bridge in
 part that still needs a Mac to verify.
 """
 
-__version__ = "3.0.10"
+__version__ = "3.5"

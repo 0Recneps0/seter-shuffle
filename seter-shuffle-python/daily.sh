@@ -7,8 +7,11 @@
 #      kept 14 days, under the install directory's backups/.
 #   2. Dedupe the daily playlist (no-op when it is already clean),
 #      then shuffle it in place (v2.6 dailyRemoveDuplicates = true).
-#   3. Refresh "SeTeR Flow" (v3.0.9: the daily run refreshes Flow
-#      too, not just the main playlist and Rediscover).
+#   3. Refresh the Flow target playlist (v3.0.9: the daily run
+#      refreshes Flow too, not just the main playlist and
+#      Rediscover; v3.0.11 exp 2026-11-20.5: the target and the
+#      source pool are configurable, default "SeTeR Flow" from
+#      the whole library).
 #   4. Refresh "SeTeR Rediscover" and record history only after a
 #      successful apply (run.sh does that part).
 #   Shuffle, Flow, and Rediscover each stamp their playlist
@@ -24,7 +27,7 @@
 # HARD RULES (do not weaken these for convenience):
 # - This script AUTO SELF-PROBES (v3.0.2). Before the mapping
 #   check, it runs ./run.sh selfprobe on EACH target it touches
-#   (the daily playlist, "SeTeR Flow", AND "SeTeR Rediscover"), refreshing that
+#   (the daily playlist, the Flow target, AND "SeTeR Rediscover"), refreshing that
 #   target's per-target mapping from the target itself, under
 #   the target's own sort, which Music remembers per playlist.
 #   That is why an automated probe is safe here when it was not
@@ -70,7 +73,7 @@
 #   in-place dedupe stops it before shuffle, flow, and
 #   rediscover, and a re-probe that still refuses (or
 #   fails any other way) stops it with no second dedupe
-#   attempt. v3.0.10: this fallback used
+#   attempt. EXPERIMENTAL 2026-10-31: this fallback used
 #   to cover only the daily playlist, so on 2026-10-31 the
 #   daily run cleaned the main playlist, then exited at
 #   the Rediscover probe's duplicate refusal before
@@ -113,7 +116,11 @@ STATE="${SETER_STATE_DIR:-$HOME/Library/Logs/seter-shuffle-python}"
 LOG="$STATE/daily.log"
 BACKUP_DIR="${SETER_BACKUP_DIR:-$ROOT/backups}"
 REDISCOVER_PLAYLIST="SeTeR Rediscover"
-FLOW_PLAYLIST="SeTeR Flow"
+# FLOW_PLAYLIST and FLOW_SOURCE are set by load_flow_settings below
+# (env wins, else the flow-target-playlist / flow-source-playlist
+# files under the SeTeRShuffle settings dir, else "SeTeR Flow" /
+# the whole library), so the daily run and the menu read the same
+# settings and agree.
 
 mkdir -p "$STATE" "$BACKUP_DIR" 2>/dev/null || true
 
@@ -134,6 +141,59 @@ notify() {
 
 die() { log "DAILY FAILED: $*"; notify "SeTeR Shuffle daily run failed: $*"; exit 1; }
 
+# ---- single-run lock (v3.0.11, same lock as run.sh) ------------------------------------
+# Two runs touching Music at once (a manual run during the daily job, a
+# launchd catch-up after sleep, a double-click) can interleave their
+# delete/re-add loops and double a playlist, which is exactly what the
+# 2026-10-29 failure looked like. One lock directory per state folder:
+# mkdir is atomic, and macOS has no flock(1). The lock records the
+# owner's pid and start time; a lock whose owner is dead, or that is
+# older than 12 hours, is stale and taken over. A child run.sh started
+# by a locked parent (daily.sh, or run.sh's own self-probe) inherits
+# SETER_LOCK_HELD=1 and does not lock again.
+SETER_LOCK_DIR="${SETER_LOCK_DIR:-$STATE/run.lock.d}"
+LOCK_OWNED=0
+release_lock() {
+  if [ "$LOCK_OWNED" = "1" ] && [ "$(cat "$SETER_LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+    rm -rf "$SETER_LOCK_DIR"
+  fi
+  LOCK_OWNED=0
+}
+acquire_lock() {
+  local what="$1" pid started age waited tries=0
+  [ -n "${SETER_LOCK_HELD:-}" ] && return 0
+  while ! mkdir "$SETER_LOCK_DIR" 2>/dev/null; do
+    waited=0
+    pid="$(cat "$SETER_LOCK_DIR/pid" 2>/dev/null || true)"
+    # The owner may be between mkdir and writing its pid: give it a moment.
+    while [ -z "$pid" ] && [ "$waited" -lt 3 ] && [ -d "$SETER_LOCK_DIR" ]; do
+      sleep 1; waited=$((waited + 1))
+      pid="$(cat "$SETER_LOCK_DIR/pid" 2>/dev/null || true)"
+    done
+    started="$(cat "$SETER_LOCK_DIR/started" 2>/dev/null || echo 0)"
+    case "$started" in ''|*[!0-9]*) started=0 ;; esac
+    age=$(( $(date +%s) - started ))
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$age" -lt 43200 ]; then
+      LOCK_HOLDER="pid $pid ($(cat "$SETER_LOCK_DIR/what" 2>/dev/null || echo unknown), started $(date -r "$started" '+%H:%M:%S' 2>/dev/null || echo '?'))"
+      return 1
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -gt 3 ]; then
+      LOCK_HOLDER="an unreadable lock at $SETER_LOCK_DIR"
+      return 1
+    fi
+    printf '%s stale run lock removed (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${pid:-no pid}" >> "$LOG"
+    rm -rf "$SETER_LOCK_DIR"
+  done
+  printf '%s' "$$" > "$SETER_LOCK_DIR/pid"
+  date +%s > "$SETER_LOCK_DIR/started"
+  printf '%s' "$what" > "$SETER_LOCK_DIR/what"
+  LOCK_OWNED=1
+  export SETER_LOCK_HELD=1
+  return 0
+}
+
+
 # Mapping filename for one target: sanitized name plus a hash of the
 # full name, exactly the scheme run.sh mapping_file_for uses, so
 # this pre-check reads the same file run.sh will read.
@@ -150,6 +210,97 @@ mapping_file_for() {
   printf '%s/sort-mapping-%s-%s.txt' "$STATE" "$safe" "$hash"
 }
 
+# Probe cadence (v3.0.11). Default 0 = self-probe every target every
+# day, exactly as before. SETER_PROBE_MAX_AGE_HOURS=N (1..40) skips a
+# target's self-probe while its recorded mapping is younger than N
+# hours: each probe rebuilds the playlist twice (rotate + restore),
+# which is a lot of add/remove churn to sync every day. The mapping
+# check below still refuses anything older than 48 hours, and the
+# real build still verifies after writing and restores on failure.
+# Persisted probe cadence (menu Options submenu, v3.0.11 exp
+# 2026-11-20.3): the probe-max-age-hours file under the
+# SeTeRShuffle settings dir (same dir the AI marker already
+# uses; SETER_AI_DIR is a test hook, never set by a real run).
+# An env var already set wins over the file, so a one-off
+# override still works. The file holds one number; the
+# validation below (non-numeric reads as 0, over 40 clamps to
+# 40) covers a hand-edited file.
+load_probe_max_age() {
+  local dir val
+  if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
+    return 0
+  fi
+  dir="${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+  if [ -f "$dir/probe-max-age-hours" ]; then
+    val="$(head -n 1 "$dir/probe-max-age-hours" 2>/dev/null | tr -d ' \t\r\n')"
+    case "$val" in
+      ''|*[!0-9]*) return 0 ;;
+    esac
+    export SETER_PROBE_MAX_AGE_HOURS="$val"
+  fi
+  return 0
+}
+load_probe_max_age
+PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"
+case "$PROBE_MAX_AGE_HOURS" in ''|*[!0-9]*) PROBE_MAX_AGE_HOURS=0 ;; esac
+[ "$PROBE_MAX_AGE_HOURS" -gt 40 ] && PROBE_MAX_AGE_HOURS=40
+
+# Flow playlists (v3.0.11 exp 2026-11-20.5): the Flow source pool
+# and target playlist, mirroring run.sh's options_flow_source /
+# options_flow_target. An env var already set wins over the file,
+# so a one-off override still works; otherwise the
+# flow-source-playlist / flow-target-playlist files under the
+# SeTeRShuffle settings dir (same dir the probe-age file uses);
+# absent files mean the whole library and "SeTeR Flow". A bad
+# file (empty, or only whitespace) reads as the default, exactly
+# as run.sh reads it, and "library" (any case) as the source
+# means the whole library. The resolved values are exported so
+# the run.sh flow step below (a child process) resolves the same
+# settings: daily and menu can never disagree about which
+# playlist Flow reads from or writes to.
+load_flow_settings() {
+  local dir val lower trimmed
+  dir="${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+  if [ -n "${SETER_FLOW_SOURCE:-}" ]; then
+    val="$SETER_FLOW_SOURCE"
+  elif [ -f "$dir/flow-source-playlist" ]; then
+    val="$(head -n 1 "$dir/flow-source-playlist" 2>/dev/null)"
+    val="${val%$'\r'}"
+    val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+  else
+    val="library"
+  fi
+  lower="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r')"
+  if [ -z "$lower" ] || [ "$lower" = "library" ]; then
+    export SETER_FLOW_SOURCE="library"
+  else
+    export SETER_FLOW_SOURCE="$val"
+  fi
+  if [ -n "${SETER_FLOW_TARGET:-}" ]; then
+    val="$SETER_FLOW_TARGET"
+  elif [ -f "$dir/flow-target-playlist" ]; then
+    val="$(head -n 1 "$dir/flow-target-playlist" 2>/dev/null)"
+    val="${val%$'\r'}"
+    val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+  else
+    val="SeTeR Flow"
+  fi
+  trimmed="$(printf '%s' "$val" | tr -d ' \t\r')"
+  if [ -n "$trimmed" ]; then
+    export SETER_FLOW_TARGET="$val"
+  else
+    export SETER_FLOW_TARGET="SeTeR Flow"
+  fi
+  return 0
+}
+load_flow_settings
+FLOW_SOURCE="$SETER_FLOW_SOURCE"
+FLOW_PLAYLIST="$SETER_FLOW_TARGET"
+if [ "$FLOW_SOURCE" = "library" ]; then
+  FLOW_SOURCE_LABEL="whole library"
+else
+  FLOW_SOURCE_LABEL="'$FLOW_SOURCE'"
+fi
 # Auto self-probe one target before the mapping check. Return
 # codes: 0 on success; 2 when the probe refused ONLY on
 # duplicate entries (the caller may then try in-place
@@ -181,8 +332,8 @@ auto_self_probe() {
 }
 
 # Probe one target, with the duplicate-only in-place dedupe
-# fallback shared by all three daily targets (v3.0.10
-# stable; before this, only the daily playlist had it).
+# fallback shared by all three daily targets (EXPERIMENTAL
+# 2026-10-31; before this, only the daily playlist had it).
 # Return codes: 0 when the target ends with a fresh mapping
 # (probe OK, or dedupe succeeded and the re-probe passed);
 # 1 on any failure, in which case the caller stops the whole
@@ -191,8 +342,21 @@ auto_self_probe() {
 # re-probe that still refuses on duplicates means the dedupe
 # did not clean the list, and trying dedupe again on top of
 # that state would be guessing, so the run stops instead.
+mapping_is_younger_than_cap() {
+  local target="$1" map_file ts
+  [ "$PROBE_MAX_AGE_HOURS" -gt 0 ] || return 1
+  map_file="$(mapping_file_for "$target")"
+  [ -f "$map_file" ] || return 1
+  ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  [ $(( $(date +%s) - ts )) -lt $((PROBE_MAX_AGE_HOURS * 3600)) ]
+}
 probe_target() {
   local target="$1" status=0
+  if mapping_is_younger_than_cap "$target"; then
+    log "daily self-probe skipped for '$target': mapping is under $PROBE_MAX_AGE_HOURS hours old (SETER_PROBE_MAX_AGE_HOURS)"
+    return 0
+  fi
   auto_self_probe "$target" || status=$?
   if [ "$status" = "0" ]; then
     return 0
@@ -263,6 +427,16 @@ check_mapping() {
   return 0
 }
 
+# One run at a time. A dry run changes nothing, so it never locks.
+if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then
+  if ! acquire_lock "daily.sh"; then
+    log "DAILY SKIPPED: another SeTeR run is in progress: $LOCK_HOLDER"
+    notify "SeTeR Shuffle daily run skipped: another run is in progress"
+    exit 3
+  fi
+  trap release_lock EXIT
+fi
+
 log "daily run starting for playlist '$PLAYLIST'"
 
 # Python check first, before Music is touched (same rule as run.sh).
@@ -277,7 +451,7 @@ fi
 # before anything else is touched. A duplicate-only failure
 # for any target triggers probe_target's in-place dedupe
 # plus one re-probe (v3.0.9 for the daily playlist,
-# v3.0.10 for Rediscover and Flow): if the
+# EXPERIMENTAL 2026-10-31 for Rediscover and Flow): if the
 # dedupe cleans the target and the re-probe passes, the run
 # continues to the mapping check and the normal steps (the
 # later dedupe step then no-ops); if the dedupe or the
@@ -299,7 +473,7 @@ check_mapping "$REDISCOVER_PLAYLIST" || exit 1
 check_mapping "$FLOW_PLAYLIST" || exit 1
 
 if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
-  log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', flow, rediscover"
+  log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', flow (source $FLOW_SOURCE_LABEL, target '$FLOW_PLAYLIST'), rediscover"
   log "daily dry run done; nothing was changed"
   exit 0
 fi
@@ -312,7 +486,7 @@ TODAY="$(date +%Y-%m-%d)"
 MANIFEST="$BACKUP_DIR/library-manifest-$TODAY.tsv"
 if [ ! -f "$MANIFEST" ]; then
   WORK="$(mktemp -d)"
-  trap 'rm -rf "$WORK"' EXIT
+  trap 'rm -rf "$WORK"; release_lock' EXIT
   if ! osascript "$ROOT/bridge/dump-library.applescript" "$WORK/library.json" 2>&1 | tee -a "$LOG"; then
     die "library dump for the daily manifest failed"
   fi

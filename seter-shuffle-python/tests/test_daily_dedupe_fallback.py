@@ -1,4 +1,4 @@
-"""Tests for the v3.0.10 stable daily dedupe fallback.
+"""Tests for the EXPERIMENTAL 2026-10-31 daily dedupe fallback.
 
 On 2026-10-31 the v3.0.9 daily run cleaned the main playlist
 via its duplicate-only fallback, then exited at the SeTeR

@@ -225,11 +225,14 @@ class MenuPrecheckTests(unittest.TestCase):
         # ensure_mapping_for (fresh mapping reused, missing/stale
         # mapping probed, failed probe loops back) instead of
         # refusing outright with mapping_ready_for alone.
+        # v3.0.11 exp 2026-11-20.5: the Flow choice pre-checks
+        # the configured target (options_flow_target, default
+        # "SeTeR Flow").
         menu = self._menu_section()
         for target in (
             '"$menu_target"',
             '"SeTeR Rediscover"',
-            '"SeTeR Flow"',
+            '"$(options_flow_target)"',
         ):
             self.assertIn(f"ensure_mapping_for {target}", menu)
         # v3.0.4: undo still pre-checks with $pl, but dedupe

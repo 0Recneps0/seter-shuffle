@@ -25,8 +25,17 @@ class Settings:
     # Shuffle / Flow artist spacing (v2.6, v2.5)
     artist_spacing: int = 2  # 1 = just not back-to-back; best effort
     featuring_is_same_artist: bool = True
+    # "A & B" / "A, B" / "A x B" count as artist "A" for spacing and caps.
+    # Off by default so existing orders keep v2.6 behaviour.
+    split_collabs: bool = False
     # Flow (experimental AppleScript build)
     flow_size: int = 50
     flow_pool_max: int = 400  # 0 = no pool cap
     # Preview display
     preview_show: int = 25
+    # AI tagging for Flow (optional; see ai_tags.py). Off by default: the
+    # core stays offline and deterministic unless the caller opts in.
+    ai_enabled: bool = False
+    ai_blend: float = 0.6  # weight of the AI energy vs the heuristic, 0..1
+    ai_mood_cost: int = 4  # extra walk cost for an unrelated mood, 0 = off
+    ai_batch_size: int = 20

@@ -50,6 +50,21 @@ class Track:
         return True
 
 
+def dump_now() -> datetime:
+    """Now, in the same frame as the dump's dates.
+
+    dump-library.applescript writes each date's LOCAL wall-clock
+    components with a trailing "Z" (it never converts to UTC), so
+    parse_date() labels local time as UTC. Comparing those against a
+    true UTC clock skews every age by the Mac's UTC offset (7-8 hours
+    in Seattle). Callers that compare a track date against "now" use
+    this instead: the current local wall-clock time, labelled UTC the
+    same way the dump labels its dates, so the two cancel exactly
+    (apart from one hour around a DST change).
+    """
+    return datetime.now().replace(tzinfo=timezone.utc)
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     if value is None or isinstance(value, bool):
         return default

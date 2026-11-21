@@ -22,17 +22,28 @@ preview: (a) his library genuinely lacks BPM data for most songs, or
   provide on that Mac) before concluding the library has no BPM.
 
 Counts are reported with percentages of the total library, plus the
-most common raw genre strings, so the next genre-map edit is driven
-by real data instead of guesses.
+most common genre strings, so the next genre-map edit is driven by
+real data instead of guesses. Genre strings are counted
+case-insensitively (Flow matches genres case-insensitively, so
+"Rock", "rock", and "ROCK" are one genre, not three); the displayed
+label keeps the first-seen casing so the list still reads naturally.
+
+Same-song copies are counted too: the library can hold the same
+recording twice (a single plus the album version, a matched copy
+plus an uploaded copy), and those are different library tracks.
+The audit counts them with the same conservative rule dedupe uses,
+so a dedupe total that lands below the library size has an
+explanation instead of looking like songs went missing.
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime
 from typing import Sequence
 
 from .flow import flow_energy
-from .tracks import Track
+from .tracks import Track, split_duplicates
 
 
 def _pct(count: int, total: int) -> float:
@@ -63,14 +74,41 @@ def _rating_band(rating: int) -> str:
     return "other"
 
 
-def audit_library(tracks: Sequence[Track]) -> dict:
-    """Count tag coverage, familiarity bands, and Flow energy spread."""
+def audit_library(
+    tracks: Sequence[Track], now: datetime | None = None
+) -> dict:
+    """Count tag coverage, familiarity bands, and Flow energy spread.
+
+    `now` is the reference time for the played-date / date-added
+    recency nudge inside the Flow energies. The CLI passes the real
+    clock, so the "Flow energies (eligible)" range is the range Flow
+    itself builds from the same dump: without it the audit scored
+    every track clock-free and understated the real range by up to
+    5 points (a song played 5 days ago scores 56 in Flow but 53 in
+    a clock-free audit). With no `now` the energies stay
+    deterministic (no recency contribution), which is what the
+    existing tests rely on; the BPM path never uses `now` either
+    way, so BPM energies are identical with or without it.
+    """
     total = len(tracks)
     bpm_present = sum(1 for t in tracks if t.bpm is not None and t.bpm > 0)
     bpm_zero = sum(1 for t in tracks if t.bpm is not None and t.bpm <= 0)
     bpm_missing = total - bpm_present - bpm_zero
-    genre_counts = Counter(t.genre.strip() for t in tracks if t.genre.strip())
-    genre_present = sum(1 for t in tracks if t.genre.strip())
+    # Genre strings are counted case-insensitively: Flow matches
+    # genres with a lowered substring check, so "Rock", "rock", and
+    # "ROCK" are the same genre for the map the audit informs, and
+    # counting them apart would inflate genre_distinct and split the
+    # top-genres list. The displayed label keeps the first-seen
+    # casing, so the list still reads as the library wrote it.
+    genre_counts: Counter[str] = Counter()
+    genre_labels: dict[str, str] = {}
+    for t in tracks:
+        raw = t.genre.strip()
+        if raw:
+            key = raw.lower()
+            genre_counts[key] += 1
+            genre_labels.setdefault(key, raw)
+    genre_present = sum(genre_counts.values())
     played_bands: Counter[str] = Counter()
     rating_bands: Counter[str] = Counter()
     for t in tracks:
@@ -80,12 +118,18 @@ def audit_library(tracks: Sequence[Track]) -> dict:
     eligible_missing_bpm = sum(
         1 for t in eligible if t.bpm is None or t.bpm <= 0
     )
-    energies = [flow_energy(t) for t in eligible]
+    energies = [flow_energy(t, now=now) for t in eligible]
     missing_bpm_energies = [
-        flow_energy(t)
+        flow_energy(t, now=now)
         for t in eligible
         if t.bpm is None or t.bpm <= 0
     ]
+    # Same-song library copies, same rule as dedupe: only "same song"
+    # removals count here, so a repeated persistent ID (a dump error
+    # the strict loader already rejects) never inflates this number.
+    _kept, _removed = split_duplicates(list(tracks), "song")
+    same_song = [r for r in _removed if r[2] == "same song"]
+    same_song_groups = len({id(kept) for _entry, kept, _why in same_song})
     return {
         "total": total,
         "bpm_present": bpm_present,
@@ -100,7 +144,8 @@ def audit_library(tracks: Sequence[Track]) -> dict:
         "genre_missing_pct": _pct(total - genre_present, total),
         "genre_distinct": len(genre_counts),
         "genre_counts": sorted(
-            genre_counts.items(), key=lambda kv: (-kv[1], kv[0])
+            ((genre_labels[key], count) for key, count in genre_counts.items()),
+            key=lambda kv: (-kv[1], kv[0]),
         ),
         "played_bands": {
             band: played_bands.get(band, 0)
@@ -122,6 +167,8 @@ def audit_library(tracks: Sequence[Track]) -> dict:
         "energy_max": max(energies) if energies else None,
         "energy_distinct": len(set(energies)),
         "energy_distinct_missing_bpm": len(set(missing_bpm_energies)),
+        "same_song_groups": same_song_groups,
+        "same_song_extra": len(same_song),
     }
 
 
@@ -177,5 +224,10 @@ def format_audit(report: dict, top_genres: int = 20) -> list[str]:
         )
     else:
         lines.append("Flow energies (eligible): none.")
+    lines.append(
+        f"Same-song duplicates: {report['same_song_extra']} extra copies "
+        f"across {report['same_song_groups']} songs (same artist + title "
+        f"stored as different library tracks)."
+    )
     lines.append("Nothing was changed.")
     return lines

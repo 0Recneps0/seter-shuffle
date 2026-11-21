@@ -290,6 +290,7 @@ def validate_order_text(
     mode: str | None = None,
     eligible_ids: set[str] | None = None,
     library_counts: Mapping[str, int] | None = None,
+    dedupe_kept_ids: set[str] | None = None,
 ) -> None:
     """In-memory form of the same rules, for tests and callers that
     already hold the IDs (no file involved). Raises ValueError.
@@ -300,6 +301,19 @@ def validate_order_text(
     drops a duplicate entry fails). Without it, the shuffle check is
     set equality plus a length check, which still catches a dropped
     duplicate when the library set has no repeats.
+
+    dedupe_kept_ids, when given, is the set of IDs a correct dedupe
+    order keeps (first occurrence of each distinct song, as
+    split_duplicates computes it). Without it the dedupe check can
+    only see IDs, so it demands every unique ID exactly once: that
+    refuses a correct dedupe order whenever two different IDs are
+    the same song stored twice (a single plus the album version),
+    because dedupe keeps only one of them. The file form
+    (validate_order_file) recomputes the kept set from the dump and
+    accepts that order, so an ID-only caller that wants the same
+    answer must pass the kept set in here. With it, the check is
+    exactly the file form's set rule: the order must be those kept
+    IDs, each once, in any order.
     """
     errors: list[str] = []
     id_list = list(ids)
@@ -331,7 +345,14 @@ def validate_order_text(
         elif set(id_list) != library_ids or len(id_list) != len(library_ids):
             errors.append("shuffle order must be exactly the library song set")
     if mode == "dedupe":
-        if Counter(id_list) != Counter({pid: 1 for pid in library_ids}):
+        # The kept set, when the caller knows it (see the docstring):
+        # two different IDs can be the same song, and dedupe keeps
+        # only one of them, so "every unique ID once" would refuse a
+        # correct order. Without it, fall back to the ID-level rule.
+        expected = (
+            dedupe_kept_ids if dedupe_kept_ids is not None else library_ids
+        )
+        if Counter(id_list) != Counter({pid: 1 for pid in expected}):
             errors.append(
                 "dedupe order must be exactly the library's unique songs "
                 "(each once)"

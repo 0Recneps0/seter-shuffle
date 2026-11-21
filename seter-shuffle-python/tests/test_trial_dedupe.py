@@ -299,7 +299,7 @@ class TrialDedupeHarness(unittest.TestCase):
 
 
 class DailyTrialDedupeTests(unittest.TestCase):
-    """daily.sh with a stub run.sh: duplicate probe -> in-place dedupe, one re-probe, then continues (v3.0.10)."""
+    """daily.sh with a stub run.sh: duplicate probe -> in-place dedupe -> re-probe."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -383,7 +383,7 @@ class DailyTrialDedupeTests(unittest.TestCase):
             timeout=60,
         )
 
-    def test_daily_duplicate_probe_triggers_presence_dedupe_then_continues(self) -> None:
+    def test_daily_duplicate_probe_triggers_dedupe_reprobe_then_continues(self) -> None:
         result = self.run_daily({"STUB_DUPLICATE_TARGET": TARGET})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls.read_text(encoding="utf-8").splitlines()

@@ -9,7 +9,14 @@ Rules (see the v2.6 header, reproduced here so this module stands alone):
   not excluded for recency (v2.6 only excludes when a date exists and
   is newer than the cutoff).
 - WEIGHT = liked x forgotten:
-    liked: never played 0.4; otherwise 1 + min(plays, 10) * 0.5
+    liked: never played 1.0 (the played-song base, 2026-11-18
+      experimental: the old 0.4 capped a never-played song at 2.0
+      against a 10-play song's 30.0, a 15:1 ratio no amount of
+      forgottenness could close, so in an even pool never-played
+      songs took ~8% of picks; 1.0 keeps played songs ahead at
+      equal forgottenness while letting the plays tier, not a 60%
+      unplayed discount, separate played from unplayed);
+      otherwise 1 + min(plays, 10) * 0.5
     boosts: favorited x3; rating 80+ (4-5 stars) x2; rating 1..40
       (1-2 stars) x0.25; then divided by (1 + skips)
     forgotten: days since last play (or add) / stale_days, capped at 5x;
@@ -18,10 +25,24 @@ Rules (see the v2.6 header, reproduced here so this module stands alone):
   nothing picked in the last `rediscover_cooldown_days` days (history
   file: one "YYYY-MM-DD<TAB>persistent_id" line per pick, same format
   as v2.6). If the pool is too small to fill the target, the rules are
-  relaxed rather than leaving the playlist short (pass 2), and finally
-  the front of the candidate list fills any remaining slots (pass 3).
+  relaxed in stages rather than leaving the playlist short, and
+  finally the highest-weight remaining candidates fill any
+  remaining slots. The stages relax one rule at a time, in this order: (1) both rules
+  enforced, (2) cooldown enforced, artist cap relaxed, so a slot is
+  filled by an extra song from an already-picked artist before any
+  recently picked song is repeated, (3) artist cap enforced,
+  cooldown relaxed, so a recently picked song is repeated before
+  the cap is broken as well, (4) neither rule enforced. v2.6
+  relaxed both rules in a single pass; this keeps that as the
+  last resort only, so a small pool does not break the cooldown
+  when an artist-cap break would have filled the slot, or break
+  the cap when a cooldown break would have.
 - ORDER: picks are shuffled (Fisher-Yates) and spread by artist, so the
-  playlist does not play best-songs-first.
+  playlist does not play best-songs-first. rediscover-preview also
+  prints a one-line summary of the whole pick list (never-played /
+  favorited / 4-5-star counts, forgotten range, max per artist), so
+  the capped preview list does not hide what the picks are made of;
+  the summary describes picks already computed and changes nothing.
 
 Sampling is weighted random without replacement via cumulative weights
 and binary search, exactly as v2.6's samplePicks. An explicit rng makes
@@ -33,11 +54,11 @@ from __future__ import annotations
 import bisect
 import math
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from .artists import artist_key
+from .artists import artist_compare_key
 from .settings import Settings
 from .shuffle import fisher_yates, spread_artists
 from .tracks import Track, split_duplicates
@@ -85,7 +106,17 @@ def rediscover_weight(track: Track, now: datetime, settings: Settings) -> float:
         return 0.0
     plays = max(0, track.played_count)
     if plays == 0:
-        weight = 0.4
+        # The played-song base (2026-11-18 experimental): a
+        # never-played song is unproven, not disliked, so it starts
+        # where every played song starts and the plays tier is what
+        # separates played from unplayed. The old 0.4 capped it at
+        # 2.0 against a 10-play song's 30.0, a 15:1 ratio the
+        # forgotten multiplier (capped at 5x for everyone) could
+        # never close, so never-played songs were nearly invisible
+        # in a mixed pool. At 1.0 a never-played song tops out at
+        # 5.0, still below a once-played song's 7.5 at the same
+        # forgottenness.
+        weight = 1.0
     else:
         weight = 1.0 + min(plays, 10) * 0.5
     if track.favorited:
@@ -113,9 +144,15 @@ def _sample_picks(
     target: int,
     settings: Settings,
     rng: random.Random,
-    enforce_rules: bool,
+    enforce_history: bool = True,
+    enforce_artist: bool = True,
 ) -> tuple[list[int], list[str]]:
-    """Weighted draws until target is reached or attempts run out."""
+    """Weighted draws until target is reached or attempts run out.
+
+    The two variety rules are enforced independently, so the caller
+    can relax them one at a time (see pick_rediscover): cooldown
+    first, artist cap second, neither last.
+    """
     max_attempts = target * 40 + 200
     attempts = 0
     picked_set = set(picked)
@@ -128,18 +165,20 @@ def _sample_picks(
         if idx in picked_set:
             continue
         track = candidates[idx]
-        key = artist_key(track.artist, settings.featuring_is_same_artist)
+        key = artist_compare_key(
+            track.artist, settings.featuring_is_same_artist, settings.split_collabs
+        )
         ok = True
-        if enforce_rules:
-            if track.persistent_id in history_ids:
-                ok = False
-            if (
-                ok
-                and settings.rediscover_max_per_artist > 0
-                and key != ""
-                and picked_keys.count(key) >= settings.rediscover_max_per_artist
-            ):
-                ok = False
+        if enforce_history and track.persistent_id in history_ids:
+            ok = False
+        if (
+            ok
+            and enforce_artist
+            and settings.rediscover_max_per_artist > 0
+            and key != ""
+            and picked_keys.count(key) >= settings.rediscover_max_per_artist
+        ):
+            ok = False
         if ok:
             picked.append(idx)
             picked_keys.append(key)
@@ -192,27 +231,105 @@ def pick_rediscover(
         history = set(history_ids)
         picked_idx: list[int] = []
         picked_keys: list[str] = []
-        picked_idx, picked_keys = _sample_picks(
-            cumulative, running, candidates, picked_idx, picked_keys,
-            history, target, settings, rng, enforce_rules=True,
-        )
-        if len(picked_idx) < target:
+        # Relax one rule at a time, in order: both rules, cooldown
+        # only, artist cap only, neither. A small pool therefore
+        # breaks the artist cap before it repeats a recent pick,
+        # and repeats a recent pick before it breaks both rules.
+        # The weight-ordered fill below still guarantees a full
+        # playlist when sampling alone cannot reach the target.
+        for enforce_history, enforce_artist in (
+            (True, True),
+            (True, False),
+            (False, True),
+            (False, False),
+        ):
+            if len(picked_idx) >= target:
+                break
             picked_idx, picked_keys = _sample_picks(
                 cumulative, running, candidates, picked_idx, picked_keys,
-                history, target, settings, rng, enforce_rules=False,
+                history, target, settings, rng,
+                enforce_history=enforce_history,
+                enforce_artist=enforce_artist,
             )
         if len(picked_idx) < target:
-            for j in range(len(candidates)):
+            # Last resort only: sampling could not fill the target
+            # even with neither rule enforced. Fill from the
+            # highest-weight unpicked candidates, not the front of
+            # the candidate list in library order: the weights are
+            # what ranked the sampled picks, so the remaining slots
+            # go to the best songs left by the same measure. Ties
+            # keep library order, so a pool of equal-weight songs
+            # fills exactly as before.
+            picked_set = set(picked_idx)
+            by_weight = sorted(
+                range(len(candidates)), key=lambda i: (-weights[i], i)
+            )
+            for j in by_weight:
                 if len(picked_idx) >= target:
                     break
-                if j not in picked_idx:
+                if j not in picked_set:
                     picked_idx.append(j)
+                    picked_set.add(j)
     picked = [candidates[i] for i in picked_idx]
-    keys = [artist_key(t.artist, settings.featuring_is_same_artist) for t in picked]
+    keys = [
+        artist_compare_key(
+            t.artist, settings.featuring_is_same_artist, settings.split_collabs
+        )
+        for t in picked
+    ]
     order = spread_artists(
         fisher_yates(range(len(picked)), rng), keys, settings.artist_spacing, rng
     )
     return [picked[i] for i in order], len(candidates), target
+
+
+def rediscover_summary(
+    picks: Sequence[Track],
+    now: datetime | None,
+    featuring_is_same_artist: bool = True,
+) -> str | None:
+    """One-line summary of a Rediscover pick list.
+
+    rediscover and rediscover-preview print only the first
+    `preview_show` songs, so the first page hid what the full pick
+    list is actually made of: how much of it was never played at
+    all, how much is favorited or highly rated, how long the picks
+    were forgotten, and whether one artist dominates the list. This
+    line covers the whole ordered list: its size, its never-played /
+    favorited / 4-5-star counts, the forgotten range in days over
+    picks with a usable date, and the most songs by one artist. It
+    changes nothing: it only describes picks already computed. `now`
+    is the reference time for the forgotten range; with no `now`, or
+    no pick with a usable date, the forgotten clause is left out
+    rather than guessed. Picks with no artist string do not count
+    toward the per-artist max, and when no pick names an artist at
+    all the max clause is left out too.
+    """
+    if not picks:
+        return None
+    noun = "song" if len(picks) == 1 else "songs"
+    parts = [
+        f"{len(picks)} {noun}",
+        f"{sum(1 for t in picks if t.played_count <= 0)} never played",
+        f"{sum(1 for t in picks if t.favorited)} favorited",
+        f"{sum(1 for t in picks if t.rating >= 80)} rated 4-5 stars",
+    ]
+    if now is not None:
+        forgotten = [
+            max(0, (now - base).days)
+            for track in picks
+            if (base := _base_date(track)) is not None
+        ]
+        if forgotten:
+            parts.append(f"forgotten {min(forgotten)}..{max(forgotten)} days")
+    per_artist: dict[str, int] = {}
+    for track in picks:
+        key = artist_compare_key(track.artist, featuring_is_same_artist)
+        if key != "":
+            per_artist[key] = per_artist.get(key, 0) + 1
+    if per_artist:
+        parts.append(f"max {max(per_artist.values())} per artist")
+    return "Rediscover picks: " + ", ".join(parts) + "."
 
 
 def load_rediscover_history(
@@ -226,7 +343,7 @@ def load_rediscover_history(
     """
     if cooldown_days < 1:
         return set()
-    today = today or datetime.now(timezone.utc).date()
+    today = today or date.today()
     cutoff = today - timedelta(days=cooldown_days)
     history: set[str] = set()
     try:
@@ -251,19 +368,22 @@ def record_rediscover_history(
     picked_ids: Iterable[str],
     cooldown_days: int,
     today: date | None = None,
-) -> None:
+) -> int:
     """Append today's picks and prune entries older than the window.
 
     This is intentionally a separate step from picking: the runner calls
     it only after the playlist was successfully applied, so a failed
     apply never burns a song's cooldown.
+
+    Returns the number of IDs appended (0 when nothing was written:
+    no picks, or a cooldown under 1 day).
     """
     if cooldown_days < 1:
-        return
+        return 0
     picked = list(picked_ids)
     if not picked:
-        return
-    today = today or datetime.now(timezone.utc).date()
+        return 0
+    today = today or date.today()
     cutoff = today - timedelta(days=cooldown_days)
     kept: list[str] = []
     try:
@@ -284,3 +404,4 @@ def record_rediscover_history(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return len(picked)

@@ -1,4 +1,4 @@
-"""Command line for the Python experimental core.
+"""Command line for the Python core.
 
 The CLI works only on files. It reads a library JSON dump, computes an
 ordering, and writes that ordering to files the caller asks for. It
@@ -7,16 +7,27 @@ by itself: writing to Music is the bridge's job, and the runner only
 calls the bridge after this step succeeds.
 
 Commands:
-  shuffle              Fisher-Yates shuffle + artist spacing
-  rediscover           Rediscover picks (does NOT record history)
-  rediscover-preview   Same picks, printed, no files written except --out
+  shuffle              Fisher-Yates shuffle + artist spacing, plus a
+                       full-list spacing summary
+  rediscover           Rediscover picks (does NOT record history),
+                       plus a full-list pick summary
+  rediscover-preview   Same picks, printed, plus a full-list pick
+                       summary, no files written except --out
   flow                 Flow ordering (ordered IDs only; no Music write)
-  flowPreview          Flow ordering printed with energy scores
+  flowPreview          Flow ordering printed with energy scores, plus a
+                       full-list arc summary (the preview list itself is
+                       capped at preview_show songs)
+  ai-selftest          Check Apple's `fm` AI tagging works on this Mac
+                       (writes only schema files; changes nothing else).
+                       Turn AI on for Flow with --ai, SETER_AI=1, or by
+                       creating ~/Documents/SeTeRShuffle/ai-enabled.
   audit                Tag-coverage audit of a library dump (changes
                        nothing; tells a real BPM gap from a dump bug)
   record-history       Append picked IDs to a Rediscover history file
                        (the runner calls this only after a successful
                        apply, so a failed apply never burns cooldown)
+                       and print a one-line confirmation of what was
+                       recorded
   library-manifest     Write a daily library manifest TSV
                        (persistent_id, artist, album, title), the
                        Python form of v2.6's daily manifest backup
@@ -53,23 +64,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .ai_tags import (
+    FlowTagger,
+    FmClient,
+    TagCache,
+    ai_enabled_by_environment,
+    default_ai_dir,
+    selftest,
+)
 from .audit import audit_library, format_audit
-from .flow import prepare_flow
+from .flow import flow_arc_summary, prepare_flow
 from .manifest import write_library_manifest
 from .rediscover import (
     load_rediscover_history,
     pick_rediscover,
     record_rediscover_history,
+    rediscover_summary,
 )
 from .settings import Settings
-from .shuffle import shuffle_tracks
-from .tracks import Track, load_library, split_duplicates
+from .shuffle import shuffle_summary, shuffle_tracks
+from .tracks import Track, dump_now, load_library, split_duplicates
 from .validate import validate_backup_file, validate_order_file
 
 
@@ -118,20 +138,153 @@ def _add_settings(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stale-days", type=int, default=None)
     parser.add_argument("--max-per-artist", type=int, default=None)
     parser.add_argument("--cooldown-days", type=int, default=None)
+    parser.add_argument(
+        "--split-collabs", action=argparse.BooleanOptionalAction, default=None,
+        help='count "A & B" / "A, B" / "A x B" as artist "A" for spacing and caps',
+    )
+    parser.add_argument(
+        "--featuring-same-artist", action=argparse.BooleanOptionalAction,
+        default=None,
+        help='"Artist feat. X" / "Artist (ft. X)" counts as the same artist '
+        "for spacing and caps (default: on; SETER_FEATURING_SAME_ARTIST "
+        "also sets it)",
+    )
+    parser.add_argument(
+        "--ai", action=argparse.BooleanOptionalAction, default=None,
+        help="Flow: tag songs with Apple's on-device `fm` model (default: off; "
+        "SETER_AI=1 or an ai-enabled marker file also turns it on)",
+    )
+    parser.add_argument("--ai-blend", type=float, default=None,
+                        help="weight of the AI energy vs the heuristic, 0..1")
+    parser.add_argument("--ai-mood-cost", type=int, default=None,
+                        help="extra Flow walk cost for an unrelated mood, 0 = off")
+    parser.add_argument("--ai-batch-size", type=int, default=None)
+    parser.add_argument("--ai-dir", default=None,
+                        help="folder for the AI tag cache and schemas "
+                        "(default: ~/Documents/SeTeRShuffle, or SETER_AI_DIR)")
+
+
+def _env_flag(name: str) -> bool | None:
+    value = os.environ.get(name, "").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def _env_int(name: str, lo: int, hi: int, default: int) -> int:
+    """An integer setting from the environment: garbage reads as the
+    default, out of range clamps into [lo, hi]. A missing env var
+    is the default, so callers stay on Settings defaults unless
+    the user set something."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(lo, min(hi, value))
+
+
+def _env_float(name: str, lo: float, hi: float, default: float) -> float:
+    """A float setting from the environment: same rule as _env_int."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(lo, min(hi, value))
 
 
 def _settings_from(args: argparse.Namespace) -> Settings:
     base = Settings()
     overrides: dict[str, Any] = {}
+    # Explicit CLI flags win; otherwise an env var sets the value
+    # (garbage reads as the Settings default, out of range clamps
+    # into range — see _env_int / _env_float); otherwise the
+    # Settings default stands. The menu Options submenu persists
+    # these same values in files under the settings dir and
+    # run.sh's loader exports them into the env at startup, so
+    # menu, direct commands, and the daily run all agree.
     mapping = {
-        "artist_spacing": args.artist_spacing,
-        "flow_size": args.flow_size,
-        "flow_pool_max": args.flow_pool_max,
-        "rediscover_min": args.rediscover_min,
+        "artist_spacing": (
+            args.artist_spacing
+            if getattr(args, "artist_spacing", None) is not None
+            else _env_int("SETER_ARTIST_SPACING", 1, 5, base.artist_spacing)
+        ),
+        "flow_size": (
+            args.flow_size
+            if getattr(args, "flow_size", None) is not None
+            else _env_int("SETER_FLOW_SIZE", 10, 200, base.flow_size)
+        ),
+        "flow_pool_max": (
+            args.flow_pool_max
+            if getattr(args, "flow_pool_max", None) is not None
+            else _env_int("SETER_FLOW_POOL_MAX", 0, 1000, base.flow_pool_max)
+        ),
+        "rediscover_min": (
+            args.rediscover_min
+            if getattr(args, "rediscover_min", None) is not None
+            else _env_int("SETER_REDISCOVER_SIZE", 5, 500, base.rediscover_min)
+        ),
         "rediscover_max": args.rediscover_max,
-        "stale_days": args.stale_days,
-        "rediscover_max_per_artist": args.max_per_artist,
-        "rediscover_cooldown_days": args.cooldown_days,
+        "stale_days": (
+            args.stale_days
+            if getattr(args, "stale_days", None) is not None
+            else _env_int(
+                "SETER_REDISCOVER_STALE_DAYS", 7, 365, base.stale_days
+            )
+        ),
+        "rediscover_max_per_artist": (
+            args.max_per_artist
+            if getattr(args, "max_per_artist", None) is not None
+            else _env_int(
+                "SETER_REDISCOVER_MAX_PER_ARTIST",
+                0,
+                10,
+                base.rediscover_max_per_artist,
+            )
+        ),
+        "rediscover_cooldown_days": (
+            args.cooldown_days
+            if getattr(args, "cooldown_days", None) is not None
+            else _env_int(
+                "SETER_REDISCOVER_COOLDOWN_DAYS",
+                0,
+                90,
+                base.rediscover_cooldown_days,
+            )
+        ),
+        "split_collabs": (
+            args.split_collabs
+            if getattr(args, "split_collabs", None) is not None
+            else _env_flag("SETER_SPLIT_COLLABS")
+        ),
+        "featuring_is_same_artist": (
+            args.featuring_same_artist
+            if getattr(args, "featuring_same_artist", None) is not None
+            else _env_flag("SETER_FEATURING_SAME_ARTIST")
+        ),
+        "ai_enabled": (
+            args.ai
+            if getattr(args, "ai", None) is not None
+            else ai_enabled_by_environment()
+        ),
+        "ai_blend": (
+            args.ai_blend
+            if getattr(args, "ai_blend", None) is not None
+            else _env_float("SETER_AI_BLEND", 0.0, 1.0, base.ai_blend)
+        ),
+        "ai_mood_cost": (
+            args.ai_mood_cost
+            if getattr(args, "ai_mood_cost", None) is not None
+            else _env_int("SETER_AI_MOOD_COST", 0, 10, base.ai_mood_cost)
+        ),
+        "ai_batch_size": getattr(args, "ai_batch_size", None),
     }
     for key, value in mapping.items():
         if value is not None:
@@ -141,7 +294,7 @@ def _settings_from(args: argparse.Namespace) -> Settings:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="seter_shuffle", description="SeTeR Shuffle Python experimental core"
+        prog="seter_shuffle", description="SeTeR Shuffle Python core"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -171,6 +324,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_settings(p)
     p.add_argument("--history", default=None, help="cooldown history TSV")
     p.add_argument("--playlist", default="SeTeR Rediscover")
+
+    p = sub.add_parser(
+        "ai-selftest",
+        help="check that `fm` AI tagging works on this Mac (changes nothing)",
+    )
+    p.add_argument("--ai-dir", default=None, help="folder for the schema files")
 
     p = sub.add_parser("flow", help="Flow ordering (IDs only)")
     _add_common(p)
@@ -278,6 +437,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "ai-selftest":
+        ai_dir = Path(args.ai_dir) if args.ai_dir else default_ai_dir()
+        return 0 if selftest(FmClient(ai_dir)) else 1
+
     if args.command == "dedupe-positions":
         # A playlist dump repeats IDs by definition: that is
         # exactly what dedupe is removing.
@@ -324,7 +487,13 @@ def _run(args: argparse.Namespace) -> int:
 
     if args.command == "audit":
         tracks = load_library(args.library)
-        report = audit_library(tracks)
+        # The dump-frame clock (see tracks.dump_now), so the Flow
+        # energy range in the report is the range Flow itself builds
+        # from this dump (see audit_library): a clock-free audit
+        # understates it by up to 5 points whenever recency applies,
+        # and a true-UTC clock skews every age by the UTC offset
+        # because the dump labels local time as UTC.
+        report = audit_library(tracks, now=dump_now())
         if args.out is not None:
             Path(args.out).write_text(
                 json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -342,7 +511,27 @@ def _run(args: argparse.Namespace) -> int:
             for line in Path(args.ids_file).read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-        record_rediscover_history(args.history, ids, args.cooldown_days, today)
+        recorded = record_rediscover_history(
+            args.history, ids, args.cooldown_days, today
+        )
+        # The one step of the daily run that writes state but used to
+        # print nothing: run.sh tees this step's stdout into the run
+        # log, so the confirmation is the log's proof the cooldown
+        # was recorded after a successful apply. Print-only: the
+        # history rule and file content are unchanged.
+        if args.cooldown_days < 1:
+            print(
+                f"History not recorded: cooldown is {args.cooldown_days} days, "
+                "nothing was written."
+            )
+        elif recorded == 0:
+            print("History recorded: 0 IDs; nothing appended (empty IDs file).")
+        else:
+            print(
+                f"History recorded: {recorded} "
+                f"ID{'s' if recorded != 1 else ''} appended to "
+                f"{args.history} (cooldown {args.cooldown_days} days)."
+            )
         return 0
 
     # Only a one-playlist shuffle may see duplicate IDs in a dump
@@ -360,7 +549,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     settings = _settings_from(args)
     rng = _rng(args.seed)
-    now = datetime.now(timezone.utc)
+    now = dump_now()
     command = args.command
 
     if command == "dedupe":
@@ -391,6 +580,7 @@ def _run(args: argparse.Namespace) -> int:
             featuring_is_same_artist=settings.featuring_is_same_artist,
             rng=rng,
             size=args.size,
+            split_collabs=settings.split_collabs,
         )
         energies: list[int] | None = None
         eligible = len(tracks)
@@ -415,9 +605,22 @@ def _run(args: argparse.Namespace) -> int:
     elif command in ("flow", "flowPreview", "flow-preview"):
         if args.size is not None:
             settings = Settings(**{**settings.__dict__, "flow_size": args.size})
-        ordered, flow_energies, eligible = prepare_flow(tracks, settings, rng)
+        tagger = None
+        if settings.ai_enabled:
+            ai_dir = Path(args.ai_dir) if getattr(args, "ai_dir", None) else default_ai_dir()
+            tagger = FlowTagger(
+                TagCache(ai_dir / "ai-tags.json"),
+                FmClient(ai_dir),
+                batch_size=settings.ai_batch_size,
+                time_budget=float(os.environ.get("SETER_AI_BUDGET", "600")),
+            )
+        ordered, flow_energies, eligible = prepare_flow(
+            tracks, settings, rng, tagger=tagger
+        )
         energies = flow_energies
         header = f"Flow: {len(ordered)} songs from {eligible} eligible tracks."
+        if tagger is not None and not args.quiet:
+            print(tagger.summary(), file=sys.stderr)
         if command in ("flowPreview", "flow-preview"):
             header += " Nothing was changed."
     else:  # argparse prevents this; kept so a new command fails loudly
@@ -452,6 +655,22 @@ def _run(args: argparse.Namespace) -> int:
                     )
         for line in _preview_lines(ordered, energies, settings.preview_show):
             print(line)
+        if command == "shuffle":
+            summary = shuffle_summary(
+                ordered, settings.artist_spacing, settings.featuring_is_same_artist
+            )
+            if summary is not None:
+                print(summary)
+        if command in ("flow", "flowPreview", "flow-preview") and energies:
+            summary = flow_arc_summary(energies)
+            if summary is not None:
+                print(summary)
+        if command in ("rediscover", "rediscover-preview"):
+            summary = rediscover_summary(
+                ordered, now, settings.featuring_is_same_artist
+            )
+            if summary is not None:
+                print(summary)
     return 0
 
 
