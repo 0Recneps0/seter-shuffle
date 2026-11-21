@@ -23,8 +23,8 @@ EXPERIMENTAL 2026-11-20.5: Flow source pool and target playlist are configurable
 (not stable, not installed anywhere, on top of the 2026-11-20.4
 experimental staging). Flow used to always read the whole library
 and write "SeTeR Flow". Now the pool and the target are settings:
-menu Options (choice 8) entries 4) Set Flow source playlist and
-5) Set Flow target playlist, backed by the flow-source-playlist
+menu Options (choice 8) entries 6) Set Flow source playlist and
+7) Set Flow target playlist, backed by the flow-source-playlist
 and flow-target-playlist files under ~/Documents/SeTeRShuffle
 (the same settings dir as ai-enabled and probe-max-age-hours),
 or the SETER_FLOW_SOURCE / SETER_FLOW_TARGET env vars, which win
@@ -42,6 +42,37 @@ check. Still unproven on a Mac until a real Flow runs through it.
 Nothing else in this build changes: only run.sh, daily.sh, three
 test files, and the docs were touched, no bridge, cli.py, or
 installer file.
+
+EXPERIMENTAL 2026-11-20.6: full Options page + colored menu banner
+(not stable, not installed anywhere, on top of the 2026-11-20.5
+experimental staging). The Options submenu (menu choice 8) now
+lists everything he might want to change, grouped with current
+values, 16 entries, 0 back: AI tagging, AI blend (0.0-1.0,
+default 0.6), AI mood cost (0-10, default 4), Flow size (10-200
+songs, default 50), Flow pool (0-1000, default 400, 0 = no cap),
+Flow source and target playlists (now entries 6 and 7), artist
+spacing (1-5, default 2), split collabs, "feat." counts as same
+artist (default on), Rediscover size (5-500, default 30), max per
+artist (0-10, default 3, 0 = no limit), cooldown (0-90 days,
+default 14, 0 = off), stale after (7-365 days, default 60),
+probe max age, dedupe match (song/id, default song). Every
+setting is a small file under ~/Documents/SeTeRShuffle (same dir
+as ai-enabled) or its SETER_* env var, which wins over the file;
+the menu says so instead of pretending a change took effect.
+The CLI reads the same env vars itself, so menu, direct
+commands, and the daily run agree; explicit CLI flags still win
+over env. Bad menu input prints a plain message and keeps the
+old value. The main menu got a banner: Spencer's own ASCII art,
+his "SeTeR" block in bold cyan and his "SHUFFLE" block in bold
+italic magenta, then a dim "v3.0.11 experimental" line; colors
+appear only when stdout is a terminal, so piped output stays
+byte-identical.
+Deliberately left out: rediscover percent, the 500-song
+Rediscover max cap, AI batch size, AI time budget, preview count.
+Nothing else in this build changes: only run.sh, cli.py, three
+test files, and the docs were touched, no bridge or installer
+file. Still unproven on a Mac until a real menu run shows the
+banner and a real Options change lands.
 
 EXPERIMENTAL 2026-11-20: Claude's v3.0.11 candidate merged into the experimental line
 (not stable, not installed anywhere, on top of the 2026-11-19

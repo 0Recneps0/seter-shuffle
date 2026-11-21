@@ -8,6 +8,112 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-11-21 — EXPERIMENTAL: Spencer's own banner art, colorful (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-20.6 staging
+(exp-2026-11-20.6, 641 tests). Spencer sent his own ASCII art for
+the title and asked for it colorful: the run.sh menu banner now
+prints his "SeTeR" block first, then his "SHUFFLE" block, exactly
+as in his files, byte for byte.
+
+What changed, nothing else:
+- The banner art is Spencer's: his "SeTeR" block in bold cyan,
+  his "SHUFFLE" block in bold italic magenta (new C_BOLD_MAGENTA,
+  italic escape \033[3m closed with \033[23m), then the dim
+  "v3.0.11 experimental" line. The printf lines were generated
+  from his files, never retyped, and the render was diffed
+  against them (piped and pty-stripped): exact match. Colors
+  still appear only when stdout is a terminal; piped output
+  stays plain with no escape bytes.
+- Tests: the banner assertions in tests/test_menu_full_options.py
+  now pin distinctive lines from both of his blocks, the italic
+  and magenta escapes under a pty, and no escape bytes piped.
+  Nothing else in the tree changes: no Options, settings, or
+  daily.sh change. Still unproven on a Mac until a real menu run
+  shows the colors in his Terminal.
+- Tests: 641 pass, same count as .6 (banner assertions reworked,
+  no tests added or removed).
+
+## 2026-11-20 — EXPERIMENTAL: full Options page + colored menu banner (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-20.5 staging
+(exp-2026-11-20.5, 610 tests, published as a prerelease the same
+day). Spencer asked for the Options page to be fully fleshed out
+with a list for anything he might want to change, and for run.sh
+to be prettier, with colors and an ASCII "SeTeR SHUFFLE" title
+with "shuffle" italicized.
+
+What changed, nothing else:
+- The Options submenu (menu choice 8) now lists all 16 settings,
+  grouped with current values, 0 back: 1) AI tagging for Flow,
+  2) AI blend 0.0-1.0 (default 0.6, SETER_AI_BLEND, ai-blend),
+  3) AI mood cost 0-10 (default 4, SETER_AI_MOOD_COST,
+  ai-mood-cost), 4) Flow size 10-200 songs (default 50,
+  SETER_FLOW_SIZE, flow-size; this is Settings.flow_size, not
+  the CLI --size output cap), 5) Flow pool 0-1000 (default 400,
+  0 = no cap, SETER_FLOW_POOL_MAX, flow-pool-max), 6) Flow source
+  playlist, 7) Flow target playlist (moved from entries 4 and 5
+  by the renumbering), 8) artist spacing 1-5 (default 2,
+  SETER_ARTIST_SPACING, artist-spacing), 9) split collabs,
+  10) "feat." counts as same artist (toggle, default ON,
+  SETER_FEATURING_SAME_ARTIST, featuring-same-artist holding
+  "1" or "0", absent = 1), 11) Rediscover size 5-500 songs
+  (default 30, SETER_REDISCOVER_SIZE, rediscover-size; maps to
+  Settings.rediscover_min), 12) Rediscover max per artist 0-10
+  (default 3, 0 = no limit, SETER_REDISCOVER_MAX_PER_ARTIST,
+  rediscover-max-per-artist), 13) Rediscover cooldown 0-90 days
+  (default 14, 0 = off, SETER_REDISCOVER_COOLDOWN_DAYS,
+  rediscover-cooldown-days), 14) stale after 7-365 days (default
+  60, SETER_REDISCOVER_STALE_DAYS, rediscover-stale-days),
+  15) probe max age, 16) dedupe match (song/id toggle, default
+  song, SETER_DEDUPE_MATCH, dedupe-match holding "song" or "id";
+  song = same artist + title counts as a duplicate, id = same
+  track ID only). All files live under the settings dir (same
+  dir as ai-enabled). An env var already set wins over the file,
+  and the menu says so instead of pretending a change took
+  effect (same rule as before); the display adds a dim-yellow
+  env note per setting. The loader exports the files into the
+  env at startup, so direct commands, menu children, and the
+  daily run all see the same settings; daily.sh needed no
+  changes. Menu input validation mirrors probe max age: a
+  non-number or out-of-range value prints a plain message,
+  leaves the old value unchanged, and stays in the submenu.
+  AI blend accepts decimals (0, 0.x, 1, 1.0).
+- Wiring: cli.py _settings_from reads the new env vars
+  (_env_int / _env_float: garbage reads as the default, out of
+  range clamps into range); explicit CLI flags still win over
+  env; --featuring-same-artist is a new BooleanOptionalAction
+  flag (Settings.featuring_is_same_artist defaults True). With
+  no flags and no env, Settings defaults are unchanged, and no
+  Python behavior changes except the new featuring flag.
+- The main menu got a banner (run.sh only, menu only): the
+  figlet-style "SeTeR" art in bold cyan, "S H U F F L E"
+  letter-spaced in bold italic cyan (italic escape \033[3m,
+  closed with \033[23m), then a dim "v3.0.11 experimental" line,
+  printed at the top of the menu loop each time it redraws.
+  Colors exist only when stdout is a terminal ([ -t 1 ]); piped
+  or redirected output stays byte-identical, with no escape
+  bytes anywhere. Choice lines are bold cyan, section headers
+  bold, current values cyan, ON green bold, OFF dim, env-wins
+  notes dim yellow, confirmations green, errors red.
+  Subcommand and log output is never colorized, and the bare-run
+  non-TTY path still prints usage to stderr and exits 2.
+- Deliberately NOT included: rediscover percent (not a size,
+  confusing), rediscover max cap (500, a safety cap), AI batch
+  size, AI time budget, preview count (display-only internals).
+- Tests: 641 pass (610 + 31 new in tests/test_menu_full_options.py;
+  test_menu_options.py and test_flow_playlists.py updated for the
+  renumbering — Flow source/target moved from entries 4/5 to 6/7,
+  split collabs from 2 to 9, probe max age from 3 to 15 — and
+  their function-extraction lists now include the new helpers).
+  Mutation-checked: neutering the env read fails the CLI env
+  test, removing the loader's flow-size block fails the loader
+  test, removing the italic escape fails both banner italic
+  tests. Still unproven on a Mac: the banner and colors on a real
+  terminal, and a real Options change landing in a Flow run.
+
 ## 2026-11-20 — EXPERIMENTAL: Flow source pool and target playlist are configurable (not a stable release)
 
 Experimental only, prerelease if published, never auto-installed,
@@ -22,7 +128,7 @@ What changed, nothing else:
   playlist "My New Sandwich Recipe". SETER_FLOW_SOURCE names the
   pool; unset or empty means the whole library, and the literal
   word "library" (any case) means it too. The menu Options
-  submenu (choice 8, entry 4) picks it from the numbered
+  submenu (choice 8, entry 6) picks it from the numbered
   playlist list, with whole Library as an explicit choice, and
   typing "library" selects it. The choice is persisted in the
   flow-source-playlist file under the SeTeRShuffle settings dir
@@ -30,7 +136,7 @@ What changed, nothing else:
   library, and a bad file (empty, or only whitespace) reads as
   library.
 - Flow's target playlist is configurable: SETER_FLOW_TARGET,
-  default "SeTeR Flow". The menu Options submenu (entry 5)
+  default "SeTeR Flow". The menu Options submenu (entry 7)
   picks it from the numbered playlist list and persists it in
   the flow-target-playlist file; absent file = "SeTeR Flow", and
   a bad file reads as "SeTeR Flow". Playlist names keep their

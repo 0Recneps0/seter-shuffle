@@ -143,6 +143,13 @@ def _add_settings(parser: argparse.ArgumentParser) -> None:
         help='count "A & B" / "A, B" / "A x B" as artist "A" for spacing and caps',
     )
     parser.add_argument(
+        "--featuring-same-artist", action=argparse.BooleanOptionalAction,
+        default=None,
+        help='"Artist feat. X" / "Artist (ft. X)" counts as the same artist '
+        "for spacing and caps (default: on; SETER_FEATURING_SAME_ARTIST "
+        "also sets it)",
+    )
+    parser.add_argument(
         "--ai", action=argparse.BooleanOptionalAction, default=None,
         help="Flow: tag songs with Apple's on-device `fm` model (default: off; "
         "SETER_AI=1 or an ai-enabled marker file also turns it on)",
@@ -166,30 +173,117 @@ def _env_flag(name: str) -> bool | None:
     return None
 
 
+def _env_int(name: str, lo: int, hi: int, default: int) -> int:
+    """An integer setting from the environment: garbage reads as the
+    default, out of range clamps into [lo, hi]. A missing env var
+    is the default, so callers stay on Settings defaults unless
+    the user set something."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(lo, min(hi, value))
+
+
+def _env_float(name: str, lo: float, hi: float, default: float) -> float:
+    """A float setting from the environment: same rule as _env_int."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(lo, min(hi, value))
+
+
 def _settings_from(args: argparse.Namespace) -> Settings:
     base = Settings()
     overrides: dict[str, Any] = {}
+    # Explicit CLI flags win; otherwise an env var sets the value
+    # (garbage reads as the Settings default, out of range clamps
+    # into range — see _env_int / _env_float); otherwise the
+    # Settings default stands. The menu Options submenu persists
+    # these same values in files under the settings dir and
+    # run.sh's loader exports them into the env at startup, so
+    # menu, direct commands, and the daily run all agree.
     mapping = {
-        "artist_spacing": args.artist_spacing,
-        "flow_size": args.flow_size,
-        "flow_pool_max": args.flow_pool_max,
-        "rediscover_min": args.rediscover_min,
+        "artist_spacing": (
+            args.artist_spacing
+            if getattr(args, "artist_spacing", None) is not None
+            else _env_int("SETER_ARTIST_SPACING", 1, 5, base.artist_spacing)
+        ),
+        "flow_size": (
+            args.flow_size
+            if getattr(args, "flow_size", None) is not None
+            else _env_int("SETER_FLOW_SIZE", 10, 200, base.flow_size)
+        ),
+        "flow_pool_max": (
+            args.flow_pool_max
+            if getattr(args, "flow_pool_max", None) is not None
+            else _env_int("SETER_FLOW_POOL_MAX", 0, 1000, base.flow_pool_max)
+        ),
+        "rediscover_min": (
+            args.rediscover_min
+            if getattr(args, "rediscover_min", None) is not None
+            else _env_int("SETER_REDISCOVER_SIZE", 5, 500, base.rediscover_min)
+        ),
         "rediscover_max": args.rediscover_max,
-        "stale_days": args.stale_days,
-        "rediscover_max_per_artist": args.max_per_artist,
-        "rediscover_cooldown_days": args.cooldown_days,
+        "stale_days": (
+            args.stale_days
+            if getattr(args, "stale_days", None) is not None
+            else _env_int(
+                "SETER_REDISCOVER_STALE_DAYS", 7, 365, base.stale_days
+            )
+        ),
+        "rediscover_max_per_artist": (
+            args.max_per_artist
+            if getattr(args, "max_per_artist", None) is not None
+            else _env_int(
+                "SETER_REDISCOVER_MAX_PER_ARTIST",
+                0,
+                10,
+                base.rediscover_max_per_artist,
+            )
+        ),
+        "rediscover_cooldown_days": (
+            args.cooldown_days
+            if getattr(args, "cooldown_days", None) is not None
+            else _env_int(
+                "SETER_REDISCOVER_COOLDOWN_DAYS",
+                0,
+                90,
+                base.rediscover_cooldown_days,
+            )
+        ),
         "split_collabs": (
             args.split_collabs
             if getattr(args, "split_collabs", None) is not None
             else _env_flag("SETER_SPLIT_COLLABS")
+        ),
+        "featuring_is_same_artist": (
+            args.featuring_same_artist
+            if getattr(args, "featuring_same_artist", None) is not None
+            else _env_flag("SETER_FEATURING_SAME_ARTIST")
         ),
         "ai_enabled": (
             args.ai
             if getattr(args, "ai", None) is not None
             else ai_enabled_by_environment()
         ),
-        "ai_blend": getattr(args, "ai_blend", None),
-        "ai_mood_cost": getattr(args, "ai_mood_cost", None),
+        "ai_blend": (
+            args.ai_blend
+            if getattr(args, "ai_blend", None) is not None
+            else _env_float("SETER_AI_BLEND", 0.0, 1.0, base.ai_blend)
+        ),
+        "ai_mood_cost": (
+            args.ai_mood_cost
+            if getattr(args, "ai_mood_cost", None) is not None
+            else _env_int("SETER_AI_MOOD_COST", 0, 10, base.ai_mood_cost)
+        ),
         "ai_batch_size": getattr(args, "ai_batch_size", None),
     }
     for key, value in mapping.items():

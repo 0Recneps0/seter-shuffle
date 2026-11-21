@@ -1,7 +1,7 @@
 """Tests for the v3.0.11 exp 2026-11-20.5 Flow playlist settings: the
 Flow source pool (whole library or one named playlist) and the Flow
 target playlist are configurable, in menu Options (choice 8, entries
-4 and 5), in SETER_FLOW_SOURCE / SETER_FLOW_TARGET, and in the
+6 and 7), in SETER_FLOW_SOURCE / SETER_FLOW_TARGET, and in the
 flow-source-playlist / flow-target-playlist files under the
 SeTeRShuffle settings dir. Defaults stay exactly as before: whole
 library into "SeTeR Flow".
@@ -99,6 +99,35 @@ FLOW_FUNCS = [
     "options_flow_target_env_set",
     "options_write_flow_target",
     "options_set_flow_target",
+    "options_read_file",
+    "options_write_file",
+    "options_read_int_file",
+    "options_ai_blend",
+    "options_ai_mood_cost",
+    "options_flow_size",
+    "options_flow_pool_max",
+    "options_artist_spacing",
+    "options_rediscover_size",
+    "options_rediscover_max_per_artist",
+    "options_rediscover_cooldown_days",
+    "options_rediscover_stale_days",
+    "options_featuring_on",
+    "options_set_featuring",
+    "options_dedupe_match",
+    "options_set_dedupe_match",
+    "options_set_ai_blend",
+    "options_set_ai_mood_cost",
+    "options_set_flow_size",
+    "options_set_flow_pool_max",
+    "options_set_artist_spacing",
+    "options_set_rediscover_size",
+    "options_set_rediscover_max_per_artist",
+    "options_set_rediscover_cooldown_days",
+    "options_set_rediscover_stale_days",
+    "options_validate_number",
+    "options_validate_blend",
+    "options_env_note",
+    "menu_options_set_value",
     "load_persisted_options",
     "menu_pick_playlist",
     "menu_options",
@@ -321,8 +350,8 @@ class MenuFlowOptionsTests(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertIn("Flow source: Whole library", out)
             self.assertIn("Flow target: SeTeR Flow", out)
-            self.assertIn("4) Set Flow source playlist", out)
-            self.assertIn("5) Set Flow target playlist", out)
+            self.assertIn("6) Set Flow source playlist", out)
+            self.assertIn("7) Set Flow target playlist", out)
 
     def test_submenu_shows_flow_values_from_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -341,7 +370,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_flow_script(
                 "menu_options\n",
-                "4\n2\n0\n",
+                "6\n2\n0\n",
                 tmp,
                 list_names=["Alpha", "My New Sandwich Recipe", "Gamma"],
             )
@@ -360,7 +389,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             (tmp / "flow-source-playlist").write_text("Alpha\n", encoding="utf-8")
             out, err, rc = _run_flow_script(
                 "menu_options\n",
-                "4\nL\n0\n",
+                "6\nL\n0\n",
                 tmp,
                 list_names=["Alpha", "Beta"],
             )
@@ -379,7 +408,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             (tmp / "flow-source-playlist").write_text("Alpha\n", encoding="utf-8")
             out, err, rc = _run_flow_script(
                 "menu_options\n",
-                "4\n0\nlibrary\n0\n",
+                "6\n0\nlibrary\n0\n",
                 tmp,
                 list_names=["Alpha"],
             )
@@ -395,7 +424,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_flow_script(
                 "menu_options\n",
-                "4\n0\n\n0\n",
+                "6\n0\n\n0\n",
                 tmp,
                 list_names=["Alpha"],
             )
@@ -408,7 +437,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_flow_script(
                 "menu_options\n",
-                "5\n1\n0\n",
+                "7\n1\n0\n",
                 tmp,
                 list_names=["My Flow", "Other"],
             )
@@ -427,7 +456,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_flow_script(
                 "menu_options\n",
-                "5\n0\n\n0\n",
+                "7\n0\n\n0\n",
                 tmp,
                 list_names=["My Flow"],
             )
@@ -440,7 +469,7 @@ class MenuFlowOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_flow_script(
                 "load_persisted_options\nmenu_options\n",
-                "4\n5\n0\n",
+                "6\n7\n0\n",
                 tmp,
                 extra_env={
                     "SETER_FLOW_SOURCE": "Env Source",
@@ -458,18 +487,18 @@ class MenuFlowOptionsTests(unittest.TestCase):
             self.assertFalse((tmp / "flow-target-playlist").exists())
 
     def test_submenu_quit_returns_without_quitting(self):
-        # Choosing 4 or 5 and then 0 returns to the caller, and
+        # Choosing 6 or 7 and then 0 returns to the caller, and
         # the submenu re-prints its header after each choice.
         with tempfile.TemporaryDirectory() as tmp:
             out, err, rc = _run_flow_script(
                 "menu_options\nprintf 'BACK-IN-CALLER\\n'\n",
-                "4\n0\n\n0\n",
+                "6\n0\n\n0\n",
                 Path(tmp),
                 list_names=["Alpha"],
             )
             self.assertEqual(rc, 0, err)
             self.assertIn("BACK-IN-CALLER", out)
-            self.assertGreaterEqual(out.count("4) Set Flow source playlist"), 2)
+            self.assertGreaterEqual(out.count("6) Set Flow source playlist"), 2)
 
 
 class CliFlowPlaylistLabelTests(unittest.TestCase):

@@ -80,7 +80,37 @@ OPTION_FUNCS = [
     "options_set_split_collabs",
     "options_probe_max_age",
     "options_write_probe_max_age",
+    "options_read_file",
+    "options_write_file",
+    "options_read_int_file",
+    "options_ai_blend",
+    "options_ai_mood_cost",
+    "options_flow_size",
+    "options_flow_pool_max",
+    "options_artist_spacing",
+    "options_rediscover_size",
+    "options_rediscover_max_per_artist",
+    "options_rediscover_cooldown_days",
+    "options_rediscover_stale_days",
+    "options_featuring_on",
+    "options_set_featuring",
+    "options_dedupe_match",
+    "options_set_dedupe_match",
+    "options_set_ai_blend",
+    "options_set_ai_mood_cost",
+    "options_set_flow_size",
+    "options_set_flow_pool_max",
+    "options_set_artist_spacing",
+    "options_set_rediscover_size",
+    "options_set_rediscover_max_per_artist",
+    "options_set_rediscover_cooldown_days",
+    "options_set_rediscover_stale_days",
+    "options_validate_number",
+    "options_validate_blend",
+    "options_env_note",
+    "menu_options_set_value",
     "load_persisted_options",
+    "menu_pick_playlist",
     "menu_options",
 ]
 
@@ -325,7 +355,7 @@ class MenuOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_options_script(
                 "menu_options\n",
-                "1\n2\n3\n12\n0\n",
+                "1\n9\n15\n12\n0\n",
                 tmp,
             )
             self.assertEqual(rc, 0, err)
@@ -348,7 +378,7 @@ class MenuOptionsTests(unittest.TestCase):
             tmp = Path(tmp)
             out, err, rc = _run_options_script(
                 "menu_options\n",
-                "3\n41\n3\nabc\n3\n0\n0\n",
+                "15\n41\n15\nabc\n15\n0\n0\n",
                 tmp,
             )
             self.assertEqual(rc, 0, err)
@@ -358,17 +388,17 @@ class MenuOptionsTests(unittest.TestCase):
             self.assertIn("Probe max age: 0 hours", out)
             # The submenu survived both bad inputs: it printed its
             # header again after each rejection.
-            self.assertGreaterEqual(out.count("3) Set probe max age"), 3)
+            self.assertGreaterEqual(out.count("15) Set probe max age"), 3)
 
     def test_submenu_unknown_choice_stays_in_submenu(self):
         with tempfile.TemporaryDirectory() as tmp:
             out, err, rc = _run_options_script(
                 "menu_options\n",
-                "9\n0\n",
+                "99\n0\n",
                 Path(tmp),
             )
             self.assertEqual(rc, 0, err)
-            self.assertIn("unknown choice: 9", out)
+            self.assertIn("unknown choice: 99", out)
             self.assertGreaterEqual(out.count("1) Toggle AI tagging"), 2)
 
     def test_submenu_toggle_off_removes_markers(self):
@@ -378,7 +408,7 @@ class MenuOptionsTests(unittest.TestCase):
             (tmp / "split-collabs-enabled").touch()
             out, err, rc = _run_options_script(
                 "menu_options\n",
-                "1\n2\n0\n",
+                "1\n9\n0\n",
                 tmp,
             )
             self.assertEqual(rc, 0, err)
@@ -394,7 +424,7 @@ class MenuOptionsTests(unittest.TestCase):
             # set; the extracted functions need the same call.
             out, err, rc = _run_options_script(
                 "load_persisted_options\nmenu_options\n",
-                "1\n2\n0\n",
+                "1\n9\n0\n",
                 Path(tmp),
                 extra_env={"SETER_AI": "1", "SETER_SPLIT_COLLABS": "0"},
             )

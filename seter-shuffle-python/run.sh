@@ -188,6 +188,48 @@
 #    so a failed apply never burns a song's cooldown.
 set -euo pipefail
 
+# Menu colors (v3.0.11 exp 2026-11-20.6): only when stdout is a
+# terminal. With piped or redirected stdout every var is empty,
+# so subcommand and log output stays byte-identical to before
+# (plain text, no escape bytes anywhere). The palette is cyan
+# for the banner and choice lines (magenta for the SHUFFLE
+# block), with green / yellow / red / dim only as status colors
+# (ON, env-wins notes, errors). Menu
+# functions use ${C_...:-} expansions, never bare $C_..., so
+# they still work when the vars are unset (the test harness
+# extracts the functions without these definitions).
+if [ -t 1 ]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_DIM=$'\033[2m'
+  C_ITALIC=$'\033[3m'
+  C_ITALIC_OFF=$'\033[23m'
+  C_RED=$'\033[31m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_CYAN=$'\033[36m'
+  C_BOLD_CYAN=$'\033[1;36m'
+  C_BOLD_MAGENTA=$'\033[1;35m'
+  C_BOLD_GREEN=$'\033[1;32m'
+  C_BOLD_RED=$'\033[1;31m'
+  C_DIM_YELLOW=$'\033[2;33m'
+else
+  C_RESET=
+  C_BOLD=
+  C_DIM=
+  C_ITALIC=
+  C_ITALIC_OFF=
+  C_RED=
+  C_GREEN=
+  C_YELLOW=
+  C_CYAN=
+  C_BOLD_CYAN=
+  C_BOLD_MAGENTA=
+  C_BOLD_GREEN=
+  C_BOLD_RED=
+  C_DIM_YELLOW=
+fi
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BRIDGE="$ROOT/bridge"
 STATE="$HOME/Library/Logs/seter-shuffle-python"
@@ -508,6 +550,328 @@ options_set_flow_target() {
   return 1
 }
 
+# First line of a settings file, whitespace-trimmed; empty when
+# the file is missing or unreadable. Only for one-line
+# number/flag files, never for playlist names (their spaces
+# matter).
+options_read_file() {
+  local file="$1" val
+  if [ -f "$(options_dir)/$file" ]; then
+    val="$(head -n 1 "$(options_dir)/$file" 2>/dev/null | tr -d ' \t\r\n')"
+    printf '%s' "$val"
+  fi
+}
+
+# Atomically write one line to a settings file (mktemp + mv, so
+# a crash can never leave a half-written file behind, and no
+# stray temp file is left after a successful write).
+options_write_file() {
+  local file="$1" value="$2" dir tmp
+  dir="$(options_dir)"
+  mkdir -p "$dir" || return 1
+  tmp="$(mktemp "$dir/.$file.XXXXXX")" || return 1
+  printf '%s\n' "$value" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/$file" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# Read a one-number settings file, clamped to [lo, hi]; a
+# missing, empty, or non-numeric file reads as the default (the
+# same rule as options_probe_max_age, which keeps its own
+# implementation below). Leading zeros are stripped first, and
+# a value with more than four digits is above every range here
+# (largest hi is 1000), so it clamps without ever reaching an
+# arithmetic comparison that could overflow.
+options_read_int_file() {
+  local file="$1" default="$2" lo="$3" hi="$4" val
+  val="$(options_read_file "$file")"
+  case "$val" in
+    ''|*[!0-9]*) printf '%s' "$default"; return 0 ;;
+  esac
+  while [ "${#val}" -gt 1 ] && [ "${val#0}" != "$val" ]; do
+    val="${val#0}"
+  done
+  case "$val" in
+    ?????*) printf '%s' "$hi"; return 0 ;;
+  esac
+  if [ "$val" -gt "$hi" ]; then
+    printf '%s' "$hi"
+  elif [ "$val" -lt "$lo" ]; then
+    printf '%s' "$lo"
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# Effective AI blend (0.0-1.0, default 0.6): the ai-blend file,
+# garbage reads as the default, out of range clamps into range.
+options_ai_blend() {
+  local val int frac
+  val="$(options_read_file ai-blend)"
+  case "$val" in
+    ''|*[!0-9.]*) printf '0.6'; return 0 ;;
+    *.*.*) printf '0.6'; return 0 ;;
+    *.) printf '0.6'; return 0 ;;
+  esac
+  int="${val%%.*}"
+  case "$val" in
+    *.*) frac="${val#*.}" ;;
+    *) frac="" ;;
+  esac
+  case "$int" in
+    ''|*[!0-9]*) printf '0.6'; return 0 ;;
+  esac
+  while [ "${#int}" -gt 1 ] && [ "${int#0}" != "$int" ]; do
+    int="${int#0}"
+  done
+  if [ "$int" -gt 1 ]; then printf '1'; return 0; fi
+  if [ "$int" -eq 1 ]; then printf '1'; return 0; fi
+  printf '%s' "$val"
+}
+
+# Effective AI mood cost (0-10, default 4; 0 = moods don't steer
+# the Flow walk).
+options_ai_mood_cost() {
+  options_read_int_file ai-mood-cost 4 0 10
+}
+
+# Effective Flow size in songs (10-200, default 50). This is
+# Settings.flow_size, the Flow order length — not the CLI
+# --size output cap.
+options_flow_size() {
+  options_read_int_file flow-size 50 10 200
+}
+
+# Effective Flow pool cap (0-1000, default 400; 0 = no cap).
+options_flow_pool_max() {
+  options_read_int_file flow-pool-max 400 0 1000
+}
+
+# Effective artist spacing (1-5, default 2; 1 = just not
+# back-to-back).
+options_artist_spacing() {
+  options_read_int_file artist-spacing 2 1 5
+}
+
+# Effective Rediscover size in songs (5-500, default 30). Maps
+# to Settings.rediscover_min: for his ~950-song library the min
+# is the effective target.
+options_rediscover_size() {
+  options_read_int_file rediscover-size 30 5 500
+}
+
+# Effective Rediscover max per artist (0-10, default 3;
+# 0 = no limit).
+options_rediscover_max_per_artist() {
+  options_read_int_file rediscover-max-per-artist 3 0 10
+}
+
+# Effective Rediscover cooldown in days (0-90, default 14;
+# 0 = off).
+options_rediscover_cooldown_days() {
+  options_read_int_file rediscover-cooldown-days 14 0 90
+}
+
+# Effective Rediscover stale-after in days (7-365, default 60):
+# how long unplayed before a song counts as forgotten.
+options_rediscover_stale_days() {
+  options_read_int_file rediscover-stale-days 60 7 365
+}
+
+# Effective "feat." rule: an env var set before this process
+# started (OPTIONS_FEATURING_ENV_SET, recorded by
+# load_persisted_options) decides; otherwise the
+# featuring-same-artist file, which holds "1" or "0"; absent
+# file (or anything unreadable) = 1, on. The loader exports
+# the file's value into the env, so a menu child inherits it,
+# and the setter below keeps the env in step with the file.
+options_featuring_on() {
+  local val
+  if [ -n "${OPTIONS_FEATURING_ENV_SET:-}" ]; then
+    case "$(printf '%s' "${SETER_FEATURING_SAME_ARTIST:-}" | tr '[:upper:]' '[:lower:]')" in
+      1|true|yes|on) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  if [ -f "$(options_dir)/featuring-same-artist" ]; then
+    val="$(options_read_file featuring-same-artist | tr '[:upper:]' '[:lower:]')"
+    case "$val" in
+      0|false|no|off) return 1 ;;
+    esac
+  fi
+  return 0
+}
+
+options_set_featuring() {
+  if options_write_file featuring-same-artist "$1"; then
+    export SETER_FEATURING_SAME_ARTIST="$1"
+    return 0
+  fi
+  return 1
+}
+
+# Effective dedupe match (song or id): SETER_DEDUPE_MATCH wins
+# when set (run.sh validates it at startup); otherwise the
+# dedupe-match file, which holds "song" or "id"; absent file
+# (or anything unreadable) = song. Song = same artist + title
+# counts as a duplicate; id = same track ID only.
+options_dedupe_match() {
+  local val
+  if [ -n "${SETER_DEDUPE_MATCH:-}" ]; then
+    printf '%s' "$SETER_DEDUPE_MATCH"
+    return 0
+  fi
+  if [ -f "$(options_dir)/dedupe-match" ]; then
+    val="$(options_read_file dedupe-match | tr '[:upper:]' '[:lower:]')"
+    case "$val" in
+      id|song) printf '%s' "$val"; return 0 ;;
+    esac
+  fi
+  printf 'song'
+}
+
+# Write the dedupe-match file and keep the in-process
+# DEDUPE_MATCH in step with it (same stale-env rule as the
+# other setters; menu children are fresh processes that run
+# the loader and read the file).
+options_set_dedupe_match() {
+  if options_write_file dedupe-match "$1"; then
+    DEDUPE_MATCH="$1"
+    return 0
+  fi
+  return 1
+}
+
+# Write a numeric settings file and keep the in-process env in
+# step with it (same stale-env rule as split collabs / flow
+# source): without the export, a menu process that exported the
+# old value at startup would hand its children the old value
+# after the user changed it.
+options_set_ai_blend() {
+  if options_write_file ai-blend "$1"; then export SETER_AI_BLEND="$1"; return 0; fi
+  return 1
+}
+
+options_set_ai_mood_cost() {
+  if options_write_file ai-mood-cost "$1"; then export SETER_AI_MOOD_COST="$1"; return 0; fi
+  return 1
+}
+
+options_set_flow_size() {
+  if options_write_file flow-size "$1"; then export SETER_FLOW_SIZE="$1"; return 0; fi
+  return 1
+}
+
+options_set_flow_pool_max() {
+  if options_write_file flow-pool-max "$1"; then export SETER_FLOW_POOL_MAX="$1"; return 0; fi
+  return 1
+}
+
+options_set_artist_spacing() {
+  if options_write_file artist-spacing "$1"; then export SETER_ARTIST_SPACING="$1"; return 0; fi
+  return 1
+}
+
+options_set_rediscover_size() {
+  if options_write_file rediscover-size "$1"; then export SETER_REDISCOVER_SIZE="$1"; return 0; fi
+  return 1
+}
+
+options_set_rediscover_max_per_artist() {
+  if options_write_file rediscover-max-per-artist "$1"; then export SETER_REDISCOVER_MAX_PER_ARTIST="$1"; return 0; fi
+  return 1
+}
+
+options_set_rediscover_cooldown_days() {
+  if options_write_file rediscover-cooldown-days "$1"; then export SETER_REDISCOVER_COOLDOWN_DAYS="$1"; return 0; fi
+  return 1
+}
+
+options_set_rediscover_stale_days() {
+  if options_write_file rediscover-stale-days "$1"; then export SETER_REDISCOVER_STALE_DAYS="$1"; return 0; fi
+  return 1
+}
+
+# Validate typed input for a numeric menu choice. $1 = input,
+# $2 = low, $3 = high. On success prints the cleaned number;
+# on failure prints nothing and returns 1 (out of range) or 2
+# (not a number), so the caller can print the matching plain
+# message and stay in the submenu with the old value kept.
+options_validate_number() {
+  local val="$1" lo="$2" hi="$3"
+  case "$val" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  while [ "${#val}" -gt 1 ] && [ "${val#0}" != "$val" ]; do
+    val="${val#0}"
+  done
+  case "$val" in
+    ?????*) return 1 ;;
+  esac
+  if [ "$val" -lt "$lo" ] || [ "$val" -gt "$hi" ]; then
+    return 1
+  fi
+  printf '%s' "$val"
+  return 0
+}
+
+# Validate typed input for the AI blend (0, 0.x, 1, 1.0). Same
+# contract as options_validate_number: prints the cleaned
+# number on success (normalized, so "1.00" comes back "1"),
+# returns 1 for a number out of range, 2 for not a number.
+options_validate_blend() {
+  local val="$1" int frac
+  case "$val" in
+    ''|*[!0-9.]*) return 2 ;;
+    *.*.*) return 2 ;;
+    *.) return 2 ;;
+  esac
+  int="${val%%.*}"
+  case "$val" in
+    *.*) frac="${val#*.}" ;;
+    *) frac="" ;;
+  esac
+  case "$int" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  if [ -n "$frac" ]; then
+    case "$frac" in
+      *[!0-9]*) return 2 ;;
+    esac
+  fi
+  while [ "${#int}" -gt 1 ] && [ "${int#0}" != "$int" ]; do
+    int="${int#0}"
+  done
+  if [ "$int" -gt 1 ]; then return 1; fi
+  if [ "$int" -eq 1 ]; then
+    if [ -n "$frac" ]; then
+      case "$frac" in
+        *[!0]*) return 1 ;;
+      esac
+    fi
+    printf '1'
+    return 0
+  fi
+  if [ -n "$frac" ]; then
+    printf '0.%s' "$frac"
+  else
+    printf '0'
+  fi
+  return 0
+}
+
+# Dim-yellow "(env SETER_X=Y wins)" suffix for a setting whose
+# env var was set before this process started (marker recorded
+# by load_persisted_options); empty otherwise. Uses indirect
+# expansion, so the caller passes the env var name and its
+# marker name, not the values.
+options_env_note() {
+  local env_name="$1" marker="$2"
+  if [ -n "${!marker:-}" ]; then
+    printf '%s(env %s=%s wins)%s' "${C_DIM_YELLOW:-}" "$env_name" "${!env_name:-}" "${C_RESET:-}"
+  fi
+}
+
 # Turn the persisted split-collabs marker into the env var the
 # CLI already reads, unless the env was already set when this
 # process started (an explicit env var wins over the file).
@@ -521,6 +885,14 @@ options_set_flow_target() {
 # loader exports the effective value either way, so the flow
 # branch below can read the env directly and menu children
 # inherit the same settings.
+# The rest of the Options page (v3.0.11 exp 2026-11-20.6)
+# follows the same rule again: each numeric / toggle setting's
+# file becomes its env var unless the env was already set, and
+# an OPTIONS_*_ENV_SET marker records which case applied, so
+# the menu can say the env wins instead of pretending a change
+# took effect. The CLI reads all of these env vars itself
+# (cli.py _settings_from), so the loader is the only place that
+# has to know the file names.
 load_persisted_options() {
   if [ -n "${SETER_SPLIT_COLLABS:-}" ]; then
     OPTIONS_SPLIT_ENV_SET=1
@@ -536,6 +908,65 @@ load_persisted_options() {
     OPTIONS_FLOW_TARGET_ENV_SET=1
   else
     export SETER_FLOW_TARGET="$(options_flow_target)"
+  fi
+  if [ -n "${SETER_AI_BLEND:-}" ]; then
+    OPTIONS_AI_BLEND_ENV_SET=1
+  else
+    export SETER_AI_BLEND="$(options_ai_blend)"
+  fi
+  if [ -n "${SETER_AI_MOOD_COST:-}" ]; then
+    OPTIONS_AI_MOOD_COST_ENV_SET=1
+  else
+    export SETER_AI_MOOD_COST="$(options_ai_mood_cost)"
+  fi
+  if [ -n "${SETER_FLOW_SIZE:-}" ]; then
+    OPTIONS_FLOW_SIZE_ENV_SET=1
+  else
+    export SETER_FLOW_SIZE="$(options_flow_size)"
+  fi
+  if [ -n "${SETER_FLOW_POOL_MAX:-}" ]; then
+    OPTIONS_FLOW_POOL_MAX_ENV_SET=1
+  else
+    export SETER_FLOW_POOL_MAX="$(options_flow_pool_max)"
+  fi
+  if [ -n "${SETER_ARTIST_SPACING:-}" ]; then
+    OPTIONS_ARTIST_SPACING_ENV_SET=1
+  else
+    export SETER_ARTIST_SPACING="$(options_artist_spacing)"
+  fi
+  if [ -n "${SETER_REDISCOVER_SIZE:-}" ]; then
+    OPTIONS_REDISCOVER_SIZE_ENV_SET=1
+  else
+    export SETER_REDISCOVER_SIZE="$(options_rediscover_size)"
+  fi
+  if [ -n "${SETER_REDISCOVER_MAX_PER_ARTIST:-}" ]; then
+    OPTIONS_REDISCOVER_MAX_PER_ARTIST_ENV_SET=1
+  else
+    export SETER_REDISCOVER_MAX_PER_ARTIST="$(options_rediscover_max_per_artist)"
+  fi
+  if [ -n "${SETER_REDISCOVER_COOLDOWN_DAYS:-}" ]; then
+    OPTIONS_REDISCOVER_COOLDOWN_DAYS_ENV_SET=1
+  else
+    export SETER_REDISCOVER_COOLDOWN_DAYS="$(options_rediscover_cooldown_days)"
+  fi
+  if [ -n "${SETER_REDISCOVER_STALE_DAYS:-}" ]; then
+    OPTIONS_REDISCOVER_STALE_DAYS_ENV_SET=1
+  else
+    export SETER_REDISCOVER_STALE_DAYS="$(options_rediscover_stale_days)"
+  fi
+  if [ -n "${SETER_FEATURING_SAME_ARTIST:-}" ]; then
+    OPTIONS_FEATURING_ENV_SET=1
+  elif [ -f "$(options_dir)/featuring-same-artist" ]; then
+    if options_featuring_on; then
+      export SETER_FEATURING_SAME_ARTIST=1
+    else
+      export SETER_FEATURING_SAME_ARTIST=0
+    fi
+  fi
+  if [ -n "${SETER_DEDUPE_MATCH:-}" ]; then
+    OPTIONS_DEDUPE_ENV_SET=1
+  elif [ -f "$(options_dir)/dedupe-match" ]; then
+    DEDUPE_MATCH="$(options_dedupe_match)"
   fi
   return 0
 }
@@ -1041,30 +1472,164 @@ menu_pick_playlist() {
 # not exist. Choosing a source or target only writes its file:
 # the next Flow run (menu, direct, or daily) reads it, and the
 # daily run and the menu read the same files, so they agree.
-menu_options() {
-  local choice ai_state split_state probe_age new_age env_note flow_source flow_target flow_source_note flow_target_note picked_lower
-  while true; do
-    if options_ai_on; then ai_state="ON"; else ai_state="OFF"; fi
-    if options_split_collabs_on; then split_state="ON"; else split_state="OFF"; fi
-    probe_age="$(options_probe_max_age)"
-    env_note=""
-    if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
-      env_note=" (SETER_PROBE_MAX_AGE_HOURS=$SETER_PROBE_MAX_AGE_HOURS is set in this shell; the daily run uses that instead)"
+# ASCII banner (v3.0.11 exp 2026-11-21.1): printed at the top of
+# the main menu each time it redraws, never in subcommand or log
+# output. The art is Spencer's own: his "SeTeR" block in bold
+# cyan, then his "SHUFFLE" block in bold italic magenta (the
+# italic escape is \033[3m, closed with \033[23m), then a dim
+# version line. The printf lines below were generated from his
+# files, never retyped. Colors are empty when stdout is not a
+# terminal, so piped output is plain ASCII art with no escape bytes.
+print_banner() {
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" ' ▄█▀▀▀█▄█       ███▀▀██▀▀███       ▀███▀▀▀██▄' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" '▄██    ▀█       █▀   ██   ▀█         ██   ▀██▄' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" '▀███▄     ▄▄█▀██     ██      ▄▄█▀██  ██   ▄██' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" '  ▀█████▄▄█▀   ██    ██     ▄█▀   ██ ███████' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" '▄     ▀████▀▀▀▀▀▀    ██     ██▀▀▀▀▀▀ ██  ██▄' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" '██     ████▄    ▄    ██     ██▄    ▄ ██   ▀██▄' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_BOLD_CYAN:-}" '█▀█████▀  ▀█████▀  ▄████▄    ▀█████▀████▄ ▄███▄' "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '       ▄█▀▀▀█▄█████▀  ▀████▀▀███▀   ▀███▀███▀▀▀██████▀▀▀███████▀   ▀███▀▀▀███' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '     ▄██    ▀█ ██      ██   ██       █   ██    ▀█ ██    ▀█ ██       ██    ▀█' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '    ▀███▄     ██      ██   ██       █   ██   █   ██   █   ██       ██   █' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '     ▀█████▄ ██████████   ██       █   ██▀▀██   ██▀▀██   ██       ██████' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '  ▄     ▀██ ██      ██   ██       █   ██   █   ██   █   ██     ▄ ██   █  ▄' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" ' ██     ██ ██      ██   ██▄     ▄█   ██       ██       ██    ▄█ ██     ▄█' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '█▀█████▀▄████▄  ▄████▄▄ ▀██████▀▀ ▄████▄   ▄████▄   ████████████████████' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_DIM:-}" 'v3.0.11 experimental' "${C_RESET:-}"
+}
+
+# Prompt, validate, and save one numeric Options value. $1 =
+# prompt, $2 = low, $3 = high, $4 = display name, $5 = env
+# marker var (OPTIONS_*_ENV_SET, recorded by
+# load_persisted_options), $6 = env var name, $7 = validator
+# function (options_validate_number or options_validate_blend),
+# $8 = setter function, $9 = unit for the confirmation (may be
+# empty). An env var set before this process started refuses
+# the change with the plain message instead of pretending it
+# took effect; a bad value prints a plain message and leaves
+# the old value unchanged. Always returns 0: the submenu loop
+# continues (an EOF read inside just falls through to the
+# loop's own read, which exits).
+menu_options_set_value() {
+  local prompt="$1" lo="$2" hi="$3" name="$4" marker="$5" env_name="$6" validator="$7" setter="$8" unit="${9:-}"
+  local new_val valid_rc
+  if [ -n "${!marker:-}" ]; then
+    printf '%s is set by %s=%s in the environment; unset it to use the menu setting.\n' "$name" "$env_name" "${!env_name:-}"
+    return 0
+  fi
+  printf '%s' "$prompt"
+  read -r new_val || return 0
+  new_val="$("$validator" "$new_val" "$lo" "$hi")"
+  valid_rc=$?
+  if [ "$valid_rc" -eq 0 ]; then
+    if "$setter" "$new_val"; then
+      if [ -n "$unit" ]; then
+        printf '%s is now %s %s.\n' "$name" "$new_val" "$unit"
+      else
+        printf '%s is now %s.\n' "$name" "$new_val"
+      fi
+    else
+      printf 'could not save %s; unchanged.\n' "$name"
     fi
+  elif [ "$valid_rc" -eq 2 ]; then
+    printf 'not a number %s-%s; %s unchanged.\n' "$lo" "$hi" "$name"
+  else
+    printf '%s must be %s-%s; %s unchanged.\n' "$name" "$lo" "$hi" "$name"
+  fi
+  return 0
+}
+
+menu_options() {
+  local choice ai_state split_state featuring_state dedupe_state
+  local ai_blend ai_mood_cost flow_size flow_pool flow_source flow_target
+  local artist_spacing rediscover_size rediscover_max_per_artist
+  local rediscover_cooldown rediscover_stale probe_age
+  local new_val valid_rc env_note flow_source_note flow_target_note picked_lower
+  local blend_note mood_note size_note pool_note spacing_note
+  local red_size_note red_max_note red_cool_note red_stale_note
+  local feat_note dedupe_note
+  while true; do
+    if options_ai_on; then ai_state="${C_BOLD_GREEN:-}ON${C_RESET:-}"; else ai_state="${C_DIM:-}OFF${C_RESET:-}"; fi
+    if options_split_collabs_on; then split_state="${C_BOLD_GREEN:-}ON${C_RESET:-}"; else split_state="${C_DIM:-}OFF${C_RESET:-}"; fi
+    if options_featuring_on; then featuring_state="${C_BOLD_GREEN:-}ON${C_RESET:-}"; else featuring_state="${C_DIM:-}OFF${C_RESET:-}"; fi
+    dedupe_state="$(options_dedupe_match)"
+    ai_blend="$(options_ai_blend)"
+    ai_mood_cost="$(options_ai_mood_cost)"
+    flow_size="$(options_flow_size)"
+    flow_pool="$(options_flow_pool_max)"
     flow_source="$(options_flow_source)"
     if [ "$flow_source" = "library" ]; then
       flow_source="Whole library"
     fi
     flow_target="$(options_flow_target)"
+    artist_spacing="$(options_artist_spacing)"
+    rediscover_size="$(options_rediscover_size)"
+    rediscover_max_per_artist="$(options_rediscover_max_per_artist)"
+    rediscover_cooldown="$(options_rediscover_cooldown_days)"
+    rediscover_stale="$(options_rediscover_stale_days)"
+    probe_age="$(options_probe_max_age)"
+    env_note=""
+    if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
+      env_note="${C_DIM_YELLOW:-} (SETER_PROBE_MAX_AGE_HOURS=$SETER_PROBE_MAX_AGE_HOURS is set in this shell; the daily run uses that instead)${C_RESET:-}"
+    fi
     flow_source_note=""
     if [ -n "${OPTIONS_FLOW_SOURCE_ENV_SET:-}" ]; then
-      flow_source_note=" (SETER_FLOW_SOURCE=$SETER_FLOW_SOURCE is set in this shell; the menu setting is ignored)"
+      flow_source_note="${C_DIM_YELLOW:-} (SETER_FLOW_SOURCE=$SETER_FLOW_SOURCE is set in this shell; the menu setting is ignored)${C_RESET:-}"
     fi
     flow_target_note=""
     if [ -n "${OPTIONS_FLOW_TARGET_ENV_SET:-}" ]; then
-      flow_target_note=" (SETER_FLOW_TARGET=$SETER_FLOW_TARGET is set in this shell; the menu setting is ignored)"
+      flow_target_note="${C_DIM_YELLOW:-} (SETER_FLOW_TARGET=$SETER_FLOW_TARGET is set in this shell; the menu setting is ignored)${C_RESET:-}"
     fi
-    printf '\nOptions\n  AI tagging for Flow: %s\n  Split collabs: %s\n  Probe max age: %s hours (0 = probe every day)%s\n  Flow source: %s%s\n  Flow target: %s%s\n  (AI tagging needs sudo fm license once + ai-selftest before Flow uses it.)\n\n  1) Toggle AI tagging\n  2) Toggle split collabs\n  3) Set probe max age (0-40)\n  4) Set Flow source playlist\n  5) Set Flow target playlist\n  0) Back\n' "$ai_state" "$split_state" "$probe_age" "$env_note" "$flow_source" "$flow_source_note" "$flow_target" "$flow_target_note"
+    blend_note="$(options_env_note SETER_AI_BLEND OPTIONS_AI_BLEND_ENV_SET)"
+    mood_note="$(options_env_note SETER_AI_MOOD_COST OPTIONS_AI_MOOD_COST_ENV_SET)"
+    size_note="$(options_env_note SETER_FLOW_SIZE OPTIONS_FLOW_SIZE_ENV_SET)"
+    pool_note="$(options_env_note SETER_FLOW_POOL_MAX OPTIONS_FLOW_POOL_MAX_ENV_SET)"
+    spacing_note="$(options_env_note SETER_ARTIST_SPACING OPTIONS_ARTIST_SPACING_ENV_SET)"
+    red_size_note="$(options_env_note SETER_REDISCOVER_SIZE OPTIONS_REDISCOVER_SIZE_ENV_SET)"
+    red_max_note="$(options_env_note SETER_REDISCOVER_MAX_PER_ARTIST OPTIONS_REDISCOVER_MAX_PER_ARTIST_ENV_SET)"
+    red_cool_note="$(options_env_note SETER_REDISCOVER_COOLDOWN_DAYS OPTIONS_REDISCOVER_COOLDOWN_DAYS_ENV_SET)"
+    red_stale_note="$(options_env_note SETER_REDISCOVER_STALE_DAYS OPTIONS_REDISCOVER_STALE_DAYS_ENV_SET)"
+    feat_note="$(options_env_note SETER_FEATURING_SAME_ARTIST OPTIONS_FEATURING_ENV_SET)"
+    dedupe_note="$(options_env_note SETER_DEDUPE_MATCH OPTIONS_DEDUPE_ENV_SET)"
+    printf '\n%s\n' "${C_BOLD:-}Options${C_RESET:-}"
+    printf '%s\n' "${C_BOLD:-}  AI + Flow${C_RESET:-}"
+    printf '  AI tagging for Flow: %s\n' "$ai_state"
+    printf '  AI blend: %s%s%s (0-1)%s\n' "${C_CYAN:-}" "$ai_blend" "${C_RESET:-}" "$blend_note"
+    printf '  AI mood cost: %s%s%s (0-10, 0 = moods do not steer Flow)%s\n' "${C_CYAN:-}" "$ai_mood_cost" "${C_RESET:-}" "$mood_note"
+    printf '  Flow size: %s%s%s songs (10-200)%s\n' "${C_CYAN:-}" "$flow_size" "${C_RESET:-}" "$size_note"
+    printf '  Flow pool: %s%s%s songs (0-1000, 0 = no cap)%s\n' "${C_CYAN:-}" "$flow_pool" "${C_RESET:-}" "$pool_note"
+    printf '  Flow source: %s%s\n' "$flow_source" "$flow_source_note"
+    printf '  Flow target: %s%s\n' "$flow_target" "$flow_target_note"
+    printf '%s\n' "${C_BOLD:-}  Shuffle${C_RESET:-}"
+    printf '  Artist spacing: %s%s%s (1-5, 1 = just not back-to-back)%s\n' "${C_CYAN:-}" "$artist_spacing" "${C_RESET:-}" "$spacing_note"
+    printf '  Split collabs: %s\n' "$split_state"
+    printf '  "Feat." counts as same artist: %s%s\n' "$featuring_state" "$feat_note"
+    printf '%s\n' "${C_BOLD:-}  Rediscover${C_RESET:-}"
+    printf '  Size: %s%s%s songs (5-500)%s\n' "${C_CYAN:-}" "$rediscover_size" "${C_RESET:-}" "$red_size_note"
+    printf '  Max per artist: %s%s%s (0-10, 0 = no limit)%s\n' "${C_CYAN:-}" "$rediscover_max_per_artist" "${C_RESET:-}" "$red_max_note"
+    printf '  Cooldown: %s%s%s days (0-90, 0 = off)%s\n' "${C_CYAN:-}" "$rediscover_cooldown" "${C_RESET:-}" "$red_cool_note"
+    printf '  Stale after: %s%s%s days (7-365)%s\n' "${C_CYAN:-}" "$rediscover_stale" "${C_RESET:-}" "$red_stale_note"
+    printf '%s\n' "${C_BOLD:-}  Dedupe + probes${C_RESET:-}"
+    printf '  Dedupe match: %s%s%s (song = artist + title; id = track ID only)%s\n' "${C_CYAN:-}" "$dedupe_state" "${C_RESET:-}" "$dedupe_note"
+    printf '  Probe max age: %s%s%s hours (0-40, 0 = probe every day)%s\n' "${C_CYAN:-}" "$probe_age" "${C_RESET:-}" "$env_note"
+    printf '  (AI tagging needs sudo fm license once + ai-selftest before Flow uses it.)\n'
+    printf '\n%s\n' "${C_BOLD_CYAN:-}  1) Toggle AI tagging${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  2) Set AI blend (0.0-1.0)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  3) Set AI mood cost (0-10)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  4) Set Flow size (10-200 songs)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  5) Set Flow pool (0-1000, 0 = no cap)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  6) Set Flow source playlist${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  7) Set Flow target playlist${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  8) Set artist spacing (1-5)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  9) Toggle split collabs${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  10) Toggle \"feat.\" counts as same artist${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  11) Set Rediscover size (5-500 songs)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  12) Set max per artist (0-10, 0 = no limit)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  13) Set Rediscover cooldown (0-90 days, 0 = off)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  14) Set stale after (7-365 days)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  15) Set probe max age (0-40 hours)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  16) Toggle dedupe match (song/id)${C_RESET:-}"
+    printf '%s\n' "${C_BOLD_CYAN:-}  0) Back${C_RESET:-}"
     printf 'Choice: '
     read -r choice || return 0
     case "$choice" in
@@ -1078,33 +1643,18 @@ menu_options() {
         fi
         ;;
       2)
-        if [ -n "${OPTIONS_SPLIT_ENV_SET:-}" ]; then
-          echo "Split collabs is set by SETER_SPLIT_COLLABS=$SETER_SPLIT_COLLABS in the environment; unset it to use the menu setting."
-        elif options_split_collabs_on; then
-          options_set_split_collabs off && echo "Split collabs is now OFF."
-        else
-          options_set_split_collabs on && echo "Split collabs is now ON: \"A & B\" counts as artist \"A\" for spacing and caps."
-        fi
+        menu_options_set_value 'AI blend (0.0-1.0): ' 0.0 1.0 'AI blend' OPTIONS_AI_BLEND_ENV_SET SETER_AI_BLEND options_validate_blend options_set_ai_blend
         ;;
       3)
-        printf 'Probe max age in hours (0-40, 0 = probe every day): '
-        read -r new_age || return 0
-        case "$new_age" in
-          ''|*[!0-9]*)
-            echo "not a number 0-40; probe max age unchanged."
-            ;;
-          *)
-            if [ "$new_age" -gt 40 ]; then
-              echo "probe max age must be 0-40; probe max age unchanged."
-            elif options_write_probe_max_age "$new_age"; then
-              echo "Probe max age is now $new_age hours."
-            else
-              echo "could not save probe max age; unchanged."
-            fi
-            ;;
-        esac
+        menu_options_set_value 'AI mood cost (0-10, 0 = moods do not steer Flow): ' 0 10 'AI mood cost' OPTIONS_AI_MOOD_COST_ENV_SET SETER_AI_MOOD_COST options_validate_number options_set_ai_mood_cost
         ;;
       4)
+        menu_options_set_value 'Flow size in songs (10-200): ' 10 200 'Flow size' OPTIONS_FLOW_SIZE_ENV_SET SETER_FLOW_SIZE options_validate_number options_set_flow_size songs
+        ;;
+      5)
+        menu_options_set_value 'Flow pool cap in songs (0-1000, 0 = no cap): ' 0 1000 'Flow pool' OPTIONS_FLOW_POOL_MAX_ENV_SET SETER_FLOW_POOL_MAX options_validate_number options_set_flow_pool_max songs
+        ;;
+      6)
         if [ -n "${OPTIONS_FLOW_SOURCE_ENV_SET:-}" ]; then
           echo "Flow source is set by SETER_FLOW_SOURCE=$SETER_FLOW_SOURCE in the environment; unset it to use the menu setting."
         else
@@ -1133,7 +1683,7 @@ menu_options() {
           fi
         fi
         ;;
-      5)
+      7)
         if [ -n "${OPTIONS_FLOW_TARGET_ENV_SET:-}" ]; then
           echo "Flow target is set by SETER_FLOW_TARGET=$SETER_FLOW_TARGET in the environment; unset it to use the menu setting."
         else
@@ -1147,6 +1697,65 @@ menu_options() {
           else
             echo "empty name; Flow target unchanged."
           fi
+        fi
+        ;;
+      8)
+        menu_options_set_value 'Artist spacing (1-5, 1 = just not back-to-back): ' 1 5 'Artist spacing' OPTIONS_ARTIST_SPACING_ENV_SET SETER_ARTIST_SPACING options_validate_number options_set_artist_spacing
+        ;;
+      9)
+        if [ -n "${OPTIONS_SPLIT_ENV_SET:-}" ]; then
+          echo "Split collabs is set by SETER_SPLIT_COLLABS=$SETER_SPLIT_COLLABS in the environment; unset it to use the menu setting."
+        elif options_split_collabs_on; then
+          options_set_split_collabs off && echo "Split collabs is now OFF."
+        else
+          options_set_split_collabs on && echo "Split collabs is now ON: \"A & B\" counts as artist \"A\" for spacing and caps."
+        fi
+        ;;
+      10)
+        if [ -n "${OPTIONS_FEATURING_ENV_SET:-}" ]; then
+          echo "\"Feat.\" counts as same artist is set by SETER_FEATURING_SAME_ARTIST=$SETER_FEATURING_SAME_ARTIST in the environment; unset it to use the menu setting."
+        elif options_featuring_on; then
+          options_set_featuring 0 && echo '"Feat." counts as same artist is now OFF.'
+        else
+          options_set_featuring 1 && echo '"Feat." counts as same artist is now ON.'
+        fi
+        ;;
+      11)
+        menu_options_set_value 'Rediscover size in songs (5-500): ' 5 500 'Rediscover size' OPTIONS_REDISCOVER_SIZE_ENV_SET SETER_REDISCOVER_SIZE options_validate_number options_set_rediscover_size songs
+        ;;
+      12)
+        menu_options_set_value 'Max per artist (0-10, 0 = no limit): ' 0 10 'Max per artist' OPTIONS_REDISCOVER_MAX_PER_ARTIST_ENV_SET SETER_REDISCOVER_MAX_PER_ARTIST options_validate_number options_set_rediscover_max_per_artist
+        ;;
+      13)
+        menu_options_set_value 'Rediscover cooldown in days (0-90, 0 = off): ' 0 90 'Rediscover cooldown' OPTIONS_REDISCOVER_COOLDOWN_DAYS_ENV_SET SETER_REDISCOVER_COOLDOWN_DAYS options_validate_number options_set_rediscover_cooldown_days days
+        ;;
+      14)
+        menu_options_set_value 'Stale after in days (7-365): ' 7 365 'Stale after' OPTIONS_REDISCOVER_STALE_DAYS_ENV_SET SETER_REDISCOVER_STALE_DAYS options_validate_number options_set_rediscover_stale_days days
+        ;;
+      15)
+        printf 'Probe max age in hours (0-40, 0 = probe every day): '
+        read -r new_val || return 0
+        new_val="$(options_validate_number "$new_val" 0 40)"
+        valid_rc=$?
+        if [ "$valid_rc" -eq 0 ]; then
+          if options_write_probe_max_age "$new_val"; then
+            echo "Probe max age is now $new_val hours."
+          else
+            echo "could not save probe max age; unchanged."
+          fi
+        elif [ "$valid_rc" -eq 2 ]; then
+          echo "not a number 0-40; probe max age unchanged."
+        else
+          echo "probe max age must be 0-40; probe max age unchanged."
+        fi
+        ;;
+      16)
+        if [ -n "${OPTIONS_DEDUPE_ENV_SET:-}" ]; then
+          echo "Dedupe match is set by SETER_DEDUPE_MATCH=$SETER_DEDUPE_MATCH in the environment; unset it to use the menu setting."
+        elif [ "$(options_dedupe_match)" = "song" ]; then
+          options_set_dedupe_match id && echo "Dedupe match is now id (same track ID only)."
+        else
+          options_set_dedupe_match song && echo "Dedupe match is now song (same artist + title)."
         fi
         ;;
       0|q|quit)
@@ -1179,7 +1788,18 @@ menu_options() {
 # the documented 100/250/500/1000/all choice, blank for all.
 if [ "$CMD" = "menu" ]; then
   while true; do
-    printf '\nSeTeR Shuffle\n  1) Shuffle a playlist\n  2) Rediscover\n  3) Remove duplicates (dedupe)\n  4) Undo last shuffle\n  5) Flow\n  6) Flow preview\n  7) Audit\n  8) Options\n  0) Quit\n'
+    print_banner
+    printf '\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      "${C_BOLD:-}SeTeR Shuffle${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  1) Shuffle a playlist${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  2) Rediscover${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  3) Remove duplicates (dedupe)${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  4) Undo last shuffle${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  5) Flow${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  6) Flow preview${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  7) Audit${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  8) Options${C_RESET:-}" \
+      "${C_BOLD_CYAN:-}  0) Quit${C_RESET:-}"
     printf 'Choice: '
     read -r choice || exit 0
     case "$choice" in
