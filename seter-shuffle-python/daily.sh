@@ -7,8 +7,11 @@
 #      kept 14 days, under the install directory's backups/.
 #   2. Dedupe the daily playlist (no-op when it is already clean),
 #      then shuffle it in place (v2.6 dailyRemoveDuplicates = true).
-#   3. Refresh "SeTeR Flow" (v3.0.9: the daily run refreshes Flow
-#      too, not just the main playlist and Rediscover).
+#   3. Refresh the Flow target playlist (v3.0.9: the daily run
+#      refreshes Flow too, not just the main playlist and
+#      Rediscover; v3.0.11 exp 2026-11-20.5: the target and the
+#      source pool are configurable, default "SeTeR Flow" from
+#      the whole library).
 #   4. Refresh "SeTeR Rediscover" and record history only after a
 #      successful apply (run.sh does that part).
 #   Shuffle, Flow, and Rediscover each stamp their playlist
@@ -24,7 +27,7 @@
 # HARD RULES (do not weaken these for convenience):
 # - This script AUTO SELF-PROBES (v3.0.2). Before the mapping
 #   check, it runs ./run.sh selfprobe on EACH target it touches
-#   (the daily playlist, "SeTeR Flow", AND "SeTeR Rediscover"), refreshing that
+#   (the daily playlist, the Flow target, AND "SeTeR Rediscover"), refreshing that
 #   target's per-target mapping from the target itself, under
 #   the target's own sort, which Music remembers per playlist.
 #   That is why an automated probe is safe here when it was not
@@ -113,7 +116,11 @@ STATE="${SETER_STATE_DIR:-$HOME/Library/Logs/seter-shuffle-python}"
 LOG="$STATE/daily.log"
 BACKUP_DIR="${SETER_BACKUP_DIR:-$ROOT/backups}"
 REDISCOVER_PLAYLIST="SeTeR Rediscover"
-FLOW_PLAYLIST="SeTeR Flow"
+# FLOW_PLAYLIST and FLOW_SOURCE are set by load_flow_settings below
+# (env wins, else the flow-target-playlist / flow-source-playlist
+# files under the SeTeRShuffle settings dir, else "SeTeR Flow" /
+# the whole library), so the daily run and the menu read the same
+# settings and agree.
 
 mkdir -p "$STATE" "$BACKUP_DIR" 2>/dev/null || true
 
@@ -237,6 +244,63 @@ load_probe_max_age
 PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"
 case "$PROBE_MAX_AGE_HOURS" in ''|*[!0-9]*) PROBE_MAX_AGE_HOURS=0 ;; esac
 [ "$PROBE_MAX_AGE_HOURS" -gt 40 ] && PROBE_MAX_AGE_HOURS=40
+
+# Flow playlists (v3.0.11 exp 2026-11-20.5): the Flow source pool
+# and target playlist, mirroring run.sh's options_flow_source /
+# options_flow_target. An env var already set wins over the file,
+# so a one-off override still works; otherwise the
+# flow-source-playlist / flow-target-playlist files under the
+# SeTeRShuffle settings dir (same dir the probe-age file uses);
+# absent files mean the whole library and "SeTeR Flow". A bad
+# file (empty, or only whitespace) reads as the default, exactly
+# as run.sh reads it, and "library" (any case) as the source
+# means the whole library. The resolved values are exported so
+# the run.sh flow step below (a child process) resolves the same
+# settings: daily and menu can never disagree about which
+# playlist Flow reads from or writes to.
+load_flow_settings() {
+  local dir val lower trimmed
+  dir="${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+  if [ -n "${SETER_FLOW_SOURCE:-}" ]; then
+    val="$SETER_FLOW_SOURCE"
+  elif [ -f "$dir/flow-source-playlist" ]; then
+    val="$(head -n 1 "$dir/flow-source-playlist" 2>/dev/null)"
+    val="${val%$'\r'}"
+    val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+  else
+    val="library"
+  fi
+  lower="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r')"
+  if [ -z "$lower" ] || [ "$lower" = "library" ]; then
+    export SETER_FLOW_SOURCE="library"
+  else
+    export SETER_FLOW_SOURCE="$val"
+  fi
+  if [ -n "${SETER_FLOW_TARGET:-}" ]; then
+    val="$SETER_FLOW_TARGET"
+  elif [ -f "$dir/flow-target-playlist" ]; then
+    val="$(head -n 1 "$dir/flow-target-playlist" 2>/dev/null)"
+    val="${val%$'\r'}"
+    val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+  else
+    val="SeTeR Flow"
+  fi
+  trimmed="$(printf '%s' "$val" | tr -d ' \t\r')"
+  if [ -n "$trimmed" ]; then
+    export SETER_FLOW_TARGET="$val"
+  else
+    export SETER_FLOW_TARGET="SeTeR Flow"
+  fi
+  return 0
+}
+load_flow_settings
+FLOW_SOURCE="$SETER_FLOW_SOURCE"
+FLOW_PLAYLIST="$SETER_FLOW_TARGET"
+if [ "$FLOW_SOURCE" = "library" ]; then
+  FLOW_SOURCE_LABEL="whole library"
+else
+  FLOW_SOURCE_LABEL="'$FLOW_SOURCE'"
+fi
 # Auto self-probe one target before the mapping check. Return
 # codes: 0 on success; 2 when the probe refused ONLY on
 # duplicate entries (the caller may then try in-place
@@ -409,7 +473,7 @@ check_mapping "$REDISCOVER_PLAYLIST" || exit 1
 check_mapping "$FLOW_PLAYLIST" || exit 1
 
 if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
-  log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', flow, rediscover"
+  log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', flow (source $FLOW_SOURCE_LABEL, target '$FLOW_PLAYLIST'), rediscover"
   log "daily dry run done; nothing was changed"
   exit 0
 fi

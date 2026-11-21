@@ -8,6 +8,70 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-11-20 — EXPERIMENTAL: Flow source pool and target playlist are configurable (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-20.4 staging
+(exp-2026-11-20.4, 557 tests, published as a prerelease the same
+day). Spencer asked for Flow to be configurable about which
+playlists it uses, probably in the script options.
+
+What changed, nothing else:
+- Flow's source pool is configurable: the whole library (the
+  default, unchanged) or one named playlist, e.g. his main
+  playlist "My New Sandwich Recipe". SETER_FLOW_SOURCE names the
+  pool; unset or empty means the whole library, and the literal
+  word "library" (any case) means it too. The menu Options
+  submenu (choice 8, entry 4) picks it from the numbered
+  playlist list, with whole Library as an explicit choice, and
+  typing "library" selects it. The choice is persisted in the
+  flow-source-playlist file under the SeTeRShuffle settings dir
+  (same dir as ai-enabled / probe-max-age-hours); absent file =
+  library, and a bad file (empty, or only whitespace) reads as
+  library.
+- Flow's target playlist is configurable: SETER_FLOW_TARGET,
+  default "SeTeR Flow". The menu Options submenu (entry 5)
+  picks it from the numbered playlist list and persists it in
+  the flow-target-playlist file; absent file = "SeTeR Flow", and
+  a bad file reads as "SeTeR Flow". Playlist names keep their
+  spaces in both files.
+- An env var already set wins over the file, and the menu says
+  so instead of pretending a change took effect (same rule as
+  probe max age / split collabs). The loader exports the file
+  values into the env at startup, so direct commands, menu
+  children, and the daily run all see the same settings.
+- Wiring: run.sh's flow branch probes and applies the configured
+  target, dumps the configured source playlist when one is set
+  (the source needs no probe; a dump is a read), and passes
+  --playlist "$TARGET" to the CLI so the order payload label
+  matches the real target. flowPreview follows the same source
+  and label and changes nothing. The daily run resolves the same
+  settings from the same files (load_flow_settings, mirroring
+  load_probe_max_age): it probes and checks the configured
+  target, and its dry-run log line names the configured source
+  and target. The flow step stays `run.sh flow`.
+- Safety is unchanged: a flow order is unique by construction
+  (the CLI loads the pool with duplicates refused and emits each
+  song once), so a doubled source playlist fails the compute
+  closed before any apply, and apply_order now forces
+  allow_dupes "0" for flow the same way dedupe already forces
+  it, so the doubled-source path cannot loosen the bridge's
+  second check. validate.py needed no change: its flow rule is
+  eligibility plus multiplicity against the dump, and the CLI
+  guarantees uniqueness.
+- Tests: new tests/test_flow_playlists.py (35 new tests: settings
+  defaults/env/file/library/bad-file/spaces, loader and setters,
+  the submenu entries and picker wiring, the CLI --playlist
+  label, run.sh/daily.sh wiring, and daily dry-run lines),
+  plus three pre-existing structural expectations updated to the
+  new contract (the menu and pre-dump Flow pre-checks now pin
+  `ensure_mapping_for "$(options_flow_target)"` instead of the
+  hardcoded "SeTeR Flow"). Full suite 610 tests, all passing.
+  Mutation-checked: neutering either picker call, dropping
+  --playlist from the flow compute, reverting the allow_dupes
+  force, and removing the daily loader call each fail the tests
+  that pin them.
+
 ## 2026-11-20 — EXPERIMENTAL: AI tagger no longer sends BPM 0 (not a stable release)
 
 Experimental only, prerelease if published, never auto-installed,

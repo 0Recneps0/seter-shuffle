@@ -17,7 +17,11 @@
 #                                   run.sh, so all gates apply
 #   ./run.sh audit                  tag-coverage audit, change nothing
 #   ./run.sh flowPreview            print the would-be Flow order, change nothing
-#   ./run.sh flow                   build/refresh "SeTeR Flow"
+#   ./run.sh flow                   build/refresh the Flow target playlist
+#                                   (default "SeTeR Flow"; the pool is the
+#                                   whole library by default, or one
+#                                   playlist — both set in menu Options 8,
+#                                   or SETER_FLOW_SOURCE / SETER_FLOW_TARGET)
 #   ./run.sh shuffle [playlist] [size]
 #                                   shuffle a playlist in place, or the
 #                                   whole library into "SeTeR Shuffle";
@@ -282,8 +286,9 @@ log "python: $CHECK_OUT"
 # The menu writes these files. The Python CLI already reads the
 # AI marker itself (ai_enabled_by_environment) and
 # SETER_SPLIT_COLLABS (in _settings_from), so the loader below
-# only has to turn the split-collabs marker into that env var;
-# the daily run reads the probe-age file itself. An env var
+# turns the split-collabs marker into that env var and the Flow
+# playlist files into theirs; the daily run reads the probe-age
+# file itself (and its own copy of the Flow loader). An env var
 # already set when a script starts wins over the file, so a
 # one-off override still works, and the menu says so instead of
 # pretending a toggle took effect.
@@ -392,16 +397,145 @@ options_write_probe_max_age() {
   return 0
 }
 
+# Effective Flow source pool (v3.0.11 exp 2026-11-20.5): the whole
+# library, or one named playlist. SETER_FLOW_SOURCE wins when set;
+# otherwise the flow-source-playlist file; absent file = library.
+# The file holds a playlist name or the literal word "library"
+# (any case). A bad file (empty, or only whitespace) reads as
+# library, so a hand-edited file can never point Flow at a blank
+# playlist name. The value is printed exactly (spaces preserved);
+# only a trailing newline / carriage return / spaces are stripped.
+options_flow_source() {
+  local val lower
+  if [ -n "${SETER_FLOW_SOURCE:-}" ]; then
+    val="$SETER_FLOW_SOURCE"
+  elif [ -f "$(options_dir)/flow-source-playlist" ]; then
+    val="$(head -n 1 "$(options_dir)/flow-source-playlist" 2>/dev/null)"
+    val="${val%$'\r'}"
+    val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+  else
+    printf 'library'
+    return 0
+  fi
+  lower="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r')"
+  if [ -z "$lower" ] || [ "$lower" = "library" ]; then
+    printf 'library'
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# Whether SETER_FLOW_SOURCE was set before this process started
+# (recorded by load_persisted_options), and therefore overrides
+# the flow-source-playlist file, so the menu must not pretend a
+# change takes effect. The loader exports the file's value into
+# the env, so the env's presence alone cannot tell the two apart.
+options_flow_source_env_set() {
+  [ -n "${OPTIONS_FLOW_SOURCE_ENV_SET:-}" ]
+}
+
+options_write_flow_source() {
+  local dir tmp
+  dir="$(options_dir)"
+  mkdir -p "$dir" || return 1
+  tmp="$(mktemp "$dir/.flow-source-playlist.XXXXXX")" || return 1
+  printf '%s\n' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/flow-source-playlist" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# Write the Flow source file and keep the in-process env in step
+# with it, the same stale-env rule as split collabs: without the
+# export, a menu process that exported the old value at startup
+# would hand its children the old source after the user changed it.
+options_set_flow_source() {
+  if options_write_flow_source "$1"; then
+    export SETER_FLOW_SOURCE="$1"
+    return 0
+  fi
+  return 1
+}
+
+# Effective Flow target playlist (v3.0.11 exp 2026-11-20.5):
+# SETER_FLOW_TARGET wins when set; otherwise the
+# flow-target-playlist file; absent file = "SeTeR Flow". A bad
+# file (empty, or only whitespace) reads as "SeTeR Flow". The
+# name is printed exactly (spaces preserved); only a trailing
+# newline / carriage return / spaces are stripped.
+options_flow_target() {
+  local val trimmed
+  if [ -n "${SETER_FLOW_TARGET:-}" ]; then
+    printf '%s' "$SETER_FLOW_TARGET"
+    return 0
+  fi
+  if [ -f "$(options_dir)/flow-target-playlist" ]; then
+    val="$(head -n 1 "$(options_dir)/flow-target-playlist" 2>/dev/null)"
+    val="${val%$'\r'}"
+    val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+    trimmed="$(printf '%s' "$val" | tr -d ' \t\r')"
+    if [ -n "$trimmed" ]; then
+      printf '%s' "$val"
+      return 0
+    fi
+  fi
+  printf 'SeTeR Flow'
+}
+
+# Whether SETER_FLOW_TARGET was set before this process started
+# (recorded by load_persisted_options), and therefore overrides
+# the flow-target-playlist file.
+options_flow_target_env_set() {
+  [ -n "${OPTIONS_FLOW_TARGET_ENV_SET:-}" ]
+}
+
+options_write_flow_target() {
+  local dir tmp
+  dir="$(options_dir)"
+  mkdir -p "$dir" || return 1
+  tmp="$(mktemp "$dir/.flow-target-playlist.XXXXXX")" || return 1
+  printf '%s\n' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/flow-target-playlist" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# Write the Flow target file and keep the in-process env in step
+# with it (same stale-env rule as the source setter above).
+options_set_flow_target() {
+  if options_write_flow_target "$1"; then
+    export SETER_FLOW_TARGET="$1"
+    return 0
+  fi
+  return 1
+}
+
 # Turn the persisted split-collabs marker into the env var the
 # CLI already reads, unless the env was already set when this
 # process started (an explicit env var wins over the file).
 # OPTIONS_SPLIT_ENV_SET records which case applied, so the menu
 # can tell the user when a toggle would be ignored.
+# Flow playlists (v3.0.11 exp 2026-11-20.5) follow the same rule:
+# the flow-source-playlist / flow-target-playlist files become
+# SETER_FLOW_SOURCE / SETER_FLOW_TARGET unless the env was
+# already set, and OPTIONS_FLOW_SOURCE_ENV_SET /
+# OPTIONS_FLOW_TARGET_ENV_SET record which case applied. The
+# loader exports the effective value either way, so the flow
+# branch below can read the env directly and menu children
+# inherit the same settings.
 load_persisted_options() {
   if [ -n "${SETER_SPLIT_COLLABS:-}" ]; then
     OPTIONS_SPLIT_ENV_SET=1
   elif [ -f "$(options_dir)/split-collabs-enabled" ]; then
     export SETER_SPLIT_COLLABS=1
+  fi
+  if [ -n "${SETER_FLOW_SOURCE:-}" ]; then
+    OPTIONS_FLOW_SOURCE_ENV_SET=1
+  else
+    export SETER_FLOW_SOURCE="$(options_flow_source)"
+  fi
+  if [ -n "${SETER_FLOW_TARGET:-}" ]; then
+    OPTIONS_FLOW_TARGET_ENV_SET=1
+  else
+    export SETER_FLOW_TARGET="$(options_flow_target)"
   fi
   return 0
 }
@@ -839,13 +973,15 @@ menu_pick_playlist() {
     done < "$list_file"
     if [ "$mode" = "shuffle" ]; then
       printf '  L) Whole library (into SeTeR Shuffle)\n'
+    elif [ "$mode" = "flow-source" ]; then
+      printf '  L) Whole library (Flow pool)\n'
     fi
     printf '  0) Type a name instead\n'
     printf 'Number: '
     read -r pick || pick=""
     case "$pick" in
       L|l)
-        if [ "$mode" = "shuffle" ]; then
+        if [ "$mode" = "shuffle" ] || [ "$mode" = "flow-source" ]; then
           MENU_PICKED_LIBRARY=1
         else
           printf 'Playlist: '
@@ -897,9 +1033,16 @@ menu_pick_playlist() {
 # fm license once plus ai-selftest first), split collabs only
 # changes how the next shuffle/flow/rediscover counts artists,
 # and the probe age only changes how often the daily run
-# self-probes.
+# self-probes. Exp 2026-11-20.5 adds the Flow source pool and
+# Flow target playlist: the source is the whole library or one
+# named playlist, the target is the playlist Flow is applied to,
+# and both are picked from the numbered playlist list, so a
+# mistyped name can never point Flow at a playlist that does
+# not exist. Choosing a source or target only writes its file:
+# the next Flow run (menu, direct, or daily) reads it, and the
+# daily run and the menu read the same files, so they agree.
 menu_options() {
-  local choice ai_state split_state probe_age new_age env_note
+  local choice ai_state split_state probe_age new_age env_note flow_source flow_target flow_source_note flow_target_note picked_lower
   while true; do
     if options_ai_on; then ai_state="ON"; else ai_state="OFF"; fi
     if options_split_collabs_on; then split_state="ON"; else split_state="OFF"; fi
@@ -908,7 +1051,20 @@ menu_options() {
     if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
       env_note=" (SETER_PROBE_MAX_AGE_HOURS=$SETER_PROBE_MAX_AGE_HOURS is set in this shell; the daily run uses that instead)"
     fi
-    printf '\nOptions\n  AI tagging for Flow: %s\n  Split collabs: %s\n  Probe max age: %s hours (0 = probe every day)%s\n  (AI tagging needs sudo fm license once + ai-selftest before Flow uses it.)\n\n  1) Toggle AI tagging\n  2) Toggle split collabs\n  3) Set probe max age (0-40)\n  0) Back\n' "$ai_state" "$split_state" "$probe_age" "$env_note"
+    flow_source="$(options_flow_source)"
+    if [ "$flow_source" = "library" ]; then
+      flow_source="Whole library"
+    fi
+    flow_target="$(options_flow_target)"
+    flow_source_note=""
+    if [ -n "${OPTIONS_FLOW_SOURCE_ENV_SET:-}" ]; then
+      flow_source_note=" (SETER_FLOW_SOURCE=$SETER_FLOW_SOURCE is set in this shell; the menu setting is ignored)"
+    fi
+    flow_target_note=""
+    if [ -n "${OPTIONS_FLOW_TARGET_ENV_SET:-}" ]; then
+      flow_target_note=" (SETER_FLOW_TARGET=$SETER_FLOW_TARGET is set in this shell; the menu setting is ignored)"
+    fi
+    printf '\nOptions\n  AI tagging for Flow: %s\n  Split collabs: %s\n  Probe max age: %s hours (0 = probe every day)%s\n  Flow source: %s%s\n  Flow target: %s%s\n  (AI tagging needs sudo fm license once + ai-selftest before Flow uses it.)\n\n  1) Toggle AI tagging\n  2) Toggle split collabs\n  3) Set probe max age (0-40)\n  4) Set Flow source playlist\n  5) Set Flow target playlist\n  0) Back\n' "$ai_state" "$split_state" "$probe_age" "$env_note" "$flow_source" "$flow_source_note" "$flow_target" "$flow_target_note"
     printf 'Choice: '
     read -r choice || return 0
     case "$choice" in
@@ -947,6 +1103,51 @@ menu_options() {
             fi
             ;;
         esac
+        ;;
+      4)
+        if [ -n "${OPTIONS_FLOW_SOURCE_ENV_SET:-}" ]; then
+          echo "Flow source is set by SETER_FLOW_SOURCE=$SETER_FLOW_SOURCE in the environment; unset it to use the menu setting."
+        else
+          menu_pick_playlist flow-source
+          if [ "$MENU_PICKED_LIBRARY" = "1" ]; then
+            if options_set_flow_source library; then
+              echo "Flow source is now the whole library."
+            else
+              echo "could not save Flow source; unchanged."
+            fi
+          elif [ -n "$MENU_PICKED" ]; then
+            picked_lower="$(printf '%s' "$MENU_PICKED" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r')"
+            if [ "$picked_lower" = "library" ]; then
+              if options_set_flow_source library; then
+                echo "Flow source is now the whole library."
+              else
+                echo "could not save Flow source; unchanged."
+              fi
+            elif options_set_flow_source "$MENU_PICKED"; then
+              echo "Flow source is now \"$MENU_PICKED\"."
+            else
+              echo "could not save Flow source; unchanged."
+            fi
+          else
+            echo "empty name; Flow source unchanged."
+          fi
+        fi
+        ;;
+      5)
+        if [ -n "${OPTIONS_FLOW_TARGET_ENV_SET:-}" ]; then
+          echo "Flow target is set by SETER_FLOW_TARGET=$SETER_FLOW_TARGET in the environment; unset it to use the menu setting."
+        else
+          menu_pick_playlist flow-target
+          if [ -n "$MENU_PICKED" ]; then
+            if options_set_flow_target "$MENU_PICKED"; then
+              echo "Flow target is now \"$MENU_PICKED\"."
+            else
+              echo "could not save Flow target; unchanged."
+            fi
+          else
+            echo "empty name; Flow target unchanged."
+          fi
+        fi
         ;;
       0|q|quit)
         return 0
@@ -1031,7 +1232,7 @@ if [ "$CMD" = "menu" ]; then
         bash "$ROOT/run.sh" undo "$pl" || notify "SeTeR Shuffle: undo failed"
         ;;
       5)
-        ensure_mapping_for "SeTeR Flow" || continue
+        ensure_mapping_for "$(options_flow_target)" || continue
         bash "$ROOT/run.sh" flow || notify "SeTeR Shuffle: flow failed"
         ;;
       6)
@@ -1302,7 +1503,7 @@ fi
 case "$CMD" in
   shuffle) ensure_mapping_for "${SHUFFLE_PLAYLIST:-SeTeR Shuffle}" || exit 1 ;;
   dedupe) [ -n "${2:-}" ] || { echo "usage: $0 dedupe <playlist>" >&2; exit 2; } ;;
-  flow) ensure_mapping_for "SeTeR Flow" || exit 1 ;;
+  flow) ensure_mapping_for "$(options_flow_target)" || exit 1 ;;
   rediscover) ensure_mapping_for "SeTeR Rediscover" || exit 1 ;;
 esac
 
@@ -1321,6 +1522,15 @@ elif [ "$CMD" = "shuffle" ] && [ -n "$SHUFFLE_PLAYLIST" ]; then
   SOURCE_PLAYLIST="$SHUFFLE_PLAYLIST"
   TARGET_PLAYLIST="$SHUFFLE_PLAYLIST"
   step "dump playlist $SOURCE_PLAYLIST" osascript "$BRIDGE/dump-library.applescript" "$DUMP" "$SOURCE_PLAYLIST" || exit 1
+elif { [ "$CMD" = "flow" ] || [ "$CMD" = "flowPreview" ]; } && [ "$(options_flow_source)" != "library" ]; then
+  # Flow from one playlist (v3.0.11 exp 2026-11-20.5): the pool is
+  # that playlist's dump, and the target is the configured Flow
+  # target, so the same settings the menu shows are the ones this
+  # run uses. The source needs no probe (a dump is a read); the
+  # target's mapping was checked above, before any dump.
+  SOURCE_PLAYLIST="$(options_flow_source)"
+  TARGET_PLAYLIST="$(options_flow_target)"
+  step "dump playlist $SOURCE_PLAYLIST for flow" osascript "$BRIDGE/dump-library.applescript" "$DUMP" "$SOURCE_PLAYLIST" || exit 1
 else
   step "dump library" osascript "$BRIDGE/dump-library.applescript" "$DUMP" || exit 1
 fi
@@ -1398,6 +1608,12 @@ apply_order_mapped() {
   # Dedupe forces "0" even though its dump repeats IDs: the dedupe
   # order itself is unique by construction, and allowing duplicates
   # there would weaken the bridge's second check for no reason.
+  # Flow forces "0" for the same reason (v3.0.11 exp 2026-11-20.5):
+  # a flow order is unique by construction (the CLI loads the pool
+  # with duplicates refused and emits each song once), so a doubled
+  # source playlist must not loosen the bridge's check. The CLI
+  # already fails closed on a doubled pool dump before any apply,
+  # so this is the second half of the same gate, not the only one.
   # Library-song count: only for whole-library dumps. For a
   # one-playlist shuffle the dump count is a playlist count, and
   # passing it as a library count would compare the wrong things
@@ -1412,7 +1628,7 @@ apply_order_mapped() {
   else
     lib_songs="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["tracks"]))' "$DUMP")" || { log "GATE FAILED: could not count songs in dump"; return 1; }
   fi
-  if [ "$mode" = "dedupe" ]; then
+  if [ "$mode" = "dedupe" ] || [ "$mode" = "flow" ]; then
     allow_dupes="0"
   fi
   # Description stamp (v2.6 "Last reshuffled" parity): for
@@ -1666,12 +1882,12 @@ case "$CMD" in
     ;;
   flowPreview)
     log "flowPreview (no Music changes)"
-    step "flowPreview" "$PY" -m seter_shuffle.cli flowPreview --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" || exit 1
+    step "flowPreview" "$PY" -m seter_shuffle.cli flowPreview --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --playlist "$(options_flow_target)" || exit 1
     log "flowPreview done; nothing was applied"
     ;;
   flow)
-    TARGET_PLAYLIST="SeTeR Flow"
-    step "compute flow order" "$PY" -m seter_shuffle.cli flow --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" || exit 1
+    TARGET_PLAYLIST="$(options_flow_target)"
+    step "compute flow order" "$PY" -m seter_shuffle.cli flow --library "$DUMP" --out "$ORDER" --order-txt "$ORDER_TXT" --playlist "$TARGET_PLAYLIST" || exit 1
     apply_order "$TARGET_PLAYLIST" "flow"
     log "flow done"
     ;;

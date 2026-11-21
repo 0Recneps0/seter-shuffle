@@ -19,6 +19,30 @@ disabled. Backups, logs, and Rediscover history are kept; the
 v2.6 script and backups are never deleted or edited; rollback
 is `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
 
+EXPERIMENTAL 2026-11-20.5: Flow source pool and target playlist are configurable
+(not stable, not installed anywhere, on top of the 2026-11-20.4
+experimental staging). Flow used to always read the whole library
+and write "SeTeR Flow". Now the pool and the target are settings:
+menu Options (choice 8) entries 4) Set Flow source playlist and
+5) Set Flow target playlist, backed by the flow-source-playlist
+and flow-target-playlist files under ~/Documents/SeTeRShuffle
+(the same settings dir as ai-enabled and probe-max-age-hours),
+or the SETER_FLOW_SOURCE / SETER_FLOW_TARGET env vars, which win
+over the files. Defaults are unchanged: whole library into
+"SeTeR Flow". The source is picked from the numbered playlist
+list, with whole Library as an explicit choice (typing "library"
+does the same); the target is picked the same way. An empty name
+is rejected and the old value kept. The daily run reads the same
+files, so daily and menu agree, and its dry-run line names the
+configured source and target. Safety is unchanged: a flow order
+is unique by construction, the CLI refuses a doubled pool dump
+before any apply, and the bridge's duplicate allowance is forced
+to 0 for flow, so a doubled source playlist cannot loosen the
+check. Still unproven on a Mac until a real Flow runs through it.
+Nothing else in this build changes: only run.sh, daily.sh, three
+test files, and the docs were touched, no bridge, cli.py, or
+installer file.
+
 EXPERIMENTAL 2026-11-20: Claude's v3.0.11 candidate merged into the experimental line
 (not stable, not installed anywhere, on top of the 2026-11-19
 experimental staging). What it adds: a real time-skew fix (the
