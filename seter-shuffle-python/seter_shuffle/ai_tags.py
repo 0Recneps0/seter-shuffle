@@ -62,7 +62,11 @@ from typing import Callable, Mapping, Sequence
 from .flow import MOODS, AiTag
 from .tracks import Track
 
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2  # v2 (2026-11-20): BPM 0 is sent as unknown. On
+# Spencer's Mac the model copied the BPM number straight into energy
+# (72 -> 72, 116 -> 116, no BPM -> 0), and his whole library dumps
+# BPM 0, so every song came back energy 0. Bumping the version
+# retires those cached zero tags: their sigs were made under v1.
 CACHE_FORMAT = 1
 
 # (argv, stdin_text) -> (returncode, stdout, stderr). Never raises.
@@ -123,9 +127,20 @@ def _field(value: object, limit: int = 80) -> str:
     return " ".join(text.split())[:limit]
 
 
+def _bpm_field(bpm: float | None) -> str:
+    """BPM as sent to the model and hashed into the signature.
+
+    0 means unknown, like a missing BPM: the dump writes 0 for songs
+    with no BPM, and the model echoes the number into energy.
+    """
+    if bpm is None or bpm <= 0:
+        return ""
+    return f"{bpm:g}"
+
+
 def track_signature(track: Track) -> str:
     """Short hash of the metadata a tag was made from."""
-    bpm = "" if track.bpm is None else f"{track.bpm:g}"
+    bpm = _bpm_field(track.bpm)
     raw = "\x1f".join(
         (
             str(PROMPT_VERSION),
@@ -140,7 +155,7 @@ def build_prompt(tracks: Sequence[Track]) -> str:
     """One `n|title|artist|genre|year|bpm` line per track, n from 1."""
     lines = []
     for n, t in enumerate(tracks, start=1):
-        bpm = "" if t.bpm is None else f"{t.bpm:g}"
+        bpm = _bpm_field(t.bpm)
         year = "" if t.year is None else str(t.year)
         lines.append("|".join((str(n), _field(t.name), _field(t.artist), _field(t.genre), year, bpm)))
     return "\n".join(lines)

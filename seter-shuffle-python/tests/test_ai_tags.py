@@ -124,6 +124,30 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(track_signature(a), track_signature(tr("p", genre="Rock")))
         self.assertNotEqual(track_signature(a), track_signature(tr("p", genre="Jazz")))
 
+    def test_zero_bpm_is_sent_as_unknown(self):
+        # 2026-11-20, Spencer's Mac: the model copied the BPM number
+        # straight into energy (72 -> 72, 116 -> 116, no BPM -> 0),
+        # and his whole library dumps BPM 0, so every song came back
+        # energy 0. BPM 0 must reach fm as an empty field, like a
+        # missing BPM; only a real non-zero BPM is sent.
+        lines = build_prompt([
+            tr("a", bpm=0.0), tr("b", bpm=None), tr("c", bpm=120.0),
+        ]).split("\n")
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[0].endswith("|"), lines[0])
+        self.assertTrue(lines[1].endswith("|"), lines[1])
+        self.assertTrue(lines[2].endswith("|120"), lines[2])
+
+    def test_signature_treats_zero_bpm_like_missing(self):
+        self.assertEqual(
+            track_signature(tr("p", bpm=0.0)),
+            track_signature(tr("p", bpm=None)),
+        )
+        self.assertNotEqual(
+            track_signature(tr("p", bpm=0.0)),
+            track_signature(tr("p", bpm=120.0)),
+        )
+
 
 class CacheTests(unittest.TestCase):
     def test_roundtrip_and_signature_invalidation(self):
@@ -136,6 +160,27 @@ class CacheTests(unittest.TestCase):
             again = TagCache(Path(d) / "ai-tags.json")
             self.assertEqual(again.get(t), AiTag(77, "dark"))
             self.assertIsNone(again.get(tr("p1", genre="Jazz")))  # metadata changed: retag
+
+    def test_prompt_version_bump_retires_old_tags(self):
+        from seter_shuffle import ai_tags as ai_tags_module
+        # The 2026-11-20 zero tags were made under prompt v1; v2 must
+        # treat them as stale so Flow re-tags the songs instead of
+        # reusing energy 0 forever. The track here has a real BPM, so
+        # the version bump alone is what retires the tag.
+        self.assertEqual(ai_tags_module.PROMPT_VERSION, 2)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ai-tags.json"
+            old = ai_tags_module.PROMPT_VERSION
+            try:
+                ai_tags_module.PROMPT_VERSION = 1
+                c = TagCache(path)
+                t = tr("p1", genre="Rock", bpm=120.0)
+                c.put(t, AiTag(0, "calm"))
+                c.save()
+                ai_tags_module.PROMPT_VERSION = 2
+                self.assertIsNone(TagCache(path).get(t))
+            finally:
+                ai_tags_module.PROMPT_VERSION = old
 
     def test_corrupt_cache_is_quarantined_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
@@ -177,6 +222,18 @@ class ClientAndTaggerTests(unittest.TestCase):
         out2 = self.tagger(fm2, batch_size=20)(tracks)
         self.assertEqual(out2, out)
         self.assertEqual(fm2.respond_calls, 0)
+
+    def test_tagger_never_sends_zero_bpm_to_fm(self):
+        # Pins the fix at the level that matters: what fm receives.
+        fm = FakeFm()
+        tracks = [tr(f"t{i}", bpm=0.0) for i in range(3)]
+        out = self.tagger(fm, batch_size=20)(tracks)
+        self.assertEqual(len(out), 3)
+        prompts = [stdin for argv, stdin in fm.calls if argv[1] == "respond"]
+        self.assertTrue(prompts)
+        for prompt in prompts:
+            for line in prompt.split("\n"):
+                self.assertTrue(line.endswith("|"), line)
 
     def test_command_line_uses_documented_flags(self):
         fm = FakeFm()

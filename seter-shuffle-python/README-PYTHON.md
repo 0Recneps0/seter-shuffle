@@ -810,7 +810,7 @@ edit `run.sh` if you want different ones baked in.
 
 ## What was actually tested, and what was not
 
-Tested here, for real (553 tests, all passing):
+Tested here, for real (557 tests, all passing):
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -837,7 +837,7 @@ for the delete-empty handler in all four bridge scripts, the
 per-run backup chain, the sort-probe mapping deletion on
 failure, and the restore command, plus the .3 mapping-gate
 error visibility, plus the .5 per-target mapping guard and
-the undo/restore -1728 empty fallback (553 tests total):
+the undo/restore -1728 empty fallback (557 tests total):
 failures in `mapping_for_build` and
 `probe_mode` (both called inside `$(...)`) now go to the log
 file AND stderr via `logerr()`, never to stdout, so a refused

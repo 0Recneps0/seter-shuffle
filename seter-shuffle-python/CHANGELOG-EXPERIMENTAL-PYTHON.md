@@ -8,6 +8,34 @@ a Mac. The daily stable run stays AppleScript until Spencer approves
 the exact stable change list for the proposed v3.0 promotion; this
 entry is preparation for that decision, not the promotion itself.
 
+## 2026-11-20 — EXPERIMENTAL: AI tagger no longer sends BPM 0 (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the 2026-11-20.3 staging
+(exp-2026-11-20.3, 553 tests, published as a prerelease the same
+day). Spencer ran `ai-selftest` on his Mac and pasted the raw
+reply: BPM 72 -> energy 72, BPM 116 -> energy 116, no BPM ->
+energy 0. The model copies the BPM number straight into energy,
+and his whole library dumps BPM 0, so every song came back energy
+0 and got cached that way in ai-tags.json. Moods did vary
+(calm/dark), so the model reads the song lines; only energy is
+echoed.
+
+What changed, nothing else:
+- `build_prompt` in seter_shuffle/ai_tags.py now treats BPM 0
+  the same as a missing BPM: an empty BPM field. Real non-zero
+  BPM values are still sent. The same rule is used in
+  `track_signature`, so prompt and signature agree.
+- PROMPT_VERSION bumped 1 -> 2. The cache freshness check
+  compares the stored sig against the current one, and the sig
+  includes the prompt version, so every v1 tag (including the
+  2026-11-20 zero tags) is treated as stale and re-tagged on
+  the next AI Flow run. No manual cache deletion is needed;
+  deleting ai-tags.json by hand is still a safe fallback.
+- No INSTRUCTIONS change: with no BPM number in the prompt
+  there is nothing left to echo. No schema, cache-format, or
+  tagger redesign.
+
 ## 2026-11-20 — EXPERIMENTAL: bare run.sh opens the menu, plus an Options submenu (not a stable release)
 
 Experimental only, prerelease if published, never auto-installed,
