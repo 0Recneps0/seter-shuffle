@@ -48,6 +48,18 @@
 --    2026-10-29 18:59 PT, when a forward trial-dedupe build
 --    verified-failed under the playlist's true reversed
 --    mapping, then its forward restore verified-failed too.
+--    DIAGNOSIS, NOT A FLIP (2026-11-21 experimental): when a build
+--    fails verification, buildAndVerifyMapping re-reads the playlist
+--    once and reports whether it landed in the EXACT REVERSE of the
+--    desired order. That pattern is the signature of a flipped
+--    recorded mapping (the 2026-11-20 18:40 Flow failure: built
+--    under "forward", landed exactly reversed, and a fresh
+--    self-probe then measured "reversed"), and the error then says
+--    so and names ./run.sh selfprobe for the target. Nothing else
+--    changes: the playlist is still restored from backup, the run
+--    still exits non-zero, and no build is ever retried under the
+--    opposite mapping. A read that fails leaves the diagnosis off
+--    and the generic error stands.
 --    The old probe-order script is now a standalone manual
 --    sanity check only; no build consults it.
 --  * Nothing is deleted until a backup exists AND has been verified:
@@ -276,6 +288,8 @@ on run argv
 			else
 				if verifyPresenceMode then
 				error "apply-order: verification failed for \"" & playlistName & "\" (final song set does not match the desired set: wrong count, a desired song missing, or a duplicate still present); playlist restored from backup at " & backupPath & "." number 1
+			else if landedReversed of buildResult then
+				error "apply-order: verification failed for \"" & playlistName & "\" (the playlist landed in the EXACT REVERSE of the desired order under mapping " & buildMapping & ", so the recorded mapping is the opposite of this playlist's actual mapping; playlist restored from backup at " & backupPath & ". Re-run ./run.sh selfprobe '" & playlistName & "' to record the correct mapping, then try the build again.)" number 1
 			else
 				error "apply-order: verification failed for \"" & playlistName & "\" (final song order does not match the desired order under mapping " & buildMapping & "); playlist restored from backup at " & backupPath & "." number 1
 			end if
@@ -445,16 +459,23 @@ on deletePlaylistSongs(pl)
 end deletePlaylistSongs
 
 -- Build a desired list-read order under the measured mapping and
--- verify it exactly. Returns {ok:boolean, failed:list}. A false
--- result is never retried with the opposite mapping HERE: that
--- would be guessing a build, and the 2026-10-28 runs are what
--- guessing buys. The caller restores from backup on false, and
--- the restore handler (tryRestoreBothMappings) is the only
--- place the opposite mapping is tried, verified against the
--- snapshot, never to land a desired order.
+-- verify it exactly. Returns {ok:boolean, failed:list, landedReversed:boolean}.
+-- A false result is never retried with the opposite mapping HERE:
+-- that would be guessing a build, and the 2026-10-28 runs are what
+-- guessing buys. The caller restores from backup on false, and the
+-- restore handler (tryRestoreBothMappings) is the only place the
+-- opposite mapping is tried, verified against the snapshot, never
+-- to land a desired order. landedReversed is a DIAGNOSIS only:
+-- when verification fails and the landed list read is the exact
+-- reverse of the desired order, the recorded mapping is the
+-- opposite of this playlist's actual mapping, so the caller can say
+-- so instead of leaving the user to discover it with a fresh
+-- self-probe. A read that fails here leaves it false and the
+-- generic error stands: the diagnosis must never turn a failed
+-- verify into a different failure.
 on buildAndVerifyMapping(pl, desiredIDs, buildMapping)
 	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
-	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
+	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs, landedReversed:false}
 	set verified to false
 	try
 		set verified to my verifyAgainst(pl, desiredIDs)
@@ -462,9 +483,16 @@ on buildAndVerifyMapping(pl, desiredIDs, buildMapping)
 		set verified to false
 	end try
 	if verified then
-		return {ok:true, failed:{}}
+		return {ok:true, failed:{}, landedReversed:false}
 	else
-		return {ok:false, failed:{}}
+		set landedReversed to false
+		try
+			set landedIDs to my playlistIDs(pl)
+			set landedReversed to my listsEqual(landedIDs, my reverseList(desiredIDs))
+		on error
+			set landedReversed to false
+		end try
+		return {ok:false, failed:{}, landedReversed:landedReversed}
 	end if
 end buildAndVerifyMapping
 
@@ -653,9 +681,13 @@ end verifyPresence
 -- presence only, never exact order. Mirrors
 -- buildAndVerifyMapping except for the final check; the
 -- restore handlers still verify exactly against snapshots.
+-- The record carries landedReversed:false like its sibling so
+-- callers can read the field on either result; presence mode
+-- ignores order, so a reversed landing verifies here and the
+-- field is never true from this handler.
 on buildAndVerifyPresence(pl, desiredIDs, buildMapping)
 	set failedIDs to my rebuildList(pl, my buildForMapping(desiredIDs, buildMapping))
-	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs}
+	if (count of failedIDs) > 0 then return {ok:false, failed:failedIDs, landedReversed:false}
 	set verified to false
 	try
 		set verified to my verifyPresence(pl, desiredIDs)
@@ -663,9 +695,9 @@ on buildAndVerifyPresence(pl, desiredIDs, buildMapping)
 		set verified to false
 	end try
 	if verified then
-		return {ok:true, failed:{}}
+		return {ok:true, failed:{}, landedReversed:false}
 	else
-		return {ok:false, failed:{}}
+		return {ok:false, failed:{}, landedReversed:false}
 	end if
 end buildAndVerifyPresence
 

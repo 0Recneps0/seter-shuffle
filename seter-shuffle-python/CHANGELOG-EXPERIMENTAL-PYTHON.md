@@ -1,12 +1,67 @@
 # Experimental changelog, Python core
 
-This file tracks the Python experimental build only. Stable releases
-(v2.6 is current stable) are untouched by anything here, and so is the
-AppleScript experimental build. The Python version is published, if at
-all, as a prerelease, never as stable, and is never auto-installed on
-a Mac. The daily stable run stays AppleScript until Spencer approves
-the exact stable change list for the proposed v3.0 promotion; this
-entry is preparation for that decision, not the promotion itself.
+This file tracks the Python build. Version 3.5 (2026-11-21) is the
+first stable Python release, promoted from experimental
+exp-2026-11-21.1 at Spencer's request ("push it to full release
+3.5"). Earlier experimental builds were prereleases only, never
+auto-installed, and never merged into main as stable. The v2.6
+AppleScript build is untouched by this tree.
+
+## 2026-11-21 — EXPERIMENTAL: a failed apply now names a flipped mapping (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the v3.5 stable tree
+(641 tests).
+
+What changed, nothing else:
+- When a build fails verification, `buildAndVerifyMapping` in
+  bridge/apply-order.applescript re-reads the playlist once and
+  reports whether it landed in the exact reverse of the desired
+  order. That pattern is the signature of a flipped recorded
+  mapping: the 2026-11-20 18:40 Flow failure built under
+  "forward", landed exactly reversed, and only a fresh self-probe
+  afterwards measured "reversed". The error now says so plainly
+  and names `./run.sh selfprobe '<target>'` as the next step.
+- Nothing else changes: no retry, no flip, the playlist is still
+  restored from backup before the error is raised, the run still
+  exits non-zero, and a re-read that fails leaves the diagnosis
+  off with the generic error standing. A scrambled or partial
+  landing gets no diagnosis, only the generic error. The presence
+  path is untouched (it ignores order, so a reversed landing
+  verifies there); its result record carries the same field, always
+  false, so callers can read it on either result.
+- Tests: 652 pass (641 + 11 new in tests/test_apply_verify_diagnosis.py):
+  the classification the diagnosis mirrors (exact reverse means the
+  recorded mapping is flipped, anything else means no diagnosis),
+  and static pins that the diagnosis comes from a try-guarded
+  re-read, the restore precedes the diagnosis error, and no build
+  is retried under the opposite mapping. Two mutation checks on
+  copies fail the new tests (branch removed, field dropped).
+- Tests: 652 pass, same count in a fresh extraction of the staging
+  zip.
+- Still unproven on a Mac: the bridge change is reviewed here, not
+  executed (no osascript or Music app on this machine), so the new
+  error text is unproven until a real failed apply shows it. The
+  Mac check is in BRIDGE-SAFETY.md mode 39: build on a throwaway
+  with a deliberately stale mapping and confirm the error names
+  the exact reverse and the self-probe command, with the playlist
+  restored from backup.
+
+## 2026-11-21 — STABLE: v3.5 (promoted from exp-2026-11-21.1)
+
+Stable release, published as v3.5 (not a prerelease) and marked
+latest. Version bumped 3.0.11 to 3.5 everywhere it is stamped
+(`__version__`, installer marker, banner, installer messages).
+Contents are the exp-2026-11-21.1 tree: full 16-setting Options
+page, colorful menu with Spencer's own SeTeR SHUFFLE banner art,
+Flow source/target playlist config, menu playlist picker, run lock,
+AI tagging with the BPM-zero fix (PROMPT_VERSION 2), time-skew fix,
+Rediscover never-played weighting and weight-ordered fill, Flow
+directional cost and stranded-song fix. 641 tests pass here. The
+real-Mac proof items from the experimental line still stand: the
+Flow apply failure on his Mac 2026-11-20 18:40 (self-probe then
+recorded mapping reversed) has no confirmed re-run yet, and the
+AI-tag fix has not been proven on a real Flow run.
 
 ## 2026-11-21 — EXPERIMENTAL: Spencer's own banner art, colorful (not a stable release)
 

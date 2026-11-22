@@ -1,23 +1,39 @@
-# SeTeR Shuffle, Python core (v3.0.11)
+# SeTeR Shuffle, Python core (v3.5)
 
-This tree is the v3.0.11 experimental tree: Claude's v3.0.11
+This tree is the v3.5 stable tree: Claude's v3.0.11
 candidate (bug fixes + optional AI tagging) merged 2026-11-20
 into the 2026-11-19 experimental staging. The v2.6
 AppleScript build on main is not edited by this tree; it is only
 disabled, by an explicit migration step, when the user runs the
 one-click installer below.
 
-## One-click install or update (v3.0.11)
+## One-click install or update (v3.5)
 
 Download the stable zip, unzip it, double-click
 `SeTeR-Shuffle-Install.command` (or run `bash install-or-update.sh`),
 and answer yes once. That one confirmation installs or updates
-`~/Documents/SeTeRShufflePython` to v3.0.11, writes and loads the
+`~/Documents/SeTeRShufflePython` to v3.5, writes and loads the
 8:00 AM `com.seter.python.daily` plist, and switches the daily
 job from v2.6 to Python (migration), unless v2.6 is already
 disabled. Backups, logs, and Rediscover history are kept; the
 v2.6 script and backups are never deleted or edited; rollback
 is `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
+
+EXPERIMENTAL 2026-11-21.2: a failed apply now names a flipped mapping
+(not stable, not installed anywhere, on top of the v3.5 stable
+tree). When a build fails verification and the playlist landed in
+the exact reverse of the desired order, the error now says so and
+names ./run.sh selfprobe for the target: that pattern is the
+signature of a flipped recorded mapping (the 2026-11-20 18:40 Flow
+failure, built under "forward", landed exactly reversed). Nothing
+else changes: no retry, no flip, the playlist is still restored
+from backup and the run still exits non-zero, and a read that
+fails leaves the diagnosis off with the generic error standing.
+The bridge change is reviewed here, not executed: this machine
+has no osascript or Music app, so it stays unproven on a Mac
+until a real failed apply shows the new message. Nothing else in
+this build changes: only bridge/apply-order.applescript, one test
+file, and the docs were touched. Version stays 3.5.
 
 EXPERIMENTAL 2026-11-20.5: Flow source pool and target playlist are configurable
 (not stable, not installed anywhere, on top of the 2026-11-20.4
@@ -64,7 +80,7 @@ commands, and the daily run agree; explicit CLI flags still win
 over env. Bad menu input prints a plain message and keeps the
 old value. The main menu got a banner: Spencer's own ASCII art,
 his "SeTeR" block in bold cyan and his "SHUFFLE" block in bold
-italic magenta, then a dim "v3.0.11 experimental" line; colors
+italic magenta, then a dim "v3.5" line; colors
 appear only when stdout is a terminal, so piped output stays
 byte-identical.
 Deliberately left out: rediscover percent, the 500-song
@@ -90,7 +106,7 @@ experimental line (artist case keys, artist-key whitespace trim,
 Rediscover weight-ordered fill); the merge keeps the stricter
 implementation of each (NFKC + casefold comparison keys, the
 weight-ordered fill pinned by the experimental fill test). Version
-is 3.0.11 throughout, so an install stamps itself 3.0.11, not
+is 3.5 throughout, so an install stamps itself 3.5, not
 3.0.10. Nothing here has run on a Mac yet: the lock, the probe
 cadence, and the `fm` self-test are all unproven on real hardware,
 and the AI path needs `sudo fm license` once before first use.
@@ -705,7 +721,13 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   overwrite the only good backup (the 00:41 run did exactly that
   under the old scheme). The bridge never decides an order, and
   never flips on failure: a failed verify restores and exits
-  non-zero. Full failure-mode table, the one case AppleScript
+  non-zero. When a build fails verification and the playlist landed
+  in the exact reverse of the desired order, the error now says so
+  and names `./run.sh selfprobe` for the target, so a flipped
+  recorded mapping is diagnosed instead of leaving a generic
+  failure (2026-11-21 experimental; the diagnosis never retries
+  or flips, and a failed re-read leaves the generic error
+  standing). Full failure-mode table, the one case AppleScript
   cannot cover (power loss / force-quit mid-write), and the Mac
   verification procedure: see `BRIDGE-SAFETY.md`. The bridge has
   been reviewed line by line but never executed: this machine has
