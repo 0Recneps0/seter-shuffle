@@ -19,6 +19,34 @@ disabled. Backups, logs, and Rediscover history are kept; the
 v2.6 script and backups are never deleted or edited; rollback
 is `bash ~/Documents/SeTeRShufflePython/migrate-to-python.sh --rollback`.
 
+EXPERIMENTAL 2026-11-27.1: Flow spaces albums apart, not just artists
+(not stable, not installed anywhere, on top of the v3.5 stable
+tree plus the unpublished 2026-11-26 staging: the daily.sh
+shortcut with AI always on for daily, organized previous
+versions, daily-status, the installer launchd check, and the
+run.sh backups list). Artist spacing could not see albums: a
+soundtrack or compilation has a different artist on nearly every
+track, so Flow could play three songs from the same album in a
+row, they share genre, era, and energy, so they cluster even
+though no artist repeats. A track whose album appeared within
+the last artist-spacing picks now costs the same 1000 as a
+repeated artist, so album spacing wins over vibe and over the
+stranded rule, best effort like artist spacing: when every song
+left shares the album, all of them pay the same penalty and the
+order is unchanged. The album key folds case and whitespace, so
+"Greatest Hits" and "greatest  hits" count as one album, and a
+blank album never counts, so untagged tracks are never spaced
+apart. There is nothing new to configure: album spacing shares
+the artist-spacing window (default 2). Shuffle is unchanged.
+Mac spot check if he wants it: run the tests inside the unzipped
+experimental tree (`python3 -m unittest discover -s tests -q`),
+which prints only and changes nothing; do not run `./run.sh flow`
+on a real playlist to see it, that rebuilds the Flow playlist.
+Still unproven on a Mac until a real Flow runs through it.
+Nothing else in this build changes: only flow.py, settings.py
+(one comment), one new test file, and the docs were touched, no
+bridge, run.sh, cli.py, or installer file.
+
 EXPERIMENTAL 2026-11-21.2: a failed apply now names a flipped mapping
 (not stable, not installed anywhere, on top of the v3.5 stable
 tree). When a build fails verification and the playlist landed in
@@ -747,7 +775,8 @@ apply-order.applescript        (snapshot -> build -> verify -> restore)
   backup (a real playlist can hold the same song twice) and an empty
   backup is valid (it snapshots an empty playlist).
 - **Runner** (`run.sh`): wires bridge -> core -> bridge, logs to
-  `~/Library/Logs/seter-shuffle-python/run.log`, and keeps backups
+  `~/Library/Logs/seter-shuffle-python/run.log` (the daily run logs
+  to `daily.log` in the same directory instead), and keeps backups
   under the same directory. `check-python.sh` verifies a real python3
   before Music is touched (see below).
 
@@ -783,6 +812,22 @@ From this directory:
                                 # restore a playlist from a given backup
                                 # file (freshness-checked mapping, same
                                 # gate as undo)
+./run.sh daily "My Playlist"    # the daily run (see below); daily.sh
+                                # is a shortcut for this
+./run.sh daily-status           # read-only daily health report: plist,
+                                # loaded job, last run, AI state,
+                                # newest manifest; changes nothing
+./run.sh organize               # move loose *.bak-YYYYMMDD-HHMMSS
+                                # files into previous-versions/<stamp>/
+                                # buckets; moves only, never deletes
+./run.sh backups "My Playlist"  # read-only list of restore points for
+                                # a playlist: main backup, .prev,
+                                # .pre-undo / .fix-snapshot, and
+                                # per-run snapshots, each with song
+                                # count and time; with no playlist,
+                                # every backup-*.txt in $STATE
+./run.sh backups                # list every backup file in $STATE,
+                                # newest first; changes nothing
 ```
 
 Direct core commands (no Music involved, useful for testing):
@@ -805,6 +850,51 @@ never write history. `rediscover` (the core command) also does not
 write history; the runner records it only after the apply succeeds, so
 a failed apply never burns a song's cooldown. `audit` never touches
 Music at all: it only counts what is in a dump file.
+
+## The daily run
+
+The 8:00 AM launchd job (`com.seter.python.daily`) calls `daily.sh`
+with the playlist name, and `daily.sh` is only a shortcut for
+`./run.sh daily` (exp-2026-11-26.1): all of the daily logic lives in
+run.sh, so there is one daily implementation instead of two that can
+drift apart. The daily run auto self-probes each target (the daily
+playlist, "SeTeR Flow", "SeTeR Rediscover"), dedupes, shuffles, refreshes
+Flow and Rediscover, and writes a once-a-day library manifest under
+the install directory's `backups/`. It logs to
+`~/Library/Logs/seter-shuffle-python/daily.log` (not `run.log`), takes
+the single-run lock (a dry run with `SETER_DAILY_DRY_RUN=1` skips the
+lock and changes nothing), and never touches the v2.6 install or its
+job. The hard rules (auto self-probe per target, duplicate-only
+in-place dedupe fallback with exactly one re-probe, fail closed on a
+probe failure, never a throwaway probe) are in the daily section of
+run.sh.
+
+Two things changed in exp-2026-11-26.1:
+
+- **AI tagging is always on for the daily run.** The daily path
+  exports `SETER_AI=1` before the flow step, so Flow tags with AI
+  even if the `ai-enabled` marker file is gone. Manual runs are
+  unchanged: they still follow the marker and `SETER_AI`.
+- **Previous versions are organized, not scattered.** Installing
+  keeps a replaced file under
+  `previous-versions/<YYYYMMDD-HHMMSS>/`, preserving its path
+  relative to the install dir (e.g.
+  `previous-versions/20261126-003000/seter_shuffle/cli.py`), instead
+  of a loose `.bak` file next to the live one. `./run.sh organize`
+  sweeps any loose `*.bak-YYYYMMDD-HHMMSS` files left by older
+  installs into the same buckets (moves only, never deletes, never
+  touches live files, `$STATE`, or the v2.6 install), and the
+  installer runs that sweep after every install. Nothing is ever
+  pruned or deleted: every previous-version set is kept.
+- **The installer verifies the job actually loaded.** After writing
+  and loading the plist, setup checks `launchctl list` for
+  `com.seter.python.daily`; if it is not loaded it fails loudly and
+  prints the exact `launchctl load` command, instead of leaving a
+  plist that looks fine while the job never fires (the 8am job last
+  fired Nov 7 2026 for exactly that reason). `./run.sh daily-status`
+  reports the same thing on demand, plus the last daily run and its
+  outcome from `daily.log`, the AI state, and the newest library
+  manifest date.
 
 ## BPM is not attached to every song, and Flow now handles that
 

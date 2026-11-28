@@ -95,6 +95,22 @@ Songs that DO have BPM score exactly as in the AppleScript build.
   still beats it (500), so a stranded song by a recently used
   artist still waits. The rescaled targets are used when arc_lo /
   arc_hi are set, so the rule fires under the relative arc too.
+- ALBUM SPACING (2026-11-27 experimental): artist spacing cannot
+  see albums. A soundtrack or compilation has a different artist
+  on nearly every track, so the walk could play three songs from
+  the same album in a row: they share genre, era, and energy, so
+  they cluster even though no artist repeats. A track whose album
+  appeared within the last `artist_spacing` picks costs the same
+  1000 as a repeated artist, so album spacing wins over vibe and
+  over the stranded rule, best effort like artist spacing: when
+  every remaining song shares the album, all of them pay the same
+  penalty and the ranking is unchanged. The album key is the raw
+  album string NFKC-normalised, casefolded, with internal
+  whitespace collapsed, so "Greatest Hits" and "greatest  hits"
+  count as one album; a blank album never counts, so untagged
+  tracks are never spaced against each other. The window is the
+  same `artist_spacing` setting, so there is nothing new to
+  configure; shuffle is unchanged.
 - VIBE SCORE, NOT A TEMPO (2026-10-29 flow fix): the fallback energy
   is renamed in spirit, not in code: it is a vibe/arc score built
   only from fields already in the library dump. It never claims to
@@ -124,6 +140,7 @@ from __future__ import annotations
 
 import random
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Mapping, Sequence
@@ -512,6 +529,26 @@ _STRANDED_IMPROVEMENT = 10
 _STRANDED_PENALTY = 500
 
 
+def album_key(album: str | None) -> str:
+    """Comparable album key: NFKC + casefold + whitespace collapse.
+
+    Same normalisation as artist_compare_key minus the featuring
+    and collab handling (albums have neither). Blank, whitespace-
+    only, and None map to "" (never a clash), so tracks with no
+    album tag are never spaced against each other.
+    """
+    if album is None:
+        return ""
+    return " ".join(unicodedata.normalize("NFKC", str(album)).casefold().split())
+
+
+# Album spacing (see the ALBUM SPACING docstring above). Same value
+# as the artist-spacing penalty on purpose: a repeated album wins
+# over vibe and over the stranded rule, exactly like a repeated
+# artist, and both are best effort.
+_ALBUM_SPACING_PENALTY = 1000
+
+
 def flow_order(
     energies: list[int],
     groups: list[int],
@@ -524,6 +561,7 @@ def flow_order(
     arc_hi: int | None = None,
     moods: list[str | None] | None = None,
     mood_weight: int = 0,
+    album_keys: list[str] | None = None,
 ) -> list[int]:
     """Greedy Flow order as pool indices.
 
@@ -542,16 +580,23 @@ def flow_order(
     slot and fits no later slot well) is picked now: any other
     candidate costs an extra _STRANDED_PENALTY, so the walk does
     not waste a slot on a song with a good home later and leave a
-    hot song with nowhere to land at the end.
+    hot song with nowhere to land at the end. A candidate whose
+    album appeared within the last `spacing` picks costs an extra
+    _ALBUM_SPACING_PENALTY (same 1000 as artist spacing), so a
+    soundtrack or compilation cannot cluster even though its
+    artists differ; when album_keys is None the walk behaves
+    exactly as before. A blank album key never counts.
     """
     n = len(energies)
     total = min(total, n)
     if total <= 0:
         return []
     familiarity = familiarity if familiarity is not None else [0] * n
+    album_keys = album_keys if album_keys is not None else [""] * n
     used = [False] * n
     order: list[int] = []
     recent: list[str] = []
+    recent_albums: list[str] = []
     prev_group: int | None = None
     prev_year: int | None = None
     prev_energy: int | None = None
@@ -627,6 +672,13 @@ def flow_order(
             key = artist_keys[i]
             if key != "" and key in recent:
                 cost += 1000
+            # Album spacing: a soundtrack or compilation track whose
+            # album appeared within the last `spacing` picks costs
+            # the same as a repeated artist. A blank album key never
+            # counts, so untagged tracks are never spaced apart.
+            album = album_keys[i]
+            if album != "" and album in recent_albums:
+                cost += _ALBUM_SPACING_PENALTY
             # Tie-break: different genre from the previous pick (0)
             # beats the same genre (1); no previous pick means all
             # candidates tie on this axis.
@@ -652,6 +704,11 @@ def flow_order(
             recent.append(key)
             while len(recent) > spacing:
                 recent.pop(0)
+        album = album_keys[best_idx]
+        if album != "":
+            recent_albums.append(album)
+            while len(recent_albums) > spacing:
+                recent_albums.pop(0)
     return order
 
 
@@ -704,6 +761,7 @@ def prepare_flow(
     pool_years = [years[i] for i in pool]
     pool_keys = [keys[i] for i in pool]
     pool_fams = [fams[i] for i in pool]
+    pool_albums = [album_key(eligible[i].album) for i in pool]
     pool_moods: list[str | None] | None = None
     if tagger is not None and settings.ai_enabled:
         tags: Mapping[str, AiTag] = {}
@@ -745,6 +803,7 @@ def prepare_flow(
         arc_hi=arc_hi,
         moods=pool_moods,
         mood_weight=settings.ai_mood_cost,
+        album_keys=pool_albums,
     )
     ordered = [eligible[pool[i]] for i in order]
     ordered_energies = [pool_energies[i] for i in order]

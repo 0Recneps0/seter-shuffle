@@ -1,8 +1,11 @@
-"""The single-run lock in run.sh / daily.sh (bash, no Music needed).
+"""The single-run lock in run.sh (bash, no Music needed).
 
-The lock block is cut out of the real scripts between its marker comment
+The lock block is cut out of the real script between its marker comment
 and the end of acquire_lock, so these tests exercise the shipped code,
-not a copy.
+not a copy. daily.sh used to ship its own copy; since
+exp-2026-11-26.1 it is only a shortcut for `run.sh daily`, and the
+daily run takes run.sh's lock itself (so a dry run can skip it and
+a refusal can say DAILY SKIPPED).
 """
 
 from __future__ import annotations
@@ -38,16 +41,19 @@ class LockTests(unittest.TestCase):
         )
         return subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
 
-    def test_both_scripts_ship_the_same_lock_block(self):
-        a, b = lock_block("run.sh"), lock_block("daily.sh")
-        norm = lambda s: s.replace(", same lock as run.sh", "")
-        self.assertEqual(norm(a), norm(b))
+    def test_run_sh_ships_the_lock_block_and_daily_sh_delegates_to_it(self):
+        block = lock_block("run.sh")
+        self.assertIn("acquire_lock() {", block)
+        self.assertIn("release_lock() {", block)
+        daily = (ROOT / "daily.sh").read_text(encoding="utf-8")
+        self.assertIn('exec "$ROOT/run.sh" daily "$@"', daily)
+        self.assertNotIn("acquire_lock", daily)
+        self.assertNotIn("# ---- single-run lock", daily)
 
     def test_acquire_release_and_reacquire(self):
-        for script in ("run.sh", "daily.sh"):
-            r = self.bash(script, 'acquire_lock one && test -d "$SETER_LOCK_DIR" && release_lock && ! test -d "$SETER_LOCK_DIR" && acquire_lock two && echo OK')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("OK", r.stdout)
+        r = self.bash("run.sh", 'acquire_lock one && test -d "$SETER_LOCK_DIR" && release_lock && ! test -d "$SETER_LOCK_DIR" && acquire_lock two && echo OK')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("OK", r.stdout)
 
     def test_second_run_is_refused_while_owner_alive(self):
         holder = subprocess.Popen(
@@ -100,16 +106,19 @@ class WiringTests(unittest.TestCase):
 
     def test_run_sh_locks_mutating_commands_only(self):
         text = (ROOT / "run.sh").read_text(encoding="utf-8")
-        self.assertIn("audit|flowPreview|rediscover-preview|menu) ;;", text)
+        self.assertIn("audit|flowPreview|rediscover-preview|menu|daily-status|organize|backups|daily) ;;", text)
         self.assertIn('acquire_lock "run.sh $CMD"', text)
         self.assertIn("trap 'rm -rf \"$WORK\"; release_lock' EXIT", text)
 
-    def test_daily_sh_locks_unless_dry_run_and_probe_cadence_defaults_off(self):
-        text = (ROOT / "daily.sh").read_text(encoding="utf-8")
-        self.assertIn('acquire_lock "daily.sh"', text)
-        self.assertIn('if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then\n  if ! acquire_lock', text)
-        self.assertIn('PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"', text)
-        self.assertNotIn("trap 'rm -rf \"$WORK\"' EXIT", text)  # would drop the lock release
+    def test_daily_locks_unless_dry_run_and_probe_cadence_defaults_off(self):
+        text = (ROOT / "run.sh").read_text(encoding="utf-8")
+        start = text.index("# ---- daily mode (exp-2026-11-26.1)")
+        end = text.index("# ---- end daily mode ----")
+        daily = text[start:end]
+        self.assertIn('acquire_lock "run.sh daily"', daily)
+        self.assertIn('if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then\n    if ! acquire_lock "run.sh daily"; then', daily)
+        self.assertIn('PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"', daily)
+        self.assertNotIn("trap 'rm -rf \"$WORK\"' EXIT", daily)  # would drop the lock release
 
 
 if __name__ == "__main__":

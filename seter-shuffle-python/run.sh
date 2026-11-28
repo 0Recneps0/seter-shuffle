@@ -1,5 +1,5 @@
 #!/bin/bash
-# run.sh (SeTeR Shuffle, Python experimental core)
+# run.sh (SeTeR Shuffle, Python core)
 #
 # Wires the pieces together: AppleScript bridge -> Python core -> bridge.
 # The Python core never touches Music; the bridge never decides an
@@ -36,6 +36,25 @@
 #   ./run.sh rediscover-preview     print Rediscover picks, change nothing
 #   ./run.sh rediscover             refresh "SeTeR Rediscover" and record
 #                                   history ONLY after a successful apply
+#   ./run.sh daily [playlist]       the daily run (what daily.sh calls:
+#                                   daily.sh is a shortcut for this):
+#                                   auto self-probe each target, dedupe,
+#                                   shuffle, flow, rediscover, and a
+#                                   once-a-day library manifest; AI
+#                                   tagging is always on for the daily
+#                                   run; logs to $STATE/daily.log
+#   ./run.sh daily-status           read-only daily health report: plist,
+#                                   loaded job, last run, AI state,
+#                                   newest manifest; changes nothing
+#   ./run.sh organize               move loose *.bak-YYYYMMDD-HHMMSS
+#                                   files into previous-versions/<stamp>/
+#                                   buckets; moves only, never deletes
+#   ./run.sh backups [playlist]     read-only list of restore points:
+#                                   the playlist's main backup, .prev,
+#                                   .pre-undo / .fix-snapshot, and
+#                                   per-run snapshots, each with song
+#                                   count and time; with no playlist,
+#                                   every backup-*.txt in $STATE
 #   ./run.sh undo <playlist>        restore a playlist from its last backup
 #   ./run.sh dedupe <playlist>      remove duplicate entries from a
 #                                   playlist in place (unique songs,
@@ -232,8 +251,15 @@ fi
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BRIDGE="$ROOT/bridge"
-STATE="$HOME/Library/Logs/seter-shuffle-python"
+# SETER_STATE_DIR is a test hook (and the daily run's state
+# override): when set, state, logs, mappings, and the lock all
+# live there instead of ~/Library/Logs/seter-shuffle-python.
+STATE="${SETER_STATE_DIR:-$HOME/Library/Logs/seter-shuffle-python}"
 LOG="$STATE/run.log"
+# The daily run logs to daily.log, not run.log (exp-2026-11-26.1,
+# when daily.sh became a shortcut for run.sh daily): $1 is known
+# this early, and the python check below already logs.
+if [ "${1:-}" = "daily" ]; then LOG="$STATE/daily.log"; fi
 HISTORY="$HOME/Documents/SeTeRShuffle/rediscover-history.tsv"
 # What counts as a duplicate for `dedupe` (and the daily dedupe step):
 #   song (default) = same Music track ID, OR same artist + title (and
@@ -985,9 +1011,9 @@ else
   CMD="${1:-}"
 fi
 case "$CMD" in
-  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|selfprobe|menu) ;;
+  audit|flowPreview|flow|shuffle|rediscover-preview|rediscover|undo|dedupe|restore|probe|probe-keep|sortprobe|selfprobe|menu|daily|daily-status|organize|backups) ;;
   *)
-    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|selfprobe <playlist>|menu} (run with no arguments in a terminal to open the menu)" >&2
+    echo "usage: $0 {audit|flowPreview|flow|shuffle [playlist] [size]|rediscover-preview|rediscover|undo <playlist>|dedupe <playlist>|restore <playlist> <backup-txt>|probe|probe-keep|sortprobe <throwaway> <target> <sort-label>|selfprobe <playlist>|menu|daily [playlist]|daily-status|organize|backups [playlist]} (run with no arguments in a terminal to open the menu)" >&2
     exit 2
     ;;
 esac
@@ -1047,8 +1073,11 @@ acquire_lock() {
 
 # Read-only commands (and the menu, whose children lock themselves) skip
 # the lock; everything that can change a playlist takes it.
+# daily is listed here too, but only because it takes the lock
+# itself below: a dry run must skip the lock, and a refusal must
+# say DAILY SKIPPED, which the generic refusal cannot.
 case "$CMD" in
-  audit|flowPreview|rediscover-preview|menu) ;;
+  audit|flowPreview|rediscover-preview|menu|daily-status|organize|backups|daily) ;;
   *)
     if ! acquire_lock "run.sh $CMD"; then
       echo "Another SeTeR run is in progress: $LOCK_HOLDER. Nothing was changed; try again when it finishes." >&2
@@ -1145,6 +1174,679 @@ if [ "$CMD" = "probe-keep" ]; then
   log "GATE FAILED: probe playlist order (kept, ambiguous or failed); delete the probe playlist in Music if one remains"
   exit 1
 fi
+
+# ---- daily mode (exp-2026-11-26.1) ------------------------------------
+# The daily run, matching stable v2.6's daily behavior as closely as
+# the Python build allows. This used to be daily.sh; since
+# exp-2026-11-26.1 it lives here as `run.sh daily`, and daily.sh
+# is only a shortcut that execs it. The plist still calls
+# daily.sh with the playlist arg, so the interface is unchanged:
+#   ./run.sh daily "My New Sandwich Recipe"
+#   ./run.sh daily                      # default playlist, same name
+#   1. Save a once-a-day library manifest (ID, artist, album, title),
+#      kept 14 days, under the install directory's backups/.
+#   2. Dedupe the daily playlist (no-op when it is already clean),
+#      then shuffle it in place (v2.6 dailyRemoveDuplicates = true).
+#   3. Refresh the Flow target playlist (the target and the
+#      source pool are configurable, default "SeTeR Flow" from
+#      the whole library).
+#   4. Refresh "SeTeR Rediscover" and record history only after a
+#      successful apply (run.sh does that part).
+#   Shuffle, Flow, and Rediscover each stamp their playlist
+#   description "Last reshuffled: <Mac local date/time at the
+#   verified apply>", so every daily-refreshed playlist shows that
+#   morning's time, not a stale manual-run time. Dedupe does not stamp.
+#
+# HARD RULES (do not weaken these for convenience):
+# - This run AUTO SELF-PROBES (v3.0.2). Before the mapping
+#   check, it runs ./run.sh selfprobe on EACH target it touches
+#   (the daily playlist, the Flow target, AND "SeTeR Rediscover"), refreshing that
+#   target's per-target mapping from the target itself, under
+#   the target's own sort, which Music remembers per playlist.
+#   That is why an automated probe is safe here when it was not
+#   before: the old ban was on auto-probing a THROWAWAY, whose
+#   sort nobody just verified, which is exactly how the
+#   2026-10-29 mapping-transfer failure happened (a mapping
+#   measured on one playlist's sort used for another's). A
+#   self-probe cannot transfer: the mapping it measures is the
+#   target's own, by construction. The 48-hour manual-probe
+#   chore is gone, but the mapping gate is NOT dropped: after
+#   the self-probes, the run still refuses unless each target
+#   has a fresh, correctly-targeted, forward/reversed mapping,
+#   and verify-after still fails closed if a sort changed
+#   mid-run, so a stale mapping costs a refused run, never a
+#   corrupted playlist. It never falls back to another target's
+#   mapping, and it never uses a fresh throwaway probe.
+# - If a self-probe fails for either target, the daily run
+#   fails closed BEFORE any build, dedupe, or Rediscover step,
+#   and BEFORE probing the other target (the two probes share
+#   one snapshot file, $STATE/sort-probe-snapshot.txt, so a
+#   second probe would overwrite the snapshot needed to
+#   restore the first target). The failure log names the
+#   target and the snapshot path, and the restore command.
+#   A self-probe snapshots the target first, builds a
+#   rotation, restores the snapshot under the measured mapping,
+#   and verifies the restore before returning OK; a failed
+#   restore leaves the target holding the rotation order, with
+#   the snapshot named, recoverable via
+#   ./run.sh restore <target> <snapshot>. An "other" mapping
+#   is still an abort, never a build.
+# - IN-PLACE DEDUPE BREAKS THE OLD DEADLOCK (v3.0.9,
+#   superseding presence dedupe v3.0.8 and trial-dedupe
+#   v3.0.4): the duplicate-entry refusal is unchanged, so a
+#   self-probe on a playlist with duplicate entries still
+#   refuses and changes nothing. But the daily run no longer
+#   stops there: when ANY target's probe refuses ONLY
+#   on duplicate entries (the probe output says so), the
+#   daily run attempts ./run.sh dedupe on that target,
+#   which deletes only the duplicate entries in place and
+#   records no mapping, then re-probes the clean target
+#   once for a fresh mapping. A probe failure for any other
+#   reason still stops the run immediately, a failed
+#   in-place dedupe stops it before shuffle, flow, and
+#   rediscover, and a re-probe that still refuses (or
+#   fails any other way) stops it with no second dedupe
+#   attempt. EXPERIMENTAL 2026-10-31: this fallback used
+#   to cover only the daily playlist, so on 2026-10-31 the
+#   daily run cleaned the main playlist, then exited at
+#   the Rediscover probe's duplicate refusal before
+#   shuffle, flow, or rediscover ever ran. Rediscover and
+#   Flow are generated playlists, but a doubled generated
+#   playlist stalls the whole daily run the same way a
+#   doubled main playlist does, and in-place dedupe is
+#   the same safe repair for them (snapshot before,
+#   verified after, 0 rebuilds, no mapping recorded).
+#   The re-probe after a fallback dedupe is safe against
+#   the shared-snapshot rule below: the refused probe
+#   changed nothing and wrote no snapshot, so there is no
+#   pending restore for the re-probe to overwrite, and
+#   the re-probe is on the SAME target, never a different
+#   target while a restore is pending.
+# - Dry runs (SETER_DAILY_DRY_RUN=1, a test hook never used by
+#   launchd) do NOT run the self-probes, because a dry run
+#   changes nothing; they log the planned probes instead and
+#   then run the mapping check on the recorded mappings.
+# - This run NEVER touches the v2.6 install
+#   (~/Documents/SeTeRShuffle) or its launchd job (com.seter.daily).
+#   Migration disables that job only when migrate-to-python.sh is
+#   run explicitly with --confirm; this script does not do it.
+# - State, logs, and Rediscover history paths are the same ones
+#   run.sh uses, so the daily run and manual runs share backups
+#   and history instead of forking them.
+# - AI tagging is ALWAYS ON for the daily run (exp-2026-11-26.1):
+#   the daily path exports SETER_AI=1 before the flow step, so
+#   Flow tags with AI even if the ai-enabled marker file is
+#   gone. Manual runs are unchanged: they still follow the
+#   marker and SETER_AI.
+#
+# Test hooks (used by the unit tests only, never by launchd):
+#   SETER_STATE_DIR       override the state directory
+#   SETER_DAILY_DRY_RUN=1 pass the mapping pre-check, print the
+#                         planned steps, and exit 0 without
+#                         calling run.sh or Music at all (the auto
+#                         self-probes are logged as planned, not run).
+if [ "$CMD" = "daily" ]; then
+  DAILY_PLAYLIST="${2:-My New Sandwich Recipe}"
+  PLAYLIST="$DAILY_PLAYLIST"
+  BACKUP_DIR="${SETER_BACKUP_DIR:-$ROOT/backups}"
+  REDISCOVER_PLAYLIST="SeTeR Rediscover"
+  # FLOW_PLAYLIST and FLOW_SOURCE are set by load_flow_settings below
+  # (env wins, else the flow-target-playlist / flow-source-playlist
+  # files under the SeTeRShuffle settings dir, else "SeTeR Flow" /
+  # the whole library), so the daily run and the menu read the same
+  # settings and agree.
+
+  mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+
+  daily_die() { log "DAILY FAILED: $*"; notify "SeTeR Shuffle daily run failed: $*"; exit 1; }
+
+  # Probe cadence (v3.0.11). Default 0 = self-probe every target every
+  # day, exactly as before. SETER_PROBE_MAX_AGE_HOURS=N (1..40) skips a
+  # target's self-probe while its recorded mapping is younger than N
+  # hours: each probe rebuilds the playlist twice (rotate + restore),
+  # which is a lot of add/remove churn to sync every day. The mapping
+  # check below still refuses anything older than 48 hours, and the
+  # real build still verifies after writing and restores on failure.
+  # Persisted probe cadence (menu Options submenu, v3.0.11 exp
+  # 2026-11-20.3): the probe-max-age-hours file under the
+  # SeTeRShuffle settings dir (same dir the AI marker already
+  # uses; SETER_AI_DIR is a test hook, never set by a real run).
+  # An env var already set wins over the file, so a one-off
+  # override still works. The file holds one number; the
+  # validation below (non-numeric reads as 0, over 40 clamps to
+  # 40) covers a hand-edited file.
+  load_probe_max_age() {
+    local dir val
+    if [ -n "${SETER_PROBE_MAX_AGE_HOURS:-}" ]; then
+      return 0
+    fi
+    dir="${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+    if [ -f "$dir/probe-max-age-hours" ]; then
+      val="$(head -n 1 "$dir/probe-max-age-hours" 2>/dev/null | tr -d ' \t\r\n')"
+      case "$val" in
+        ''|*[!0-9]*) return 0 ;;
+      esac
+      export SETER_PROBE_MAX_AGE_HOURS="$val"
+    fi
+    return 0
+  }
+  load_probe_max_age
+  PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"
+  case "$PROBE_MAX_AGE_HOURS" in ''|*[!0-9]*) PROBE_MAX_AGE_HOURS=0 ;; esac
+  [ "$PROBE_MAX_AGE_HOURS" -gt 40 ] && PROBE_MAX_AGE_HOURS=40
+
+  # Flow playlists (v3.0.11 exp 2026-11-20.5): the Flow source pool
+  # and target playlist, mirroring run.sh's options_flow_source /
+  # options_flow_target. An env var already set wins over the file,
+  # so a one-off override still works; otherwise the
+  # flow-source-playlist / flow-target-playlist files under the
+  # SeTeRShuffle settings dir (same dir the probe-age file uses);
+  # absent files mean the whole library and "SeTeR Flow". A bad
+  # file (empty, or only whitespace) reads as the default, exactly
+  # as run.sh reads it, and "library" (any case) as the source
+  # means the whole library. The resolved values are exported so
+  # the run.sh flow step below (a child process) resolves the same
+  # settings: daily and menu can never disagree about which
+  # playlist Flow reads from or writes to.
+  load_flow_settings() {
+    local dir val lower trimmed
+    dir="${SETER_AI_DIR:-$HOME/Documents/SeTeRShuffle}"
+    if [ -n "${SETER_FLOW_SOURCE:-}" ]; then
+      val="$SETER_FLOW_SOURCE"
+    elif [ -f "$dir/flow-source-playlist" ]; then
+      val="$(head -n 1 "$dir/flow-source-playlist" 2>/dev/null)"
+      val="${val%$'\r'}"
+      val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+    else
+      val="library"
+    fi
+    lower="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r')"
+    if [ -z "$lower" ] || [ "$lower" = "library" ]; then
+      export SETER_FLOW_SOURCE="library"
+    else
+      export SETER_FLOW_SOURCE="$val"
+    fi
+    if [ -n "${SETER_FLOW_TARGET:-}" ]; then
+      val="$SETER_FLOW_TARGET"
+    elif [ -f "$dir/flow-target-playlist" ]; then
+      val="$(head -n 1 "$dir/flow-target-playlist" 2>/dev/null)"
+      val="${val%$'\r'}"
+      val="$(printf '%s' "$val" | sed 's/[[:space:]]*$//')"
+    else
+      val="SeTeR Flow"
+    fi
+    trimmed="$(printf '%s' "$val" | tr -d ' \t\r')"
+    if [ -n "$trimmed" ]; then
+      export SETER_FLOW_TARGET="$val"
+    else
+      export SETER_FLOW_TARGET="SeTeR Flow"
+    fi
+    return 0
+  }
+  load_flow_settings
+  FLOW_SOURCE="$SETER_FLOW_SOURCE"
+  FLOW_PLAYLIST="$SETER_FLOW_TARGET"
+  if [ "$FLOW_SOURCE" = "library" ]; then
+    FLOW_SOURCE_LABEL="whole library"
+  else
+    FLOW_SOURCE_LABEL="'$FLOW_SOURCE'"
+  fi
+
+  # Auto self-probe one target before the mapping check. Return
+  # codes: 0 on success; 2 when the probe refused ONLY on
+  # duplicate entries (the caller may then try in-place
+  # dedupe, which is the one repair that does not need a probe); 1 on any other
+  # failure, in which case the whole daily run stops here: do not
+  # probe the other target (shared snapshot file), do not build
+  # anything. The probe output is captured to a file first so the
+  # duplicate wording can be checked without guessing from the
+  # exit code alone: a generic probe failure must never trigger
+  # a dedupe attempt.
+  auto_self_probe() {
+    local target="$1" snapshot probe_out
+    snapshot="$STATE/sort-probe-snapshot.txt"
+    probe_out="$STATE/daily-probe.out"
+    log "daily auto self-probe for '$target' (probing the target itself under its own sort)"
+    if "$ROOT/run.sh" selfprobe "$target" > "$probe_out" 2>&1; then
+      cat "$probe_out" >> "$LOG"
+      log "daily auto self-probe OK for '$target'"
+      return 0
+    fi
+    cat "$probe_out" >> "$LOG"
+    if grep -q "duplicate song entry" "$probe_out"; then
+      log "daily auto self-probe for '$target' refused on duplicate entries only; in-place dedupe will be attempted (it deletes only the duplicate entries, 0 rebuilds on success, and records no mapping)"
+      return 2
+    fi
+    log "DAILY FAILED: auto self-probe failed for '$target'; daily stopped before any build, dedupe, or rediscover, and before probing the other target."
+    log "DAILY FAILED: if the probe could not restore '$target', it may hold the rotation order; its snapshot is at $snapshot; restore it with ./run.sh restore '$target' '$snapshot', then re-run the daily run (it will self-probe again)."
+    return 1
+  }
+
+  # Probe one target, with the duplicate-only in-place dedupe
+  # fallback shared by all three daily targets (EXPERIMENTAL
+  # 2026-10-31; before this, only the daily playlist had it).
+  # Return codes: 0 when the target ends with a fresh mapping
+  # (probe OK, or dedupe succeeded and the re-probe passed);
+  # 1 on any failure, in which case the caller stops the whole
+  # daily run before probing another target or building
+  # anything. Exactly one dedupe attempt per target, ever: a
+  # re-probe that still refuses on duplicates means the dedupe
+  # did not clean the list, and trying dedupe again on top of
+  # that state would be guessing, so the run stops instead.
+  mapping_is_younger_than_cap() {
+    local target="$1" map_file ts
+    [ "$PROBE_MAX_AGE_HOURS" -gt 0 ] || return 1
+    map_file="$(mapping_file_for "$target")"
+    [ -f "$map_file" ] || return 1
+    ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+    case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+    [ $(( $(date +%s) - ts )) -lt $((PROBE_MAX_AGE_HOURS * 3600)) ]
+  }
+  probe_target() {
+    local target="$1" status=0
+    if mapping_is_younger_than_cap "$target"; then
+      log "daily self-probe skipped for '$target': mapping is under $PROBE_MAX_AGE_HOURS hours old (SETER_PROBE_MAX_AGE_HOURS)"
+      return 0
+    fi
+    auto_self_probe "$target" || status=$?
+    if [ "$status" = "0" ]; then
+      return 0
+    fi
+    if [ "$status" != "2" ]; then
+      return 1
+    fi
+    log "daily in-place dedupe attempt for '$target' (probe refused on duplicates)"
+    if ! "$ROOT/run.sh" dedupe "$target" >> "$LOG" 2>&1; then
+      log "DAILY FAILED: in-place dedupe failed for '$target'; daily stopped before shuffle, flow, and rediscover"
+      return 1
+    fi
+    log "daily in-place dedupe cleaned '$target'; re-probing the clean playlist for a fresh mapping"
+    status=0
+    auto_self_probe "$target" || status=$?
+    if [ "$status" = "0" ]; then
+      return 0
+    fi
+    if [ "$status" = "2" ]; then
+      log "DAILY FAILED: re-probe for '$target' still refused on duplicate entries after the fallback dedupe; daily stopped with no second dedupe attempt"
+    fi
+    return 1
+  }
+
+  # Refuse unless TARGET has a fresh, correctly-targeted mapping.
+  # Prints the manual self-probe command on failure (the daily run
+  # already auto self-probed by the time this runs, so reaching
+  # here means the probe passed but the recorded mapping is still
+  # not usable, which should not happen; the manual command is
+  # the fallback, not the normal path).
+  check_mapping() {
+    local target="$1" map_file mapping recorded_target sort_label ts now
+    map_file="$(mapping_file_for "$target")"
+    if [ ! -f "$map_file" ]; then
+      log "DAILY FAILED: no per-target sort mapping recorded for '$target'."
+      log "Run this by hand first (probe the target itself under its own sort):"
+      log "  ./run.sh selfprobe '$target'"
+      return 1
+    fi
+    mapping="$(grep '^MAPPING: ' "$map_file" | head -n 1 | sed 's/^MAPPING: //')"
+    recorded_target="$(grep '^TARGET: ' "$map_file" | head -n 1 | sed 's/^TARGET: //')"
+    sort_label="$(grep '^SORT: ' "$map_file" | head -n 1 | sed 's/^SORT: //')"
+    ts="$(grep '^TIMESTAMP: ' "$map_file" | head -n 1 | sed 's/^TIMESTAMP: //')"
+    now="$(date +%s)"
+    if [ "$mapping" != "forward" ] && [ "$mapping" != "reversed" ]; then
+      log "DAILY FAILED: recorded mapping for '$target' is not forward or reversed (got '$mapping'); re-run ./run.sh selfprobe '$target'."
+      return 1
+    fi
+    if [ "$recorded_target" != "$target" ]; then
+      log "DAILY FAILED: mapping file for '$target' names target '$recorded_target'; mappings do not transfer between targets; re-run ./run.sh selfprobe '$target'."
+      return 1
+    fi
+    if [ -z "$sort_label" ]; then
+      log "DAILY FAILED: recorded mapping for '$target' has no sort label; re-run ./run.sh selfprobe '$target'."
+      return 1
+    fi
+    case "$ts" in
+      ''|*[!0-9]*)
+        log "DAILY FAILED: recorded mapping for '$target' has no valid timestamp; re-run ./run.sh selfprobe '$target'."
+        return 1
+        ;;
+    esac
+    if [ $((now - ts)) -gt 172800 ]; then
+      log "DAILY FAILED: recorded mapping for '$target' is older than 48 hours; re-run ./run.sh selfprobe '$target'."
+      return 1
+    fi
+    log "daily mapping OK for '$target': $mapping (sort '$sort_label')"
+    return 0
+  }
+
+  # One run at a time. A dry run changes nothing, so it never locks.
+  # The lock itself is taken here, not by the generic lock above:
+  # a dry run must skip it, and a refusal must say DAILY SKIPPED.
+  # The top-level EXIT trap releases it; no second trap is set
+  # here, so the WORK cleanup in that trap is never dropped.
+  if [ -z "${SETER_DAILY_DRY_RUN:-}" ]; then
+    if ! acquire_lock "run.sh daily"; then
+      log "DAILY SKIPPED: another SeTeR run is in progress: $LOCK_HOLDER"
+      notify "SeTeR Shuffle daily run skipped: another run is in progress"
+      exit 3
+    fi
+  fi
+
+  log "daily run starting for playlist '$PLAYLIST'"
+
+  # Auto self-probe each target, in order, BEFORE the mapping
+  # check and before any build. A failure in any probe stops
+  # the run before the next probe (shared snapshot file) and
+  # before anything else is touched. A duplicate-only failure
+  # for any target triggers probe_target's in-place dedupe
+  # plus one re-probe (v3.0.9 for the daily playlist,
+  # EXPERIMENTAL 2026-10-31 for Rediscover and Flow): if the
+  # dedupe cleans the target and the re-probe passes, the run
+  # continues to the mapping check and the normal steps (the
+  # later dedupe step then no-ops); if the dedupe or the
+  # re-probe fails, the run stops before shuffle, flow, and
+  # rediscover. In-place dedupe itself records no mapping;
+  # the re-probe is what records the fresh mapping for the
+  # clean list, so the mapping check after it is not relying
+  # on a mapping that survived the refused probe.
+  if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
+    log "dry run: auto self-probes skipped (dry runs change nothing); planned probes: '$PLAYLIST', '$REDISCOVER_PLAYLIST', '$FLOW_PLAYLIST'"
+  else
+    probe_target "$PLAYLIST" || exit 1
+    probe_target "$REDISCOVER_PLAYLIST" || exit 1
+    probe_target "$FLOW_PLAYLIST" || exit 1
+  fi
+
+  check_mapping "$PLAYLIST" || exit 1
+  check_mapping "$REDISCOVER_PLAYLIST" || exit 1
+  check_mapping "$FLOW_PLAYLIST" || exit 1
+
+  if [ -n "${SETER_DAILY_DRY_RUN:-}" ]; then
+    log "dry run: mappings OK; planned steps: library manifest, dedupe '$PLAYLIST', shuffle '$PLAYLIST', flow (source $FLOW_SOURCE_LABEL, target '$FLOW_PLAYLIST'), rediscover"
+    log "daily dry run done; nothing was changed"
+    exit 0
+  fi
+
+  # 1. Library manifest (once a day, kept 14 days). A manifest for
+  # today that already exists is left alone; the dump itself still
+  # goes through the bridge, so a failed dump fails the run here,
+  # before any playlist is touched.
+  TODAY="$(date +%Y-%m-%d)"
+  MANIFEST="$BACKUP_DIR/library-manifest-$TODAY.tsv"
+  if [ ! -f "$MANIFEST" ]; then
+    if ! osascript "$BRIDGE/dump-library.applescript" "$DUMP" 2>&1 | tee -a "$LOG"; then
+      daily_die "library dump for the daily manifest failed"
+    fi
+    PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m seter_shuffle.cli library-manifest --library "$DUMP" --out "$MANIFEST" >> "$LOG" 2>&1 \
+      || daily_die "library manifest write failed"
+    log "daily manifest written: $MANIFEST"
+    find "$BACKUP_DIR" -name 'library-manifest-*.tsv' -mtime +14 -delete 2>/dev/null || true
+  else
+    log "daily manifest already exists for today: $MANIFEST"
+  fi
+
+  # 2-4. Dedupe, then shuffle, then Flow, then Rediscover. Each
+  # step goes through run.sh's own gates (fresh mapping,
+  # validate, snapshot, verify, restore on failure). Any failure
+  # stops the run here: a failed shuffle must not be followed by
+  # a Flow or Rediscover refresh that would burn cooldown on a
+  # half-done day. Shuffle, Flow, and Rediscover each stamp their
+  # playlist description with the verified apply's local time.
+  "$ROOT/run.sh" dedupe "$PLAYLIST" >> "$LOG" 2>&1 || daily_die "dedupe '$PLAYLIST' failed (see $LOG)"
+  log "daily dedupe done for '$PLAYLIST'"
+  "$ROOT/run.sh" shuffle "$PLAYLIST" >> "$LOG" 2>&1 || daily_die "shuffle '$PLAYLIST' failed (see $LOG)"
+  log "daily shuffle done for '$PLAYLIST'"
+  # AI is guaranteed on for the daily run: the marker file can be
+  # deleted, but the daily Flow still tags with AI. This export is
+  # daily-only; manual runs still follow the marker and SETER_AI.
+  export SETER_AI=1
+  log "daily run: AI tagging is on for this run (SETER_AI=1, even if the ai-enabled marker is gone)"
+  "$ROOT/run.sh" flow >> "$LOG" 2>&1 || daily_die "flow failed (see $LOG)"
+  log "daily flow done"
+  "$ROOT/run.sh" rediscover >> "$LOG" 2>&1 || daily_die "rediscover failed (see $LOG)"
+  log "daily rediscover done"
+
+  log "daily run done for '$PLAYLIST'"
+  notify "SeTeR Shuffle daily run done for $PLAYLIST"
+  exit 0
+fi
+# ---- end daily mode ----------------------------------------------------
+
+# ---- daily-status (exp-2026-11-26.1) -----------------------------------
+# Read-only daily health report: whether the daily launchd job is
+# installed and loaded, when it last ran and how it ended, whether
+# AI tagging is on, and how fresh the library manifest is. Prints
+# plain lines to stdout and exits 0; it takes no lock, dumps
+# nothing, and never touches a playlist or a setting file. The
+# launchctl check is Mac-only: where launchctl is missing or
+# `launchctl list` fails, it says so instead of failing.
+if [ "$CMD" = "daily-status" ]; then
+  DAILY_PLIST_DIR="${SETER_LAUNCHAGENTS_DIR:-$HOME/Library/LaunchAgents}"
+  DAILY_PLIST_PATH="$DAILY_PLIST_DIR/com.seter.python.daily.plist"
+  echo "install dir: $ROOT"
+  echo "daily plist: $DAILY_PLIST_PATH"
+  if [ -f "$DAILY_PLIST_PATH" ]; then
+    echo "daily plist: present"
+    plist_hour="$(grep -A1 '<key>Hour</key>' "$DAILY_PLIST_PATH" | grep '<integer>' | sed 's/[^0-9]//g' | head -n 1)"
+    plist_minute="$(grep -A1 '<key>Minute</key>' "$DAILY_PLIST_PATH" | grep '<integer>' | sed 's/[^0-9]//g' | head -n 1)"
+    case "$plist_hour" in ''|*[!0-9]*) plist_hour="?" ;; esac
+    case "$plist_minute" in ''|*[!0-9]*) plist_minute="?" ;; esac
+    if [ "$plist_minute" != "?" ]; then plist_minute="$(printf '%02d' "$plist_minute")"; fi
+    plist_args="$(sed -n '/<key>ProgramArguments<\/key>/,/<\/array>/p' "$DAILY_PLIST_PATH" | sed -n 's/^[[:space:]]*<string>\(.*\)<\/string>[[:space:]]*$/\1/p')"
+    plist_script="$(printf '%s\n' "$plist_args" | grep 'daily\.sh$' | head -n 1)"
+    plist_playlist="$(printf '%s\n' "$plist_args" | tail -n 1)"
+    echo "daily schedule: $plist_hour:$plist_minute"
+    echo "daily script: ${plist_script:-unknown}"
+    echo "daily playlist: ${plist_playlist:-unknown}"
+  else
+    echo "daily plist: missing (no daily job installed)"
+    echo "daily schedule: unknown"
+    echo "daily script: unknown"
+    echo "daily playlist: unknown"
+  fi
+  if ! command -v launchctl >/dev/null 2>&1; then
+    echo "daily job loaded: cannot check on this system (no launchctl)"
+  elif launchctl_out="$(launchctl list 2>/dev/null)"; then
+    if printf '%s\n' "$launchctl_out" | grep -q 'com\.seter\.python\.daily'; then
+      echo "daily job loaded: yes"
+    else
+      echo "daily job loaded: no"
+    fi
+  else
+    echo "daily job loaded: cannot check on this system (launchctl list failed)"
+  fi
+  DAILY_LOG="$STATE/daily.log"
+  if [ ! -f "$DAILY_LOG" ]; then
+    echo "last daily run: no daily log yet"
+    echo "last daily outcome: unknown"
+  else
+    last_start="$(grep 'daily run starting' "$DAILY_LOG" | tail -n 1)"
+    if [ -z "$last_start" ]; then
+      echo "last daily run: no daily run recorded in $DAILY_LOG"
+      echo "last daily outcome: unknown"
+    else
+      echo "last daily run: $last_start"
+      start_line="$(grep -n 'daily run starting' "$DAILY_LOG" | tail -n 1 | cut -d: -f1)"
+      outcome_line="$(tail -n +"$start_line" "$DAILY_LOG" | grep -m1 -E 'daily run done|DAILY FAILED' || true)"
+      if [ -z "$outcome_line" ]; then
+        echo "last daily outcome: unknown (no outcome recorded after the last start; the run may still be in progress)"
+      elif printf '%s' "$outcome_line" | grep -q 'DAILY FAILED'; then
+        echo "last daily outcome: $outcome_line"
+      else
+        echo "last daily outcome: done"
+      fi
+    fi
+  fi
+  if [ -f "$(options_dir)/ai-enabled" ]; then
+    echo "AI marker: present ($(options_dir)/ai-enabled)"
+  else
+    echo "AI marker: absent"
+  fi
+  if [ -n "${SETER_AI:-}" ]; then
+    echo "SETER_AI: $SETER_AI"
+  else
+    echo "SETER_AI: unset"
+  fi
+  if options_ai_on; then
+    echo "AI tagging for Flow: on"
+  else
+    echo "AI tagging for Flow: off"
+  fi
+  # Newest manifest by filename date (the names sort
+  # chronologically). A plain glob loop, not ls: with pipefail a
+  # failing ls would end the report early under set -e.
+  newest_manifest=""
+  for manifest_file in "$ROOT/backups"/library-manifest-*.tsv; do
+    [ -f "$manifest_file" ] || continue
+    newest_manifest="$manifest_file"
+  done
+  if [ -n "$newest_manifest" ]; then
+    echo "newest library manifest: $(basename "$newest_manifest" .tsv | sed 's/^library-manifest-//')"
+  else
+    echo "newest library manifest: none"
+  fi
+  exit 0
+fi
+# ---- end daily-status --------------------------------------------------
+
+# ---- organize (exp-2026-11-26.1) ---------------------------------------
+# Move loose *.bak-YYYYMMDD-HHMMSS files left by older installs into
+# previous-versions/<stamp>/ buckets, preserving each file's path
+# relative to the install dir (e.g. seter_shuffle/cli.py.bak-... ->
+# previous-versions/<stamp>/seter_shuffle/cli.py). Moves only:
+# nothing is deleted, no live file is touched, and the sweep stays
+# inside the install tree (top level, bridge/, seter_shuffle/), so
+# $STATE and the v2.6 install are never touched. A destination
+# that already exists is skipped, never overwritten, and reported.
+# setup-python.sh calls this after installing, so installing this
+# build organizes the mess left by earlier installs automatically.
+organize_previous_versions() {
+  local root="$1" moved=0 skipped=0 file rel base stamp dest destdir
+  while IFS= read -r -d '' file; do
+    rel="${file#$root/}"
+    base="$(basename "$file")"
+    stamp="${base##*.bak-}"
+    case "$stamp" in
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+      *) continue ;;
+    esac
+    dest="$root/previous-versions/$stamp/${rel%.bak-*}"
+    if [ -e "$dest" ]; then
+      printf 'organize: skipped %s (already in previous-versions/%s/)\n' "$rel" "$stamp"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    destdir="$(dirname "$dest")"
+    if ! mkdir -p "$destdir"; then
+      printf 'organize: could not create %s\n' "$destdir"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if mv "$file" "$dest"; then
+      printf 'organize: moved %s -> previous-versions/%s/%s\n' "$rel" "$stamp" "${rel%.bak-*}"
+      moved=$((moved + 1))
+    else
+      printf 'organize: could not move %s\n' "$rel"
+      skipped=$((skipped + 1))
+    fi
+  done < <(find "$root" -maxdepth 2 -type f -name '*.bak-????????-??????' -print0 2>/dev/null)
+  printf 'organize: moved %s, skipped %s\n' "$moved" "$skipped"
+  return 0
+}
+
+if [ "$CMD" = "organize" ]; then
+  organize_previous_versions "$ROOT"
+  exit 0
+fi
+# ---- end organize ------------------------------------------------------
+
+# ---- backups (exp-2026-11-26.2) ------------------------------------------
+# Read-only list of restore points, so a bad build can be undone
+# without digging through $STATE by hand. `run.sh backups <playlist>`
+# lists that playlist's main backup, its .prev, its .pre-undo and
+# .fix-snapshot, and its per-run snapshots (newest first, 10 shown);
+# `run.sh backups` with no playlist lists every backup-*.txt file in
+# $STATE, newest first (20 shown). Each line names the file, its song
+# count (one persistent ID per line), and its modified time. Prints
+# plain lines to stdout and exits 0; it takes no lock, dumps nothing,
+# and never touches a playlist, a setting, or a backup file. A missing
+# main backup is reported as "none", not an error: undo already
+# refuses on a missing backup, and this command is how the user finds
+# which older file to feed `restore` instead. The per-playlist view
+# resolves the file through backup_path_for, so a playlist name with
+# spaces or slashes maps to the same sanitized file undo uses.
+describe_backup_file() {
+  local path="$1" label="$2" count when
+  if [ ! -f "$path" ]; then
+    printf '  %s: none\n' "$label"
+    return 0
+  fi
+  count="$(grep -c . "$path" || true)"
+  when="$(date -r "$path" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)"
+  if [ "$count" = "1" ]; then
+    printf '  %s: 1 song, %s, %s\n' "$label" "$when" "$path"
+  else
+    printf '  %s: %s songs, %s, %s\n' "$label" "$count" "$when" "$path"
+  fi
+  return 0
+}
+
+if [ "$CMD" = "backups" ]; then
+  PLAYLIST="${2:-}"
+  if [ -n "$PLAYLIST" ]; then
+    BACKUP="$(backup_path_for "$PLAYLIST")"
+    echo "backups for $PLAYLIST:"
+    describe_backup_file "$BACKUP" "main"
+    describe_backup_file "$BACKUP.prev" "previous"
+    describe_backup_file "$BACKUP.pre-undo" "pre-undo snapshot"
+    describe_backup_file "$BACKUP.fix-snapshot" "pre-restore snapshot"
+    # Per-run snapshots, newest first. A glob loop collects them in
+    # filename order (the run-<timestamp> names sort chronologically),
+    # then the array is walked backwards, so no ls is needed: with
+    # pipefail a failing ls would end the report early under set -e.
+    snaps=()
+    snap_count=0
+    for snap in "$BACKUP".run-*.txt; do
+      [ -f "$snap" ] || continue
+      snaps+=("$snap")
+      snap_count=$((snap_count + 1))
+    done
+    if [ "$snap_count" -eq 0 ]; then
+      echo "  run snapshots: none"
+    else
+      shown=0
+      for (( idx=snap_count - 1; idx >= 0; idx-- )); do
+        if [ "$shown" -ge 10 ]; then break; fi
+        describe_backup_file "${snaps[$idx]}" "run snapshot"
+        shown=$((shown + 1))
+      done
+      if [ "$snap_count" -gt 10 ]; then
+        echo "  ... and $((snap_count - 10)) older run snapshots"
+      fi
+    fi
+  else
+    echo "backups in $STATE:"
+    # Newest first needs ls -t here (a glob loop cannot order by
+    # time); the `|| true` keeps a no-match glob from ending the
+    # report under set -e, and tool-created backup filenames never
+    # contain whitespace, so line-based reads are safe.
+    shown=0
+    total=0
+    while IFS= read -r file; do
+      total=$((total + 1))
+      if [ "$shown" -lt 20 ]; then
+        describe_backup_file "$file" "$(basename "$file")"
+        shown=$((shown + 1))
+      fi
+    done < <(ls -t "$STATE"/backup-*.txt 2>/dev/null || true)
+    if [ "$total" -eq 0 ]; then
+      echo "  none"
+    elif [ "$total" -gt 20 ]; then
+      echo "  ... and $((total - 20)) more"
+    fi
+  fi
+  exit 0
+fi
+# ---- end backups -------------------------------------------------------
 
 # Read the recorded sort-matched mapping for one target, or refuse.
 # sortprobe writes the per-target file from mapping_file_for with
@@ -1495,7 +2197,7 @@ print_banner() {
   printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '  ▄     ▀██ ██      ██   ██       █   ██   █   ██   █   ██     ▄ ██   █  ▄' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
   printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" ' ██     ██ ██      ██   ██▄     ▄█   ██       ██       ██    ▄█ ██     ▄█' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
   printf '%s%s%s%s%s\n' "${C_BOLD_MAGENTA:-}" "${C_ITALIC:-}" '█▀█████▀▄████▄  ▄████▄▄ ▀██████▀▀ ▄████▄   ▄████▄   ████████████████████' "${C_ITALIC_OFF:-}" "${C_RESET:-}"
-  printf '%s%s%s\n' "${C_DIM:-}" 'v3.0.11 experimental' "${C_RESET:-}"
+  printf '%s%s%s\n' "${C_DIM:-}" 'v3.5' "${C_RESET:-}"
 }
 
 # Prompt, validate, and save one numeric Options value. $1 =

@@ -24,6 +24,9 @@ class Settings:
     rediscover_cooldown_days: int = 14  # 0 = off
     # Shuffle / Flow artist spacing (v2.6, v2.5)
     artist_spacing: int = 2  # 1 = just not back-to-back; best effort
+    # Flow album spacing shares this window (2026-11-27 experimental):
+    # a repeated album within the last `artist_spacing` picks costs
+    # the same as a repeated artist. No separate setting.
     featuring_is_same_artist: bool = True
     # "A & B" / "A, B" / "A x B" count as artist "A" for spacing and caps.
     # Off by default so existing orders keep v2.6 behaviour.

@@ -36,6 +36,17 @@ from seter_shuffle.tracks import Track  # noqa: E402
 from seter_shuffle.validate import validate_order_file  # noqa: E402
 
 
+def _daily_section() -> str:
+    """The run.sh daily section, between its marker comments.
+
+    The daily logic moved from daily.sh to run.sh in
+    exp-2026-11-26.1; daily.sh is now only a shortcut.
+    """
+    start = RUN_TEXT.index("# ---- daily mode (exp-2026-11-26.1)")
+    end = RUN_TEXT.index("# ---- end daily mode ----")
+    return RUN_TEXT[start:end]
+
+
 def _function_lines(text, name):
     lines = text.splitlines()
     start = next(
@@ -125,7 +136,7 @@ class Mapping48hTests(unittest.TestCase):
     def test_no_24h_window_left_in_code(self):
         self.assertNotIn("86400", RUN_TEXT)
         self.assertIn("172800", RUN_TEXT)
-        daily = (ROOT / "daily.sh").read_text()
+        daily = _daily_section()
         self.assertNotIn("86400", daily)
         self.assertIn("172800", daily)
 
@@ -190,8 +201,8 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("notification unavailable", notify)
 
     def test_daily_notifies_on_success_and_failure(self):
-        daily = (ROOT / "daily.sh").read_text()
-        self.assertIn("notify() {", daily)
+        self.assertIn("notify() {", RUN_TEXT)
+        daily = _daily_section()
         self.assertIn('notify "SeTeR Shuffle daily run done', daily)
         self.assertIn('notify "SeTeR Shuffle daily run failed', daily)
 

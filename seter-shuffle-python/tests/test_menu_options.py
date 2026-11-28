@@ -21,7 +21,7 @@ Design, so the tests pin the right contract:
     The Python CLI already reads the AI marker itself and
     SETER_SPLIT_COLLABS, so run.sh only has to turn the
     split-collabs marker into that env var (load_persisted_options),
-    and daily.sh only has to read the probe-age file
+    and run.sh daily only has to read the probe-age file
     (load_probe_max_age). An env var already set wins over the
     file, and the menu says so instead of pretending a toggle
     took effect.
@@ -52,14 +52,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_SH = ROOT / "run.sh"
-DAILY_SH = ROOT / "daily.sh"
 RUN_TEXT = RUN_SH.read_text()
-DAILY_TEXT = DAILY_SH.read_text()
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_selfprobe as _selfprobe  # noqa: E402  (harness for the daily tests)
+
+# The daily logic moved from daily.sh to run.sh in
+# exp-2026-11-26.1; daily.sh is now only a shortcut. Structural
+# tests that used to read daily.sh read the run.sh daily section.
+DAILY_TEXT = _selfprobe.daily_section()
 
 
 def _function_lines(text, name):
@@ -540,11 +543,11 @@ class OptionsWiringTests(unittest.TestCase):
         self.assertIn("load_probe_max_age", DAILY_TEXT)
         self.assertIn("probe-max-age-hours", DAILY_TEXT)
         lines = DAILY_TEXT.splitlines()
-        call_at = next(i for i, line in enumerate(lines) if line == "load_probe_max_age")
+        call_at = next(i for i, line in enumerate(lines) if line.strip() == "load_probe_max_age")
         assign_at = next(
             i
             for i, line in enumerate(lines)
-            if line.startswith('PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"')
+            if line.strip().startswith('PROBE_MAX_AGE_HOURS="${SETER_PROBE_MAX_AGE_HOURS:-0}"')
         )
         self.assertLess(call_at, assign_at)
 

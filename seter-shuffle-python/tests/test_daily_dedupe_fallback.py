@@ -5,7 +5,7 @@ via its duplicate-only fallback, then exited at the SeTeR
 Rediscover probe's duplicate refusal before shuffle, flow, or
 rediscover ever ran: only the main playlist had a fallback.
 This build gives all three daily targets the same fallback,
-through one helper, probe_target in daily.sh:
+through one helper, probe_target in run.sh daily:
 
   * a probe that refuses ONLY on duplicate entries triggers
     one in-place dedupe for that target, then one re-probe
@@ -19,9 +19,9 @@ through one helper, probe_target in daily.sh:
     fallback proves the re-probe supplied the mapping the
     mapping check then passes on, not the dedupe.
 
-No Mac is involved: a stub run.sh stands in for daily.sh's
-calls, and today's manifest already exists so daily.sh never
-touches osascript.
+No Mac is involved: a stub run.sh stands in for run.sh daily's
+child calls, reached through the daily.sh wrapper, and today's
+manifest already exists so the daily run never touches osascript.
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+
+import test_selfprobe as _selfprobe
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = "My New Sandwich Recipe"
@@ -52,12 +54,19 @@ class DailyDedupeFallbackTests(unittest.TestCase):
         self.backups = self.base / "backups"
         self.backups.mkdir()
         shutil.copy(ROOT / "daily.sh", self.install / "daily.sh")
+        # The real run.sh, under another name: the stub below
+        # delegates `daily` to it, and its child calls resolve
+        # back to the stub via $ROOT/run.sh.
+        shutil.copy(ROOT / "run.sh", self.install / "real-run.sh")
         check = self.install / "check-python.sh"
         check.write_text('#!/bin/bash\necho "/usr/bin/python3 (Python 3.12.0)"\n', encoding="utf-8")
         check.chmod(0o755)
         stub = self.install / "run.sh"
         stub.write_text(
             "#!/bin/bash\n"
+            'if [ "$1" = "daily" ]; then\n'
+            '  exec bash "$(dirname "$0")/real-run.sh" "$@"\n'
+            "fi\n"
             "echo \"$*\" >> \"$STUB_CALLS\"\n"
             "if [ \"$1\" = \"selfprobe\" ]; then\n"
             "  safe=\"$(printf '%s' \"$2\" | tr ' /' '__')\"\n"
@@ -228,7 +237,7 @@ class DailyDedupeFallbackTests(unittest.TestCase):
 
 class DailyDedupeFallbackStructuralTests(unittest.TestCase):
     def test_probe_target_is_the_only_probe_path(self) -> None:
-        text = (ROOT / "daily.sh").read_text(encoding="utf-8")
+        text = _selfprobe.daily_section()
         self.assertIn("probe_target()", text)
         self.assertNotIn("probe_status", text)
         # Exactly two direct probe calls, both inside probe_target;
@@ -237,7 +246,7 @@ class DailyDedupeFallbackStructuralTests(unittest.TestCase):
         self.assertIn('probe_target "$PLAYLIST"', text)
         self.assertIn('probe_target "$REDISCOVER_PLAYLIST"', text)
         self.assertIn('probe_target "$FLOW_PLAYLIST"', text)
-        # Exactly two dedupe invocations in daily.sh: the fallback
+        # Exactly two dedupe invocations in run.sh daily: the fallback
         # inside probe_target, and the normal step after the
         # mapping check.
         self.assertEqual(text.count('run.sh" dedupe'), 2)

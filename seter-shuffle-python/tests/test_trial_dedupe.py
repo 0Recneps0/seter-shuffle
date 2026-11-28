@@ -26,8 +26,8 @@ probe's duplicate refusal is unchanged.
 
 What is tested here, without a Mac (AppleScript itself cannot
 run here, so a fake `osascript` written in Python stands in
-for the bridge, and a stub `run.sh` stands in for daily.sh's
-calls):
+for the bridge, and a stub `run.sh` stands in for run.sh daily's
+child calls):
   * Dedupe with no mapping tries forward, then reversed, and
     records the winning mapping; the apply calls are in that
     order and no sort-probe call is made.
@@ -40,7 +40,7 @@ calls):
     main backup.
   * Menu dedupe (choice 3) uses the trial path, not the
     mapping gate, on a doubled playlist.
-  * daily.sh: a duplicate-only probe failure for the daily
+  * run.sh daily: a duplicate-only probe failure for the daily
     playlist triggers trial-dedupe and the run continues;
     a duplicate probe failure plus a failed dedupe stops the
     run before the Rediscover probe and any build.
@@ -57,6 +57,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -64,6 +65,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "My New Sandwich Recipe"
+
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+
+import test_selfprobe as _selfprobe  # noqa: E402  (daily_section helper)
+
+daily_section = _selfprobe.daily_section
 
 FAKE_OSASCRIPT = """#!/usr/bin/env python3
 import json
@@ -299,7 +307,14 @@ class TrialDedupeHarness(unittest.TestCase):
 
 
 class DailyTrialDedupeTests(unittest.TestCase):
-    """daily.sh with a stub run.sh: duplicate probe -> in-place dedupe -> re-probe."""
+    """run.sh daily (reached through the daily.sh wrapper) with a
+    stub run.sh for its child calls: duplicate probe -> in-place
+    dedupe -> re-probe.
+
+    The harness copies the real run.sh to real-run.sh and the stub
+    delegates `daily` to it, so the daily logic under test is the
+    shipped run.sh daily section while the Music-touching child
+    calls are still stubbed out."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -311,12 +326,19 @@ class DailyTrialDedupeTests(unittest.TestCase):
         self.backups = self.base / "backups"
         self.backups.mkdir()
         shutil.copy(ROOT / "daily.sh", self.install / "daily.sh")
+        # The real run.sh, under another name: the stub below
+        # delegates `daily` to it, and its child calls resolve
+        # back to the stub via $ROOT/run.sh.
+        shutil.copy(ROOT / "run.sh", self.install / "real-run.sh")
         check = self.install / "check-python.sh"
         check.write_text('#!/bin/bash\necho "/usr/bin/python3 (Python 3.12.0)"\n', encoding="utf-8")
         check.chmod(0o755)
         stub = self.install / "run.sh"
         stub.write_text(
             "#!/bin/bash\n"
+            'if [ "$1" = "daily" ]; then\n'
+            '  exec bash "$(dirname "$0")/real-run.sh" "$@"\n'
+            "fi\n"
             "echo \"$*\" >> \"$STUB_CALLS\"\n"
             "if [ \"$1\" = \"selfprobe\" ]; then\n"
             "  safe=\"$(printf '%s' \"$2\" | tr ' /' '__')\"\n"
@@ -425,7 +447,7 @@ class TrialDedupeStructuralTests(unittest.TestCase):
         self.assertIn("contains a duplicate song entry", bridge)
 
     def test_daily_trial_fallback_only_on_duplicate_wording(self) -> None:
-        text = (ROOT / "daily.sh").read_text(encoding="utf-8")
+        text = daily_section()
         self.assertIn('grep -q "duplicate song entry"', text)
         self.assertIn("trial-dedupe", text)
 

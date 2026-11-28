@@ -7,6 +7,171 @@ exp-2026-11-21.1 at Spencer's request ("push it to full release
 auto-installed, and never merged into main as stable. The v2.6
 AppleScript build is untouched by this tree.
 
+## 2026-11-27 — EXPERIMENTAL: Flow spaces albums apart, not just artists (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the v3.5 stable tree
+plus the unpublished 2026-11-26 staging (exp-2026-11-26.1 and
+exp-2026-11-26.2: the daily.sh shortcut, AI always on for daily,
+organized previous versions, daily-status, the installer launchd
+check, and the run.sh backups command), neither of which reached
+GitHub: the latest live release is still exp-2026-11-21.2. This
+build folds both in whole, so this tag is the first published
+build to carry them.
+
+What changed, nothing else:
+- Flow album spacing. Artist spacing could not see albums: a
+  soundtrack or compilation has a different artist on nearly
+  every track, so the walk could play three songs from the same
+  album in a row (same genre, era, and energy, so they cluster
+  even though no artist repeats). A track whose album appeared
+  within the last `artist_spacing` picks now costs the same 1000
+  as a repeated artist, so album spacing wins over vibe and over
+  the stranded rule, best effort like artist spacing: when every
+  remaining song shares the album, all of them pay the same
+  penalty and the ranking is unchanged. New `album_key` in
+  flow.py (NFKC + casefold + whitespace collapse; blank album
+  maps to "", never a clash), a parallel `recent_albums` window
+  in `flow_order`, and `prepare_flow` passes the pool's album
+  keys through. The window is the same `artist_spacing` setting,
+  so there is nothing new to configure; shuffle is unchanged.
+- Tests: 687 pass (678 + 9 new in tests/test_flow_album_spacing.py):
+  same-album/different-artist pair separated by the spacing
+  window, single-album pool still completes (best effort),
+  blank albums never spaced, artist spacing still holds with
+  album keys supplied, spacing=1 is back-to-back only, album
+  key case/whitespace folding and blank handling, no album keys
+  behaves as before, and a prepare_flow integration test with
+  two soundtrack songs separated. A mutation check on a scratch
+  copy (album penalty removed) fails 3 of the 9 new tests.
+- Still unproven on a Mac: the walk change is exercised here
+  against synthetic pools, not a real library; the album string
+  comes from the existing dump field, which the bridge already
+  writes. Nothing about undo, restore, the daily run, or the
+  bridge changed.
+
+## 2026-11-26 — EXPERIMENTAL: run.sh backups lists restore points (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the v3.5 stable tree
+plus exp-2026-11-26.1 (669 tests). This build folds exp-2026-11-26.1
+in whole: the daily.sh shortcut, AI always on for daily, organized
+previous versions, daily-status, and the installer launchd check are
+all in this tree.
+
+What changed, nothing else:
+- New read-only command `./run.sh backups [playlist]`: lists the
+  restore points run.sh keeps in $STATE, so a bad build can be
+  undone without digging through the state dir by hand. With a
+  playlist it lists that playlist's main backup, its `.prev`, its
+  `.pre-undo` and `.fix-snapshot`, and its per-run snapshots
+  (newest first, 10 shown, with a count of older ones); with no
+  playlist it lists every `backup-*.txt` in $STATE, newest first
+  (20 shown). Each line gives the song count (one persistent ID
+  per line, "1 song" in the singular) and the modified time. A
+  missing main backup is reported as "none", not an error: undo
+  already refuses on a missing backup, and this is how the user
+  finds which older file to feed `restore` instead. The
+  per-playlist view resolves the file through `backup_path_for`,
+  so a playlist name with spaces or slashes maps to the same
+  sanitized file undo uses. The command takes no lock, dumps
+  nothing, and never touches a playlist, a setting, or a backup
+  file; it is registered alongside daily-status and organize in
+  the read-only list.
+- Tests: 678 pass (669 + 9 new in tests/test_backups_command.py):
+  every backup kind listed with counts and newest-first run
+  snapshots, the none-at-all case, the 10-snapshot and 20-file
+  caps with older/more counts, a playlist name with a space and a
+  slash mapping to the same sanitized file, read-only behaviour
+  (no backup file changed, no lock dir created), and the command
+  appearing in usage. Two mutation checks on copies fail the new
+  tests (the .prev line removed, the snapshot cap changed to 1).
+- Still unproven on a Mac: the command is exercised here against
+  fake state dirs, not a real install; the `date -r` time display
+  is the BSD/GNU-portable form daily-status already relies on.
+  Nothing about undo, restore, or the daily run changed.
+
+## 2026-11-26 — EXPERIMENTAL: daily.sh is a shortcut for run.sh daily, AI always on for daily, organized previous versions (not a stable release)
+
+Experimental only, prerelease if published, never auto-installed,
+never merged into main as stable. Base is the v3.5 stable tree
+plus exp-2026-11-21.2 (652 tests).
+
+What changed, nothing else:
+- `daily.sh` is now only a shortcut: it resolves its own directory
+  and execs `./run.sh daily "$@"`. ALL of the daily logic moved
+  into run.sh as a `daily` subcommand (same probes, mapping checks,
+  manifest, dedupe, shuffle, flow, rediscover, lock, dry run, and
+  log lines; the plist still calls daily.sh with the playlist arg,
+  so the interface is unchanged). The daily run logs to
+  `$STATE/daily.log`, not `run.log`, and run.sh now honors
+  `SETER_STATE_DIR` for that. The lock is taken by the daily
+  section itself (a dry run skips it, a refusal says DAILY SKIPPED
+  with exit 3), and child run.sh calls inherit `SETER_LOCK_HELD=1`
+  as before. The existing daily tests were migrated to the new
+  shape (the stub harness now delegates `daily` to the shipped
+  run.sh while still stubbing the child calls); no behavioral
+  assertion was weakened.
+- AI tagging is guaranteed on for the daily run: the daily path
+  exports `SETER_AI=1` before the flow step and logs that AI
+  tagging is on, so Flow tags with AI even if the `ai-enabled`
+  marker file is gone. Manual runs are unchanged: they still
+  follow the marker and `SETER_AI`.
+- Previous versions are organized. `setup-python.sh install_file()`
+  now keeps a replaced file under
+  `previous-versions/<YYYYMMDD-HHMMSS>/`, preserving its path
+  relative to the install dir, instead of a loose `.bak` file next
+  to the live one. New `run.sh organize` sweeps existing loose
+  `*.bak-YYYYMMDD-HHMMSS` files (top level, `bridge/`,
+  `seter_shuffle/`) into the same buckets, skipping (never
+  overwriting) on a destination collision and reporting the
+  counts; it moves only, never deletes, never touches live files,
+  `$STATE`, or the v2.6 install. setup-python.sh runs that sweep
+  after every install, so installing this build organizes the mess
+  left by older installs automatically. No pruning or deletion was
+  added: every previous-version set is kept.
+- New `run.sh daily-status` (read-only, no lock, no Music changes):
+  prints whether the daily plist exists with its scheduled
+  Hour/Minute and the daily.sh path it calls, whether the job is
+  loaded per `launchctl list` ("cannot check on this system" where
+  launchctl is missing or `launchctl list` fails), the last daily
+  run from `daily.log` with its outcome (`done` vs `DAILY FAILED`
+  with the reason), the AI state (marker present, `SETER_AI` set,
+  effective on/off), and the newest library-manifest date in the
+  install dir's `backups/`.
+- Installer verification: after loading the daily schedule,
+  setup-python.sh now verifies the job is actually loaded
+  (`launchctl list | grep com.seter.python.daily`); if it is not
+  loaded it exits non-zero and prints the exact `launchctl load`
+  command. (The 8am job last fired Nov 7 2026 while the plist sat
+  there looking fine; this is the check that would have caught it.)
+- Tests: 669 pass (652 + 17 new in
+  tests/test_daily_wrapper_organize.py and
+  tests/test_setup_fixes.py): the daily.sh wrapper delegates to
+  run.sh daily with args and hooks intact; the daily run exports
+  `SETER_AI=1` for the flow step with no marker file, and the
+  export exists only in the daily section; organize moves loose
+  .baks into timestamp buckets, skips collisions without
+  overwriting, reports zero on a clean tree, never touches state
+  or sibling dirs, and setup organizes old .baks during install;
+  daily-status reports plist/schedule/script/playlist, the
+  cannot-check launchctl line, done and failed outcomes, AI state,
+  newest manifest, and the nothing-installed case; the launchd
+  verification wiring is pinned. Two mutation checks on copies fail
+  the new tests (AI export commented out, organize destination
+  changed).
+- Still unproven on a Mac: the daily section is reviewed here and
+  exercised through the stub harness, not executed against Music
+  (no osascript or Music app on this machine), so the first real
+  8am run through `run.sh daily` is unproven until it fires;
+  `daily-status`'s launchctl check is Mac-only and untested here
+  (it reports "cannot check on this system" on Linux by design);
+  the organize sweep and the launchd verification are likewise
+  unproven on a real Mac install until setup runs there. The daily
+  job not firing Nov 8-25 is a launchd/scheduling issue, not a
+  code issue: manual runs work, and this build changes no
+  scheduling, only the code the scheduled job calls.
+
 ## 2026-11-21 — EXPERIMENTAL: a failed apply now names a flipped mapping (not a stable release)
 
 Experimental only, prerelease if published, never auto-installed,

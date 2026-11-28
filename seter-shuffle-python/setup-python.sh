@@ -1,18 +1,23 @@
 #!/bin/bash
-# setup-python.sh (SeTeR Shuffle, Python build, stable v3.0.11)
+# setup-python.sh (SeTeR Shuffle, Python build, stable v3.5)
 #
-# Installs the Python build for macOS. This is the v3.0.11 stable
-# tree: the installer records version "3.0.11". The one-click
+# Installs the Python build for macOS. This is the v3.5 stable
+# tree: the installer records version "3.5". The one-click
 # install-or-update.sh always calls this script with --force
 # (the user already confirmed once there), so an update from a
 # 3.0-proposed or 3.0 install is allowed (differing files
-# still get a .bak first).
+# still get a previous-versions copy first).
 #
 # What it installs, and what it deliberately does NOT touch:
 # - Copies run.sh, check-python.sh, daily.sh, migrate-to-python.sh,
 #   bridge/*.applescript, and seter_shuffle/*.py from this folder
 #   (local files only; nothing is downloaded) into a NEW install
 #   directory, by default ~/Documents/SeTeRShufflePython.
+#   A replaced file is kept under previous-versions/<stamp>/,
+#   preserving its path relative to the install dir, and any loose
+#   *.bak files left by older installs are swept into the same
+#   buckets by ./run.sh organize (run after the copy below).
+#   Nothing is ever deleted by an install.
 # - Writes a launchd plist for the daily run under a NEW label,
 #   com.seter.python.daily, at the daily hour below.
 # - NEVER touches the v2.6 install (~/Documents/SeTeRShuffle), its
@@ -26,7 +31,7 @@
 #
 # Idempotency and version refusal:
 # - Re-running with the same version re-copies the same files
-#   (differing files get a timestamped .bak copy first) and
+#   (differing files get a previous-versions copy first) and
 #   re-writes the same plist: safe to re-run.
 # - If the install directory already holds a DIFFERENT version
 #   marker, the installer REFUSES unless --force is given, so an
@@ -56,7 +61,7 @@ set -euo pipefail
 DAILY_HOUR=8
 DAILY_MINUTE=0
 DAILY_PLAYLIST_DEFAULT="My New Sandwich Recipe"
-VERSION_MARKER="3.0.11"
+VERSION_MARKER="3.5"
 PLIST_LABEL="com.seter.python.daily"
 
 INSTALL_DIR="${SETER_PYTHON_INSTALL_DIR:-$HOME/Documents/SeTeRShufflePython}"
@@ -76,7 +81,7 @@ UNINSTALL=0
 
 usage() {
   cat <<'EOF'
-SeTeR Shuffle (Python) setup -- stable v3.0.11
+SeTeR Shuffle (Python) setup -- stable v3.5
 
 Usage: bash setup-python.sh [options]
 
@@ -143,6 +148,19 @@ launchd_load() {
   launchd_unload
   if launchctl bootstrap "gui/$uid" "$PLIST_PATH" >/dev/null 2>&1; then return 0; fi
   launchctl load "$PLIST_PATH"
+}
+
+# Verify the daily job is actually loaded after a load attempt:
+# a silent bootstrap/load failure used to leave the plist written
+# but the job never firing (the 8am job last fired Nov 7 2026
+# while the plist sat there looking fine). If it is not loaded,
+# fail loudly and print the exact manual command.
+launchd_verify_loaded() {
+  if [ -n "${SETER_TEST_MODE:-}" ]; then return 0; fi
+  if launchctl list 2>/dev/null | grep -q "$PLIST_LABEL"; then
+    return 0
+  fi
+  return 1
 }
 
 write_plist() {
@@ -217,7 +235,7 @@ if [ -z "${SETER_TEST_MODE:-}" ]; then
   bash "$SCRIPT_DIR/check-python.sh" >/dev/null || die "No usable python3 (3.9+) found; install real Python first, then re-run setup."
 fi
 
-say "SeTeR Shuffle (Python) setup -- stable v3.0.11"
+say "SeTeR Shuffle (Python) setup -- stable v3.5"
 say ""
 
 # Version refusal: an existing install with a different marker is
@@ -238,10 +256,18 @@ install_file() {
   # Re-running setup from the installed copy: source and destination are the same file.
   if [ -f "$dest" ] && [ "$src" -ef "$dest" ]; then return 0; fi
   if [ -f "$dest" ] && ! cmp -s "$src" "$dest"; then
-    local backup
-    backup="$dest.bak-$(date +%Y%m%d-%H%M%S)"
+    # Keep the replaced file under previous-versions/<stamp>/,
+    # preserving its path relative to the install dir (all files
+    # replaced by one install share one stamp, so one bucket
+    # holds one previous version). Nothing is deleted, and no
+    # loose .bak file is left next to the live file.
+    local stamp rel backup
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    rel="${dest#$INSTALL_DIR/}"
+    backup="$INSTALL_DIR/previous-versions/$stamp/$rel"
+    mkdir -p "$(dirname "$backup")"
     cp "$dest" "$backup"
-    ok "kept your previous $(basename "$dest") as $(basename "$backup")"
+    ok "kept your previous $(basename "$dest") as previous-versions/$stamp/$rel"
   fi
   cp "$src" "$dest"
 }
@@ -261,13 +287,24 @@ chmod +x "$INSTALL_DIR/run.sh" "$INSTALL_DIR/check-python.sh" "$INSTALL_DIR/dail
 printf '%s\n' "$VERSION_MARKER" > "$MARKER_FILE"
 ok "installed the Python build ($VERSION_MARKER)"
 
+# Organize any loose .bak files left by older installs into
+# previous-versions/ buckets (same logic as ./run.sh organize,
+# run here so installing this build cleans up the old mess
+# automatically). Best-effort: a failure here never fails the
+# install, it only leaves the old .bak files where they were.
+bash "$INSTALL_DIR/run.sh" organize 2>/dev/null || warn "could not organize previous .bak files (they were left in place)"
+
 if [ "$NO_DAILY" = 1 ]; then
   say "2. Daily run: skipped (--no-daily)"
 else
   say "2. Scheduling the daily run at $HOUR:$(printf '%02d' "$MINUTE") for playlist \"$PLAYLIST\""
   write_plist "$PLAYLIST" "$HOUR" "$MINUTE"
   if launchd_load; then
-    ok "scheduled as $PLIST_LABEL (if your Mac is asleep then, it runs when it wakes)"
+    if launchd_verify_loaded; then
+      ok "scheduled as $PLIST_LABEL (if your Mac is asleep then, it runs when it wakes)"
+    else
+      die "The schedule was written but $PLIST_LABEL is not loaded, so the daily run would never fire. Load it by hand with: launchctl load \"$PLIST_PATH\""
+    fi
   else
     warn "Couldn't load the schedule. Try: launchctl load \"$PLIST_PATH\""
   fi
@@ -279,7 +316,7 @@ else
 fi
 
 say ""
-say "All set (v3.0.11 installed)."
+say "All set (v3.5 installed)."
 say "  Install:   $INSTALL_DIR"
 say "  Daily log: $LOG_FILE"
 say "  Manual:    cd $INSTALL_DIR && ./run.sh audit"

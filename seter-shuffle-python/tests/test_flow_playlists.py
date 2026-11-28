@@ -61,9 +61,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_SH = ROOT / "run.sh"
-DAILY_SH = ROOT / "daily.sh"
 RUN_TEXT = RUN_SH.read_text()
-DAILY_TEXT = DAILY_SH.read_text()
 FIXTURE = ROOT / "tests" / "fixtures" / "sample-library.json"
 
 sys.path.insert(0, str(ROOT))
@@ -71,6 +69,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_selfprobe as _selfprobe  # noqa: E402  (harness for the daily tests)
 from test_menu_options import DailyProbeAgeFileTests  # noqa: E402
+
+# The daily logic moved from daily.sh to run.sh in
+# exp-2026-11-26.1; daily.sh is now only a shortcut. Structural
+# tests that used to read daily.sh read the run.sh daily section.
+DAILY_TEXT = _selfprobe.daily_section()
 
 
 def _function_lines(text, name):
@@ -618,12 +621,12 @@ class FlowWiringTests(unittest.TestCase):
         self.assertIn('FLOW_PLAYLIST="$SETER_FLOW_TARGET"', DAILY_TEXT)
         lines = DAILY_TEXT.splitlines()
         call_at = next(
-            i for i, line in enumerate(lines) if line == "load_flow_settings"
+            i for i, line in enumerate(lines) if line.strip() == "load_flow_settings"
         )
         assign_at = next(
             i
             for i, line in enumerate(lines)
-            if line.startswith('FLOW_PLAYLIST="$SETER_FLOW_TARGET"')
+            if line.strip().startswith('FLOW_PLAYLIST="$SETER_FLOW_TARGET"')
         )
         self.assertLess(call_at, assign_at)
         # The dry-run log line names the configured source and target.

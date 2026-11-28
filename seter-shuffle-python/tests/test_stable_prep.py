@@ -84,7 +84,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.install / "daily.sh").exists())
         self.assertTrue((self.install / "bridge" / "apply-order.applescript").exists())
         self.assertTrue((self.install / "seter_shuffle" / "cli.py").exists())
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.11")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.5")
         self.assertFalse((self.agents / "com.seter.python.daily.plist").exists())
 
     def test_install_is_idempotent_for_same_version(self) -> None:
@@ -92,7 +92,7 @@ class InstallerTests(unittest.TestCase):
         second = run_script("setup-python.sh", ["--no-daily", "-y"], self.env)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.11")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.5")
 
     def test_install_refuses_different_version_without_force(self) -> None:
         run_script("setup-python.sh", ["--no-daily", "-y"], self.env)
@@ -102,7 +102,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("already holds version", refused.stderr + refused.stdout)
         forced = run_script("setup-python.sh", ["--no-daily", "-y", "--force"], self.env)
         self.assertEqual(forced.returncode, 0, forced.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.11")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.5")
 
     def test_daily_plist_uses_single_hour_variable_and_new_label(self) -> None:
         result = run_script("setup-python.sh", ["-y"], self.env)
@@ -207,8 +207,10 @@ class DailyTests(unittest.TestCase):
         self.assertIn("sort-probe-snapshot.txt", combined)
         self.assertNotIn("daily dedupe done", combined)
         # And it never invokes a throwaway sortprobe: only selfprobe.
-        text = (ROOT / "daily.sh").read_text()
-        self.assertNotIn("run.sh\" sortprobe", text)
+        text = (ROOT / "run.sh").read_text()
+        start = text.index("# ---- daily mode (exp-2026-11-26.1)")
+        end = text.index("# ---- end daily mode ----")
+        self.assertNotIn("run.sh\" sortprobe", text[start:end])
 
     def test_daily_stale_mapping_is_refreshed_by_probe_or_fails_closed(self) -> None:
         # v3.0.2: a stale mapping is no longer the refusal itself;

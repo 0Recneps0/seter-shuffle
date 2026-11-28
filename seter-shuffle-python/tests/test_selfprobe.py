@@ -11,7 +11,8 @@ playlist as a test).
 
 What is tested here, without a Mac (AppleScript itself cannot
 run here, so a fake `osascript` on PATH stands in for the
-bridge, and a stub `run.sh` stands in for daily.sh's calls):
+bridge, and a stub `run.sh` stands in for run.sh daily's child
+calls):
   * ./run.sh selfprobe <target> records THROWAWAY == target
     and SORT == the self-probe label, accepted by the mapping
     gate (mapping_for_build only requires a non-empty label).
@@ -23,7 +24,7 @@ bridge, and a stub `run.sh` stands in for daily.sh's calls):
     but exits non-zero and names the snapshot.
   * A self-probe returning "other" deletes the mapping and
     exits non-zero; a duplicate-entry refusal changes nothing.
-  * daily.sh auto self-probes each target BEFORE the mapping
+  * run.sh daily auto self-probes each target BEFORE the mapping
     check and before any build, in playlist-then-Rediscover
     order; a first-target probe failure stops the run before
     the second probe and before any build.
@@ -92,6 +93,19 @@ def mapping_file(state: Path, name: str) -> Path:
     safe = name.replace("\n", "_").replace("\r", "_").replace(" ", "_").replace("/", "_")
     digest = hashlib.sha256(name.encode()).hexdigest()[:12]
     return state / f"sort-mapping-{safe}-{digest}.txt"
+
+
+def daily_section() -> str:
+    """The run.sh daily section, between its marker comments.
+
+    The daily logic moved from daily.sh to run.sh in
+    exp-2026-11-26.1; daily.sh is now only a shortcut. Structural
+    tests that used to read daily.sh read this section instead.
+    """
+    text = (ROOT / "run.sh").read_text(encoding="utf-8")
+    start = text.index("# ---- daily mode (exp-2026-11-26.1)")
+    end = text.index("# ---- end daily mode ----")
+    return text[start:end]
 
 
 def read_mapping(path: Path) -> dict[str, str]:
@@ -206,7 +220,16 @@ class FakeOsascriptHarness(unittest.TestCase):
 
 
 class DailyAutoProbeTests(unittest.TestCase):
-    """daily.sh with a stub run.sh: prove probe-before-check-before-build."""
+    """run.sh daily (reached through the daily.sh wrapper) with a
+    stub run.sh for its child calls: prove probe-before-check-before-build.
+
+    The harness copies the real run.sh to real-run.sh and the stub
+    delegates `daily` to it, so the daily logic under test is the
+    shipped run.sh daily section while the Music-touching child
+    calls (selfprobe, dedupe, shuffle, flow, rediscover) are still
+    stubbed out. The stub records only child calls: the `daily`
+    delegation happens before its echo line, so calls.log holds
+    exactly the child invocations, as before."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -218,15 +241,25 @@ class DailyAutoProbeTests(unittest.TestCase):
         self.backups = self.base / "backups"
         self.backups.mkdir()
         shutil.copy(ROOT / "daily.sh", self.install / "daily.sh")
-        # Stub check-python.sh: daily.sh calls it directly.
+        # The real run.sh, under another name: the stub below
+        # delegates `daily` to it, and its child calls resolve
+        # back to the stub via $ROOT/run.sh.
+        shutil.copy(ROOT / "run.sh", self.install / "real-run.sh")
+        # Stub check-python.sh: run.sh calls it directly.
         check = self.install / "check-python.sh"
         check.write_text('#!/bin/bash\necho "/usr/bin/python3 (Python 3.12.0)"\n', encoding="utf-8")
         check.chmod(0o755)
         # Stub run.sh: records invocations, and for selfprobe writes
         # a fresh mapping file (or fails, per STUB_PROBE_FAIL).
+        # A `daily` invocation is delegated to real-run.sh before
+        # anything is recorded: the daily logic under test is the
+        # shipped run.sh, the stub only stands in for its children.
         stub = self.install / "run.sh"
         stub.write_text(
             "#!/bin/bash\n"
+            'if [ "$1" = "daily" ]; then\n'
+            '  exec bash "$(dirname "$0")/real-run.sh" "$@"\n'
+            "fi\n"
             "echo \"$*\" >> \"$STUB_CALLS\"\n"
             "if [ \"$1\" = \"selfprobe\" ]; then\n"
             "  if [ -n \"${STUB_PROBE_FAIL:-}\" ] && [ \"$2\" = \"$STUB_PROBE_FAIL\" ]; then\n"
@@ -254,7 +287,7 @@ class DailyAutoProbeTests(unittest.TestCase):
         self.env["SETER_STATE_DIR"] = str(self.state)
         self.env["SETER_BACKUP_DIR"] = str(self.backups)
         self.env["STUB_CALLS"] = str(self.calls)
-        # Today's manifest already exists, so daily.sh skips the
+        # Today's manifest already exists, so run.sh daily skips the
         # osascript library dump (no Music here).
         today = time.strftime("%Y-%m-%d")
         (self.backups / f"library-manifest-{today}.tsv").write_text(
@@ -351,7 +384,7 @@ class DailyAutoProbeTests(unittest.TestCase):
 
 class SelfProbeStructuralTests(unittest.TestCase):
     def test_daily_probes_before_mapping_check_in_source(self) -> None:
-        text = (ROOT / "daily.sh").read_text(encoding="utf-8")
+        text = daily_section()
         probe_pos = text.index('probe_target "$PLAYLIST"')
         check_pos = text.index('check_mapping "$PLAYLIST"')
         # EXPERIMENTAL 2026-10-31: the probe block calls one
@@ -364,7 +397,7 @@ class SelfProbeStructuralTests(unittest.TestCase):
         normal_dedupe_pos = text.index('run.sh" dedupe', check_pos)
         self.assertLess(probe_pos, check_pos)
         self.assertLess(check_pos, normal_dedupe_pos)
-        # daily.sh invokes only selfprobe, never a throwaway sortprobe.
+        # run.sh daily invokes only selfprobe, never a throwaway sortprobe.
         self.assertIn('selfprobe "$target"', text)
         self.assertNotIn('run.sh" sortprobe', text)
 

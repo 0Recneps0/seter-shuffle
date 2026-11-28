@@ -59,14 +59,14 @@ class OneClickTest(unittest.TestCase):
         self.old_plist.write_text("<plist>old</plist>", encoding="utf-8")
         result = run_oneclick(["--yes"], self.env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.11")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.5")
         self.assertTrue(self.new_plist.exists())
         self.assertFalse(self.old_plist.exists())
         disabled = list(self.agents.glob("com.seter.daily.plist.disabled-*"))
         self.assertEqual(len(disabled), 1)
         self.assertIn("8:00 AM", result.stdout)
 
-    def test_update_from_proposed_keeps_bak_and_skips_migration(self):
+    def test_update_from_proposed_keeps_previous_version_and_skips_migration(self):
         # Pre-existing 3.0-proposed install, v2.6 already disabled.
         self.install.mkdir(parents=True)
         (self.install / "installed-version.txt").write_text("3.0-proposed\n", encoding="utf-8")
@@ -76,10 +76,15 @@ class OneClickTest(unittest.TestCase):
         )
         result = run_oneclick(["--yes", "--force"], self.env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.0.11")
+        self.assertEqual((self.install / "installed-version.txt").read_text().strip(), "3.5")
         self.assertTrue(self.new_plist.exists())
-        # The differing old run.sh must have been kept as a .bak.
-        self.assertTrue(any(p.name.startswith("run.sh.bak-") for p in self.install.iterdir()))
+        # The differing old run.sh must have been kept under
+        # previous-versions/<stamp>/, with its relative path
+        # preserved, and no loose .bak left next to the live file.
+        buckets = list((self.install / "previous-versions").iterdir())
+        self.assertEqual(len(buckets), 1)
+        self.assertEqual((buckets[0] / "run.sh").read_text(), "# old run.sh\n")
+        self.assertFalse(any(p.name.startswith("run.sh.bak-") for p in self.install.iterdir()))
         self.assertIn("Skipping migration", result.stdout)
 
     def test_declined_confirmation_changes_nothing(self):

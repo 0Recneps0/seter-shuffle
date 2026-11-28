@@ -82,6 +82,24 @@ class SetupFixesTest(unittest.TestCase):
         self.assertNotIn("never\"\nsay \"auto-probes", text)
         self.assertNotIn("It never", text)
 
+    def test_launchd_load_is_verified_after_bootstrap(self):
+        # The 8am job last fired Nov 7 2026 while the plist sat
+        # there looking fine: a silent load failure must now fail
+        # loudly and print the exact manual command. In test mode
+        # the verify is skipped, so this pins the wiring in text:
+        # launchd_verify_loaded exists, runs launchctl list, is
+        # called after a successful launchd_load, and the failure
+        # path dies with the manual `launchctl load` command.
+        text = (ROOT / "setup-python.sh").read_text()
+        self.assertIn("launchd_verify_loaded() {", text)
+        self.assertIn('launchctl list 2>/dev/null | grep -q "$PLIST_LABEL"', text)
+        load_at = text.index("if launchd_load; then")
+        verify_at = text.index("if launchd_verify_loaded; then", load_at)
+        die_at = text.index('launchctl load \\"$PLIST_PATH\\"', verify_at)
+        self.assertLess(load_at, verify_at)
+        self.assertLess(verify_at, die_at)
+        self.assertIn("is not loaded, so the daily run would never fire", text)
+
 
 if __name__ == "__main__":
     unittest.main()
